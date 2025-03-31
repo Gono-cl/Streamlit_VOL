@@ -16,8 +16,11 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # --- SIDEBAR ---
-st.sidebar.image('/Users/gonzaloaraya/OneDrive/Python/Streamlit BO/50af2232-e2e6-4e4b-8160-7805d23dc692.png', width=600)
+st.sidebar.image('/Users/gon41849/Documents/Modular_code_repo/Streamlit_VOL/image.png', width=600)
 st.sidebar.markdown("### 🧭 Navigation")
+
+
+
 st.sidebar.markdown("### Autonomous Experiments")
 
 # Define options
@@ -27,10 +30,18 @@ options = {
     "📐 Design of Experiments": "doe"
 }
 
+
+
 # Sidebar selection
 selected_label = st.sidebar.radio("Choose a mode:", list(options.keys()))
 selected_page = options[selected_label]
 
+st.sidebar.markdown("### Off-Line Experiments")
+options = {
+    "🔹 Single-Objective Optimization 2": "single",
+    "🔸 Multi-Objective Optimization 2": "multi",
+    "📐 Design of Experiments 2": "doe"
+}
 
 # --- MAIN CONTENT ---
 st.markdown("---")
@@ -58,12 +69,5 @@ elif selected_page == "doe":
     chart_data = pd.DataFrame(np.random.randn(20, 3),columns=['a', 'b', 'c'])
     st.line_chart(chart_data)
 
-st.sidebar.markdown("### Off-Line Experiments")
-options = {
-    "🔹 Single-Objective Optimization 2": "single",
-    "🔸 Multi-Objective Optimization 2": "multi",
-    "📐 Design of Experiments 2": "doe"
-}
-selected_label2 = st.sidebar.radio("Choose a mode:", list(options.keys()))
-selected_page = options[selected_label2]
+
 
