@@ -1,6 +1,9 @@
 import streamlit as st
 from pathlib import Path
 import importlib.util
+from core.utils import db_handler
+
+db_handler.init_db()
 
 # ✅ Must be the first Streamlit command
 st.set_page_config(
@@ -25,7 +28,8 @@ PAGES = {
     "🏠 Home": "home.py",
     "🎯 Single Objective Optimization": "single_objective.py",
     "📊 Multi-Objective Optimization": "multi_objective.py",
-    "🧪 Design of Experiments": "DoE.py"
+    "🧪 Design of Experiments": "DoE.py",
+    "📚 Experiment DataBase": "experiment_database.py"
 }
 
 # Sidebar for navigation

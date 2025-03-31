@@ -7,6 +7,8 @@ import pandas as pd
 import altair as alt
 import time
 from core.optimization.bayesian_optimization import BayesianOptimizer
+from core.utils.export_tools import export_to_csv, export_to_excel
+from core.utils import db_handler 
 
 # --- Page Title ---
 st.title("🎯 Single Objective Optimization")
@@ -62,51 +64,80 @@ response_to_optimize = col7.selectbox("Response to Optimize", ["Yield", "Convers
 # Button to start optimization
 if st.button("Start Optimization"):
     st.success("Optimization Started")
+
+    # Before the loop — set up the layout and placeholders once
     results_chart_container = st.empty()
-    scatter_chart_containers = st.columns(len(st.session_state.variables))
-    scatter_placeholders = [col.empty() for col in scatter_chart_containers]
+
+    num_vars = len(st.session_state.variables)
+    scatter_rows = [st.columns(2) for _ in range((num_vars + 1) // 2)]
+    scatter_placeholders = [
+        col.empty() for row in scatter_rows for col in row
+    ][:num_vars]  # Flatten and match number of variables
 
     # Initialize data storage
-    results = []
-    variable_data = {name: [] for name, *_ in st.session_state.variables}
+    experiment_data = []
 
-    # Run Optimization loop
+    # Optimization loop
     for i in range(iterations):
-        x = [
-            np.random.uniform(low, high)
-            for _, low, high, _ in st.session_state.variables
-        ]
+        x = [np.random.uniform(low, high) for _, low, high, _ in st.session_state.variables]
         y = -np.sum(x)  # Replace with real objective function
-        results.append(-y)
 
-        for idx, (name, *_rest) in enumerate(st.session_state.variables):
-            variable_data[name].append(x[idx])
+        experiment_data.append({
+            "Experiment #": i + 1,
+            "Timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            **{name: val for (name, *_), val in zip(st.session_state.variables, x)},
+            "Measurement": -y
+        })
 
-        # Line chart
-        df_results = pd.DataFrame({"Measurement": results})
-        df_results.index = df_results.index + 1
-        results_chart_container.line_chart(df_results, x_label="Experiment", y_label="Measurement")
+        # Create DataFrame from collected data
+        df_results = pd.DataFrame(experiment_data)
 
-        # Scatter plots
-        for idx, container in enumerate(scatter_placeholders):
-            name, low, high, _ = st.session_state.variables[idx]
-            df = pd.DataFrame({name: variable_data[name], "Measurement": results})
+        # Update results line chart
+        results_chart_container.line_chart(df_results[["Experiment #", "Measurement"]].set_index("Experiment #"))
+
+        # Update scatter charts
+        for idx, (name, low, high, _) in enumerate(st.session_state.variables):
+            df = df_results[[name, "Measurement"]]
+
             chart = alt.Chart(df).mark_circle(size=60).encode(
                 x=alt.X(f"{name}:Q", scale=alt.Scale(domain=[low, high])),
                 y="Measurement:Q"
             ).properties(
-                width=400,
                 height=350,
-                title=f"{name} vs Measurement"
-            ).configure_title(
-                anchor='middle'
+                title=alt.TitleParams(text=f"{name} vs Measurement", anchor="middle")
             )
-            container.altair_chart(chart, use_container_width=False)
+
+            scatter_placeholders[idx].altair_chart(chart, use_container_width=True)
+            
+            # Save experiment in database
+            db_handler.save_experiment(
+                name=experiment_name,
+                notes=experiment_notes,
+                variables=st.session_state.variables,
+                df_results=df_results,
+            )
 
         time.sleep(0.5)
 
     st.success("✅ Optimization Finished")
+    
+    # Find best result (maximizing measurement)
+    best_row = df_results.loc[df_results["Measurement"].idxmax()]
+    st.markdown("### 🥇 Best Result")
+    st.write(best_row)
 
+
+    # Export buttons
+    Timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    export_to_csv(df_results, f"{Timestamp}_optimization_results.csv")
+    export_to_excel(df_results, f"{Timestamp}_optimization_results.csv")
+
+
+
+
+
+
+    
 
 
 
