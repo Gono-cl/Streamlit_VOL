@@ -16,26 +16,33 @@ def init_db():
             timestamp TEXT,
             notes TEXT,
             variables_json TEXT,
-            results_json TEXT
+            results_json TEXT,
+            best_result_json TEXT,
+            settings_json TEXT
         )
     """)
+
     conn.commit()
     conn.close()
 
-def save_experiment(name, notes, variables, df_results):
+def save_experiment(name, notes, variables, df_results, best_result, settings):
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     cursor.execute("""
-        INSERT INTO experiments (name, timestamp, notes, variables_json, results_json)
-        VALUES (?, ?, ?, ?, ?)
+        INSERT INTO experiments (
+            name, timestamp, notes, variables_json, results_json, best_result_json, settings_json
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?)
     """, (
         name,
         timestamp,
         notes,
         json.dumps(variables),
         df_results.to_json(orient="records"),
+        best_result.to_json(orient="index"),
+        json.dumps(settings)
     ))
 
     conn.commit()
@@ -52,18 +59,25 @@ def list_experiments():
 def load_experiment(exp_id):
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
-    cursor.execute("SELECT name, timestamp, notes, variables_json, results_json", (exp_id,))
+    cursor.execute("""
+        SELECT name, timestamp, notes, variables_json, results_json, best_result_json, settings_json
+        FROM experiments
+        WHERE id = ?
+    """, (exp_id,))
     row = cursor.fetchone()
     conn.close()
 
     if row:
-        name, timestamp, notes, var_json, res_json, best_json = row
+        name, timestamp, notes, var_json, res_json, best_json, settings_json = row
         return {
             "name": name,
             "timestamp": timestamp,
             "notes": notes,
             "variables": json.loads(var_json),
             "df_results": pd.read_json(res_json, orient="records"),
+            "best_result": pd.read_json(best_json, typ="series", orient="index",convert_dates=False) if best_json else None,
+            "settings": json.loads(settings_json) if settings_json else None
         }
     else:
         return None
+

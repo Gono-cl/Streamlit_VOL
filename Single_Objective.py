@@ -1,25 +1,23 @@
 import streamlit as st
 from datetime import datetime
-import matplotlib.pyplot as plt
-from matplotlib.figure import Figure 
 import numpy as np
 import pandas as pd
 import altair as alt
 import time
-from core.optimization.bayesian_optimization import BayesianOptimizer
+from core.optimization.bayesian_optimization import StepBayesianOptimizer
 from core.utils.export_tools import export_to_csv, export_to_excel
-from core.utils import db_handler 
+from core.utils import db_handler
 
 # --- Page Title ---
-st.title("🎯 Single Objective Optimization")
+st.title("🌟 Single Objective Optimization")
 
-# --- Section: Experiment Metadata ---
+# --- Experiment Metadata ---
 st.subheader("🧪 Experiment Metadata")
 experiment_name = st.text_input("Experiment Name")
 experiment_date = st.date_input("Experiment Date", datetime.today())
 experiment_notes = st.text_area("Additional Notes")
 
-# --- Section: Define Variables ---
+# --- Define Variables ---
 st.subheader("⚙️ Optimization Variables")
 
 if "variables" not in st.session_state:
@@ -35,7 +33,6 @@ with st.form(key="variable_form"):
         upper_bound = st.number_input("Upper Bound", value=1.0, format="%.4f")
     with col4:
         unit = st.text_input("Unit")
-    
 
     submitted = st.form_submit_button("Add Variable")
     if submitted:
@@ -46,7 +43,7 @@ with st.form(key="variable_form"):
 
 # --- Display Added Variables ---
 if st.session_state.variables:
-    st.markdown("### 🧾 Added Variables")
+    st.markdown("### 📟 Added Variables")
     for i, (name, low, high, unit) in enumerate(st.session_state.variables):
         st.write(f"{i+1}. **{name}**: from {low} to {high} {unit}")
 else:
@@ -55,50 +52,61 @@ else:
 # --- Optimization Settings ---
 st.subheader("⚙️ Optimization Settings")
 col5, col6, col7 = st.columns(3)
-
 initial_experiments = col5.number_input("Initialization Experiments", min_value=1, max_value=100, value=5)
-iterations = col6.number_input("Number of Iterations", min_value=1, max_value=100, value=20)
+total_iterations = col6.number_input("Total Iterations", min_value=1, max_value=100, value=20)
 response_to_optimize = col7.selectbox("Response to Optimize", ["Yield", "Conversion", "Transformation", "Productivity"])
 
+# --- Progress and Pause/Resume Controls ---
+if "pause_optimization" not in st.session_state:
+    st.session_state.pause_optimization = False
+if "optimization_running" not in st.session_state:
+    st.session_state.optimization_running = False
 
-# Button to start optimization
+if st.button("Pause/Resume Optimization"):
+    st.session_state.pause_optimization = not st.session_state.pause_optimization
+
+# --- Run Optimization ---
 if st.button("Start Optimization"):
-    st.success("Optimization Started")
+    st.session_state.optimization_running = True
+    st.session_state.optimizer = StepBayesianOptimizer([
+        (name, low, high) for name, low, high, _ in st.session_state.variables
+    ])
+    st.session_state.experiment_data = []
+    st.session_state.iteration = 0
 
-    # Before the loop — set up the layout and placeholders once
-    results_chart_container = st.empty()
+# --- Optimization Loop ---
+if st.session_state.get("optimization_running", False):
+    optimizer = st.session_state.optimizer
+    experiment_data = st.session_state.experiment_data
+    iteration = st.session_state.iteration
 
-    num_vars = len(st.session_state.variables)
-    scatter_rows = [st.columns(2) for _ in range((num_vars + 1) // 2)]
-    scatter_placeholders = [
-        col.empty() for row in scatter_rows for col in row
-    ][:num_vars]  # Flatten and match number of variables
+    results_chart = st.empty()
+    progress_bar = st.progress(iteration / total_iterations)
+    scatter_rows = [st.columns(2) for _ in range((len(st.session_state.variables) + 1) // 2)]
+    scatter_placeholders = [col.empty() for row in scatter_rows for col in row][:len(st.session_state.variables)]
 
-    # Initialize data storage
-    experiment_data = []
+    while iteration < total_iterations:
+        if st.session_state.pause_optimization:
+            st.warning("⏸ Optimization paused. Press Resume to continue.")
+            break
 
-    # Optimization loop
-    for i in range(iterations):
-        x = [np.random.uniform(low, high) for _, low, high, _ in st.session_state.variables]
-        y = -np.sum(x)  # Replace with real objective function
+        x = optimizer.suggest()
+        y = -np.sum(x)  # Dummy objective function
+        optimizer.observe(x, y)
 
-        experiment_data.append({
-            "Experiment #": i + 1,
+        row = {
+            "Experiment #": iteration + 1,
             "Timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             **{name: val for (name, *_), val in zip(st.session_state.variables, x)},
             "Measurement": -y
-        })
-
-        # Create DataFrame from collected data
+        }
+        experiment_data.append(row)
         df_results = pd.DataFrame(experiment_data)
 
-        # Update results line chart
-        results_chart_container.line_chart(df_results[["Experiment #", "Measurement"]].set_index("Experiment #"))
+        results_chart.line_chart(df_results[["Experiment #", "Measurement"]].set_index("Experiment #"))
 
-        # Update scatter charts
         for idx, (name, low, high, _) in enumerate(st.session_state.variables):
             df = df_results[[name, "Measurement"]]
-
             chart = alt.Chart(df).mark_circle(size=60).encode(
                 x=alt.X(f"{name}:Q", scale=alt.Scale(domain=[low, high])),
                 y="Measurement:Q"
@@ -106,31 +114,41 @@ if st.button("Start Optimization"):
                 height=350,
                 title=alt.TitleParams(text=f"{name} vs Measurement", anchor="middle")
             )
-
             scatter_placeholders[idx].altair_chart(chart, use_container_width=True)
-            
-            # Save experiment in database
-            db_handler.save_experiment(
-                name=experiment_name,
-                notes=experiment_notes,
-                variables=st.session_state.variables,
-                df_results=df_results,
-            )
 
+        iteration += 1
+        st.session_state.iteration = iteration
+        st.session_state.experiment_data = experiment_data
+        progress_bar.progress(iteration / total_iterations)
         time.sleep(0.5)
 
-    st.success("✅ Optimization Finished")
-    
-    # Find best result (maximizing measurement)
-    best_row = df_results.loc[df_results["Measurement"].idxmax()]
-    st.markdown("### 🥇 Best Result")
-    st.write(best_row)
+    if iteration == total_iterations:
+        st.success("✅ Optimization Complete!")
+        best_row = df_results.loc[df_results["Measurement"].idxmax()]
+        st.markdown("### 🥇 Best Result")
+        st.write(best_row)
 
+        timestamp = datetime.now().strftime("%Y-%m-%d %H-%M-%S")
+        export_to_csv(df_results, f"{timestamp}_optimization_results.csv")
+        export_to_excel(df_results, f"{timestamp}_optimization_results.xlsx")
 
-    # Export buttons
-    Timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    export_to_csv(df_results, f"{Timestamp}_optimization_results.csv")
-    export_to_excel(df_results, f"{Timestamp}_optimization_results.csv")
+        optimization_settings = {
+            "initial_experiments": initial_experiments,
+            "total_iterations": total_iterations,
+            "objective": response_to_optimize,
+            "method": "Bayesian (looped with pause/resume)"
+        }
+
+        db_handler.save_experiment(
+            name=experiment_name,
+            notes=experiment_notes,
+            variables=st.session_state.variables,
+            df_results=df_results,
+            best_result=best_row,
+            settings=optimization_settings
+        )
+
+        st.session_state.optimization_running = False
 
 
 

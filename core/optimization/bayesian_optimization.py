@@ -1,25 +1,28 @@
-from skopt import gp_minimize
-from skopt.space import Real, Integer, Categorical
+from skopt import Optimizer
 
-class BayesianOptimizer:
-    def __init__(self, variables, objective_function, n_calls=15, random_state=42):
-        self.variables = variables  # e.g., [("temperature", 20, 100), ("res_time", 10, 60)]
-        self.objective_function = objective_function
-        self.n_calls = n_calls
-        self.random_state = random_state
-
-    def run_optimization(self):
-        space = []
-        for name, lower, upper in self.variables:
-            space.append(Real(lower, upper, name=name))
-
-        result = gp_minimize(
-            self.objective_function,
-            space,
-            n_calls=self.n_calls,
-            random_state=self.random_state
+class StepBayesianOptimizer:
+    def __init__(self, variables, base_estimator="GP", acq_func="EI", random_state=42):
+        self.variable_names = [name for name, *_ in variables]
+        self.space = [(low, high) for _, low, high in variables]
+        self._optimizer = Optimizer(
+            dimensions=self.space,
+            base_estimator=base_estimator,
+            acq_func=acq_func,
+            random_state=random_state
         )
+        self.x_iters = []
+        self.y_iters = []
 
-        best_params = {dim.name: val for dim, val in zip(result.space.dimensions, result.x)}
-        best_result = result.fun
-        return best_params, best_result
+    def suggest(self):
+        return self._optimizer.ask()
+
+    def observe(self, x, y):
+        self._optimizer.tell(x, y)
+        self.x_iters.append(x)
+        self.y_iters.append(y)
+
+    @property
+    def skopt_optimizer(self):
+        return self._optimizer
+
+

@@ -1,3 +1,4 @@
+# experiment_database.py
 import streamlit as st
 from core.utils import db_handler
 
@@ -17,6 +18,16 @@ else:
         st.write(f"**Name:** {exp_data['name']}")
         st.write(f"**Timestamp:** {exp_data['timestamp']}")
         st.write(f"**Notes:** {exp_data['notes']}")
+
+        st.subheader("⚙️ Optimization Settings")
+        settings = exp_data["settings"]
+
+        if settings:
+            st.write(f"**Initial Experiments:** {settings['initial_experiments']}")
+            st.write(f"**Total Iterations:** {settings['total_iterations']}")
+            st.write(f"**Objective:** {settings['objective']}")
+            st.write(f"**Method:** {settings['method']}")
+
 
         st.subheader("📈 Results")
         st.dataframe(exp_data["df_results"])
