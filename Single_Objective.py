@@ -7,9 +7,14 @@ import time
 from core.optimization.bayesian_optimization import StepBayesianOptimizer
 from core.utils.export_tools import export_to_csv, export_to_excel
 from core.utils import db_handler
+from core.hardwares.opc_communication import OPCClient
+from core.hardwares.experimental_run import ExperimentRunner
 
 # --- Page Title ---
 st.title("🌟 Single Objective Optimization")
+
+# --- Sidebar Simulation Toggle ---
+simulation_mode = st.sidebar.checkbox("🧪 Simulation Mode", value=False)
 
 # --- Experiment Metadata ---
 st.subheader("🧪 Experiment Metadata")
@@ -73,12 +78,15 @@ if st.button("Start Optimization"):
     ])
     st.session_state.experiment_data = []
     st.session_state.iteration = 0
+    st.session_state.opc_client = OPCClient("http://localhost:7000")  # Adjust as needed
+    st.session_state.runner = ExperimentRunner(st.session_state.opc_client, "experiment_log.csv", simulation_mode=simulation_mode)
 
 # --- Optimization Loop ---
 if st.session_state.get("optimization_running", False):
     optimizer = st.session_state.optimizer
     experiment_data = st.session_state.experiment_data
     iteration = st.session_state.iteration
+    runner = st.session_state.runner
 
     results_chart = st.empty()
     progress_bar = st.progress(iteration / total_iterations)
@@ -91,13 +99,15 @@ if st.session_state.get("optimization_running", False):
             break
 
         x = optimizer.suggest()
-        y = -np.sum(x)  # Dummy objective function
+        params = {name: val for (name, *_), val in zip(st.session_state.variables, x)}
+        result = runner.run_experiment(params)
+        y = -result[response_to_optimize]  # still minimizing
         optimizer.observe(x, y)
 
         row = {
             "Experiment #": iteration + 1,
             "Timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            **{name: val for (name, *_), val in zip(st.session_state.variables, x)},
+            **params,
             "Measurement": -y
         }
         experiment_data.append(row)
@@ -136,7 +146,8 @@ if st.session_state.get("optimization_running", False):
             "initial_experiments": initial_experiments,
             "total_iterations": total_iterations,
             "objective": response_to_optimize,
-            "method": "Bayesian (looped with pause/resume)"
+            "method": "Bayesian (looped with pause/resume + hardware)",
+            "simulation_mode": simulation_mode
         }
 
         db_handler.save_experiment(
@@ -149,6 +160,8 @@ if st.session_state.get("optimization_running", False):
         )
 
         st.session_state.optimization_running = False
+
+
 
 
 
