@@ -9,6 +9,8 @@ from core.utils.export_tools import export_to_csv, export_to_excel
 from core.utils import db_handler
 from core.hardwares.opc_communication import OPCClient
 from core.hardwares.experimental_run import ExperimentRunner
+from core.utils.logger import StreamlitLogger
+import sys
 
 # --- Page Title ---
 st.title("🌟 Single Objective Optimization")
@@ -78,8 +80,14 @@ if st.button("Start Optimization"):
     ])
     st.session_state.experiment_data = []
     st.session_state.iteration = 0
-    st.session_state.opc_client = OPCClient("http://localhost:7000")  # Adjust as needed
+    st.session_state.opc_client = OPCClient("http://em-nun:57080")
     st.session_state.runner = ExperimentRunner(st.session_state.opc_client, "experiment_log.csv", simulation_mode=simulation_mode)
+    
+    # --- Live Logger Setup ---
+    log_placeholder = st.empty()
+    logger = StreamlitLogger(placeholder=log_placeholder)
+    sys.stdout = logger  # Redirect print() to Streamlit
+
 
 # --- Optimization Loop ---
 if st.session_state.get("optimization_running", False):
