@@ -7,8 +7,8 @@ import time
 from core.optimization.bayesian_optimization import StepBayesianOptimizer
 from core.utils.export_tools import export_to_csv, export_to_excel
 from core.utils import db_handler
-from core.hardwares.opc_communication import OPCClient
-from core.hardwares.experimental_run import ExperimentRunner
+from core.hardware.opc_communication import OPCClient
+from core.hardware.experimental_run import ExperimentRunner
 from core.utils.logger import StreamlitLogger
 import sys
 

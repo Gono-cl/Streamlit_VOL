@@ -1,10 +1,10 @@
 import time
 import numpy as np
 import csv
-from core.hardwares.opc_communication import OPCClient
+from core.hardware.opc_communication import OPCClient
 
 class ExperimentRunner:
-    def __init__(self, opc_client, csv_filename, simulation_mode=False):
+    def __init__(self, opc_client: OPCClient, csv_filename: str, simulation_mode: bool = False):
         self.opc = opc_client
         self.csv_filename = csv_filename
         self.simulation_mode = simulation_mode
@@ -27,21 +27,12 @@ class ExperimentRunner:
         self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3APUMP2.W1", round(no_acid, 2))
         self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3APUMP5.W1", round(yes_acid, 2))
 
-    def calculate_pump_flows(self, acid_percent, total_flow):
-        yes_acid = acid_percent * total_flow
-        no_acid = (1 - acid_percent) * total_flow
-        return yes_acid, no_acid
-
     def monitor_temperature(self, target_temp):
         self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3ACHILLER_01.ON", 1)
         self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3ACHILLER_01.W1", target_temp)
 
         while True:
             current_temp = self.opc.read_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3ACHILLER_01.X1")
-            if current_temp is None:
-                print("Warning: Failed to read temperature from OPC")
-                time.sleep(5)
-                continue
             if abs(current_temp - target_temp) <= 0.5:
                 print(f"Target temperature reached: {target_temp}°C")
                 break
@@ -73,17 +64,41 @@ class ExperimentRunner:
             self.opc.write_value(f"Hitec_OPC_DA20_Server-%3EDIAZOAN%3A{pump}", 0)
         print("All pumps stopped.")
 
-    def init_csv(self):
-        with open(self.csv_filename, 'w', newline='') as csvfile:
-            csvwriter = csv.writer(csvfile)
-            csvwriter.writerow(["Measurement"])
-
     def run_experiment(self, parameters):
-        self.monitor_temperature(parameters["temperature"])
-        self.set_pump_flows(parameters["acid"], parameters["residence_time"])
-        mean_measurement = self.collect_measurements(parameters["residence_time"])
+        if not self.simulation_mode:
+            self.monitor_temperature(parameters["temperature"])
+            self.set_pump_flows(parameters["acid"], parameters["residence_time"])
+        else:
+            print("🔁 Simulation mode enabled: skipping temperature and pump setup.")
+
+        mean_measurement = self.collect_measurements(parameters.get("residence_time", 1))
         self.stop_pumps()
 
         return {"Yield": mean_measurement}
+
+    def simulate_experiment(self, parameters, objectives):
+        """
+        Simulate an experiment by generating random values for each selected objective.
+        This bypasses all OPC/hardware interaction.
+        """
+        print(f"🔁 Simulating experiment with parameters: {parameters}")
+        result = {}
+
+        for obj in objectives:
+            if obj == "Yield":
+                result[obj] = np.random.uniform(60, 95)
+            elif obj == "Conversion":
+                result[obj] = np.random.uniform(50, 90)
+            elif obj == "Transformation":
+                result[obj] = np.random.uniform(40, 85)
+            elif obj == "Productivity":
+                result[obj] = np.random.uniform(10, 40)
+            else:
+                result[obj] = np.random.uniform(0, 100)  # fallback
+
+        print(f"📈 Simulated result: {result}")
+        return result
+
+
 
 
