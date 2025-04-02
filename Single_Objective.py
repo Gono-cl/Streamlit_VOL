@@ -15,8 +15,12 @@ import sys
 # --- Page Title ---
 st.title("🌟 Single Objective Optimization")
 
-# --- Sidebar Simulation Toggle ---
+# --- Sidebar Configuration ---
 simulation_mode = st.sidebar.checkbox("🧪 Simulation Mode", value=False)
+opc_url = st.sidebar.text_input("🔌 OPC Server URL", value="http://em-nun:57080")
+
+if simulation_mode:
+    st.sidebar.warning("⚠️ Simulation Mode is ON — OPC hardware interaction is disabled. Random measurements will be used.")
 
 # --- Experiment Metadata ---
 st.subheader("🧪 Experiment Metadata")
@@ -80,14 +84,15 @@ if st.button("Start Optimization"):
     ])
     st.session_state.experiment_data = []
     st.session_state.iteration = 0
-    st.session_state.opc_client = OPCClient("http://em-nun:57080")
+    st.session_state.opc_client = OPCClient(opc_url)
     st.session_state.runner = ExperimentRunner(st.session_state.opc_client, "experiment_log.csv", simulation_mode=simulation_mode)
+
     
+
     # --- Live Logger Setup ---
     log_placeholder = st.empty()
     logger = StreamlitLogger(placeholder=log_placeholder)
     sys.stdout = logger  # Redirect print() to Streamlit
-
 
 # --- Optimization Loop ---
 if st.session_state.get("optimization_running", False):
@@ -95,6 +100,7 @@ if st.session_state.get("optimization_running", False):
     experiment_data = st.session_state.experiment_data
     iteration = st.session_state.iteration
     runner = st.session_state.runner
+    
 
     results_chart = st.empty()
     progress_bar = st.progress(iteration / total_iterations)
@@ -108,7 +114,7 @@ if st.session_state.get("optimization_running", False):
 
         x = optimizer.suggest()
         params = {name: val for (name, *_), val in zip(st.session_state.variables, x)}
-        result = runner.run_experiment(params)
+        result = runner.run_experiment(params, experiment_number=iteration + 1, total_iterations=total_iterations)
         y = -result[response_to_optimize]  # still minimizing
         optimizer.observe(x, y)
 
@@ -155,7 +161,8 @@ if st.session_state.get("optimization_running", False):
             "total_iterations": total_iterations,
             "objective": response_to_optimize,
             "method": "Bayesian (looped with pause/resume + hardware)",
-            "simulation_mode": simulation_mode
+            "simulation_mode": simulation_mode,
+            "opc_url": opc_url
         }
 
         db_handler.save_experiment(
@@ -168,6 +175,7 @@ if st.session_state.get("optimization_running", False):
         )
 
         st.session_state.optimization_running = False
+
 
 
 
