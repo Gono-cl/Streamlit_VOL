@@ -41,11 +41,26 @@ class ExperimentRunner:
             self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3ACHILLER_01.ON", 1)
             self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3ACHILLER_01.W1", target_temp)
 
+            print(f"🧊 Waiting for temperature to reach {target_temp}°C...")
+
             while True:
                 current_temp = self.opc.read_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3ACHILLER_01.X1")
-                if abs(current_temp - target_temp) <= 0.5:
-                    print(f"Target temperature reached: {target_temp}°C")
+                print(f"🌡️ Current temperature reading: {current_temp}")
+
+                try:
+                    current_temp = float(current_temp)
+                except (TypeError, ValueError):
+                    print("⚠️ Invalid temperature reading. Retrying...")
+                    time.sleep(3)
+                    continue
+
+                diff = abs(current_temp - target_temp)
+                print(f"📉 ΔT = {diff:.2f}°C")
+
+                if diff <= 0.5:
+                    print(f"✅ Target temperature reached: {current_temp:.2f}°C")
                     break
+
                 time.sleep(5)
         else:
             print("🌡️ Simulation mode: skipping temperature control.")
@@ -131,6 +146,7 @@ class ExperimentRunner:
             html += f"<li><strong>{key}</strong>: {val:.2f}</li>"
         html += "</ul></div>"
         self.experiment_status_placeholder.markdown(html, unsafe_allow_html=True)
+
 
 
 
