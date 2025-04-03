@@ -22,9 +22,10 @@ class OPCClient:
     def write_value(self, item, value):
         """Writes a value to the OPC server."""
         try:
-            response = requests.get(f"{self.server_url}/write?item={item}&value={value}")
+            value_str = str(round(value,2)).replace(".",",")
+            response = requests.get(f"{self.server_url}/write?item={item}&value={value_str}")
             response.raise_for_status()
-            print(f"Successfully wrote {value} to {item}")
+            print(f"Successfully wrote {value_str} to {item}")
         except requests.exceptions.RequestException as e:
             print(f"Error writing to OPC: {e}")
 
