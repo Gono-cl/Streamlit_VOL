@@ -9,6 +9,9 @@ from core.utils.export_tools import export_to_csv, export_to_excel
 from core.utils import db_handler
 from core.hardware.opc_communication import OPCClient
 from core.hardware.experimental_run import ExperimentRunner
+from core.utils.logger import StreamlitLogger
+import sys
+
 
 # --- Page Title ---
 st.title("🌈 Multi-Objective Optimization")
@@ -21,7 +24,7 @@ sim_mode_label = {
 }
 simulation_mode = st.sidebar.selectbox("Experiment Mode", options=["off", "hybrid", "full"], format_func=lambda x: sim_mode_label[x])
 
-opc_url = st.sidebar.text_input("🔌 OPC Server URL", value="http://localhost:7000")
+opc_url = st.sidebar.text_input("🔌 OPC Server URL", value="http://em-nun:57080")
 
 # --- Simulation Mode Banner ---
 if simulation_mode != "off":
@@ -89,6 +92,11 @@ if st.button("Start Optimization"):
             n_initial_points=initial_experiments,
             n_objectives=n_objectives
         )
+    st.markdown("### 📋 Optimization Log")
+    # --- Live Logger Setup ---
+    log_placeholder = st.empty()
+    logger = StreamlitLogger(placeholder=log_placeholder)
+    sys.stdout = logger 
 
 # --- Optimization Loop ---
 if st.session_state.get("optimization_running", False):
@@ -103,18 +111,7 @@ if st.session_state.get("optimization_running", False):
     while iteration < total_iterations:
         x = optimizer.ask()
         params = {name: val for (name, *_), val in zip(st.session_state.variables, x)}
-        try:
-            if simulation_mode == "full":
-                result = runner.simulate_experiment(params, objectives)
-            elif simulation_mode == "hybrid":
-                result = runner.simulate_experiment(params, objectives)  # uses hardware for pumps, etc., but fake measurements
-            else:
-                result = runner.run_experiment(params)
-
-        except AttributeError:
-            st.error("⚠️ `simulate_experiment` method is missing in ExperimentRunner.")
-            st.stop()
-
+        result = runner.run_experiment(params, experiment_number=iteration + 1, total_iterations=total_iterations, objectives=objectives)
         y_multi = [-result[obj] for obj in objectives]
 
         if not isinstance(y_multi, list) or len(y_multi) != len(objectives):

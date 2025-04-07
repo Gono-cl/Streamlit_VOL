@@ -35,21 +35,19 @@ class ExperimentRunner:
         Vorg = round(value1 * 2, 2)
         yes_acid, no_acid = self.calculate_pump_flows(acid, total_flow)
 
-        if self.simulation_mode == "off" or self.simulation_mode == "hybrid":
+        if self.simulation_mode in ["off", "hybrid"]:
             self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3APUMP_3", Vorg)
             self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3APUMP2.W1", round(no_acid, 2))
             self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3APUMP1.W1", round(yes_acid, 2))
-            
         else:
             print("🔁 Simulation mode: skipping pump control.")
 
     def set_pressure(self, pressure):
-        if self.simulation_mode == "off" or self.simulation_mode == "hybrid":
+        if self.simulation_mode in ["off", "hybrid"]:
             self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3APC_OUT", round(pressure, 2))
-        
 
     def monitor_temperature(self, target_temp):
-        if self.simulation_mode == "off" or self.simulation_mode == "hybrid":
+        if self.simulation_mode in ["off", "hybrid"]:
             self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3ACHILLER_01.ON", 1)
             self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3ACHILLER_01.W1", target_temp)
 
@@ -80,7 +78,7 @@ class ExperimentRunner:
     def collect_measurements(self):
         measurements = []
         for i in range(5):
-            if self.simulation_mode == "full" or self.simulation_mode == "hybrid":
+            if self.simulation_mode in ["full", "hybrid"]:
                 DAN_Area = np.random.uniform(0, 3)
             else:
                 DAN_Area = self.opc.read_value("OpusOPCSvr.HP-CZC3484P17-%3EDAN+-+Area")
@@ -99,7 +97,7 @@ class ExperimentRunner:
         return np.mean(measurements)
 
     def stop_pumps(self):
-        if self.simulation_mode == "off" or self.simulation_mode == "hybrid":
+        if self.simulation_mode in ["off", "hybrid"]:
             for pump in ["PUMP1.W1", "PUMP2.W1", "PUMP_3", "PUMP5.W1", "PC_OUT"]:
                 self.opc.write_value(f"Hitec_OPC_DA20_Server-%3EDIAZOAN%3A{pump}", 0)
             print("🛑 All pumps stopped.")
@@ -117,8 +115,6 @@ class ExperimentRunner:
             """
             self.countdown_placeholder.markdown(countdown_html, unsafe_allow_html=True)
             time.sleep(1)
-
-
 
     def display_experiment_info(self, experiment_number, total_iterations, parameters):
         elapsed = time.time() - self.start_time if self.start_time else 0
@@ -138,13 +134,13 @@ class ExperimentRunner:
         html += "</ul></div>"
         self.experiment_status_placeholder.markdown(html, unsafe_allow_html=True)
 
-    def simulate_experiment(self, parameters, objectives):
-        print("🎲 Simulating multi-objective experiment...")
+    def simulate_experiment(self, parameters, objectives=None):
+        if objectives is None:
+            objectives = ["Yield"]
         simulated_result = {}
 
         for obj in objectives:
             if obj == "Yield":
-                # Simulate a high value when acid is close to 0.3 and temperature ~40
                 score = np.exp(-((parameters.get("acid", 0.5) - 0.3) ** 2) * 10) * \
                         np.exp(-((parameters.get("temperature", 50) - 40) ** 2) / 100)
             elif obj == "Conversion":
@@ -154,33 +150,35 @@ class ExperimentRunner:
             elif obj == "Productivity":
                 score = (parameters.get("pressure", 1.0) / 10) * np.random.uniform(0.7, 1.0)
             else:
-                score = np.random.uniform(0, 1)  # fallback
+                score = np.random.uniform(0, 1)
 
-            simulated_result[obj] = round(score * 100, 2)  # scale to 0-100%
+            simulated_result[obj] = round(score * 100, 2)
 
         print(f"🧪 Simulated result: {simulated_result}")
         return simulated_result
 
-
-    def run_experiment(self, parameters, experiment_number=None, total_iterations=None):
+    def run_experiment(self, parameters, experiment_number=None, total_iterations=None, objectives=None):
         if experiment_number is not None and total_iterations is not None:
             print(f"🔬 Running Experiment {experiment_number} of {total_iterations}")
             self.display_experiment_info(experiment_number, total_iterations, parameters)
 
-        if self.simulation_mode == "off" or self.simulation_mode == "hybrid":
+        if self.simulation_mode in ["off", "hybrid"]:
             self.monitor_temperature(parameters["temperature"])
             self.set_pressure(parameters["pressure"])
             self.set_pump_flows(parameters["acid"], parameters["residence_time"])
             self.countdown(int(parameters["residence_time"]))
-            
         else:
-            print("🔁 Simulation mode enabled: skipping temperature and pump setup.")
+            print("🔁 Full simulation mode enabled: skipping temperature and pump setup.")
 
+        if self.simulation_mode in ["full", "hybrid"]:
+            result = self.simulate_experiment(parameters, objectives)
+        else:
+            mean_measurement = self.collect_measurements()
+            result = {"Yield": mean_measurement}
 
-        mean_measurement = self.collect_measurements()
         self.stop_pumps()
+        return result
 
-        return {"Yield": mean_measurement}
 
 
 

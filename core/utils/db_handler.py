@@ -41,7 +41,7 @@ def save_experiment(name, notes, variables, df_results, best_result, settings):
         notes,
         json.dumps(variables),
         df_results.to_json(orient="records"),
-        best_result.to_json(orient="index"),
+        pd.Series(best_result).to_json(orient="index"),
         json.dumps(settings)
     ))
 

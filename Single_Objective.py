@@ -25,8 +25,8 @@ simulation_mode = st.sidebar.selectbox("Experiment Mode", options=["off", "hybri
 
 opc_url = st.sidebar.text_input("🔌 OPC Server URL", value="http://em-nun:57080")
 
-if simulation_mode:
-    st.sidebar.warning("⚠️ Simulation Mode is ON — OPC hardware interaction is disabled. Random measurements will be used.")
+if simulation_mode!= "off":
+    st.warning("⚠️ Simulation Mode is ON — OPC hardware interaction is partially or fully disabled.")
 
 # --- Experiment Metadata ---
 st.subheader("🧪 Experiment Metadata")

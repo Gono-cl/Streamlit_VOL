@@ -25,7 +25,13 @@ else:
         if settings:
             st.write(f"**Initial Experiments:** {settings['initial_experiments']}")
             st.write(f"**Total Iterations:** {settings['total_iterations']}")
-            st.write(f"**Objective:** {settings['objective']}")
+            if "objective" in settings:
+                st.write(f"**Objective:** {settings['objective']}")
+            elif "objectives" in settings:
+                st.write("**Objectives:** " + ", ".join(settings["objectives"]))
+            else:
+                st.write("No objective info found.")
+
             st.write(f"**Method:** {settings['method']}")
 
 
