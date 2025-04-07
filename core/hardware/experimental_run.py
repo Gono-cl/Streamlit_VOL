@@ -3,6 +3,7 @@ import numpy as np
 import csv
 from core.hardware.opc_communication import OPCClient
 import streamlit as st
+import matplotlib.pyplot as plt
 
 class ExperimentRunner:
     def __init__(self, opc_client: OPCClient, csv_filename: str, simulation_mode: str = "off"):
@@ -12,6 +13,7 @@ class ExperimentRunner:
         self.experiment_status_placeholder = st.sidebar.empty()
         self.countdown_placeholder = st.empty()
         self.timer_placeholder = st.sidebar.empty()
+        self.measurements_plot_placeholder = st.empty()
         self.start_time = None
 
     def initialize_experiment(self, experiment_number, iterations, parameters):
@@ -75,24 +77,60 @@ class ExperimentRunner:
         else:
             print("🌡️ Simulation mode: skipping temperature control.")
 
-    def collect_measurements(self):
+    def calculate_rsd(self, measurements):
+        return (np.std(measurements) / np.mean(measurements)) * 100 if np.mean(measurements) != 0 else float("inf")
+
+    def _read_measurement(self):
+        if self.simulation_mode == "full":
+            return np.random.uniform(0, 3)
+        elif self.simulation_mode == "hybrid":
+            return np.random.uniform(0, 3)
+        else:
+            dan_area = float(self.opc.read_value("OpusOPCSvr.HP-CZC3484P17-%3EDAN+-+Area"))
+            water_area = float(self.opc.read_value("OpusOPCSvr.HP-CZC3484P17-%3EWater+-+Area"))
+            corrected = dan_area + (0.0811122 * water_area)
+            print(f"Corrected measurement (DAN + 0.0811 * Water): {corrected:.2f}")
+            return corrected
+
+    def collect_measurements(self, rsd_threshold=1.0, max_measurements=15):
         measurements = []
-        for i in range(5):
-            if self.simulation_mode in ["full", "hybrid"]:
-                DAN_Area = np.random.uniform(0, 3)
-            else:
-                DAN_Area = self.opc.read_value("OpusOPCSvr.HP-CZC3484P17-%3EDAN+-+Area")
+        all_measurements = []
 
-            measurement = float(DAN_Area)
-            print(f"📏 Measurement {i + 1} = {measurement:.2f}")
-            measurements.append(measurement)
+        while len(measurements) < 5:
+            val = self._read_measurement()
+            print(f"📏 Measurement {len(measurements)+1} = {val:.2f}")
+            measurements.append(val)
+            all_measurements.append(val)
+            time.sleep(2)
 
-            with open(self.csv_filename, 'a', newline='') as csvfile:
-                csvwriter = csv.writer(csvfile)
-                csvwriter.writerow([measurement])
+        rsd = self.calculate_rsd(measurements)
+        print(f"\n📊 Initial RSD = {rsd:.2f}%")
 
-            if i < 4:
-                time.sleep(2)
+        while rsd >= rsd_threshold and len(measurements) < max_measurements:
+            print("⚠️ RSD too high. Taking another measurement...")
+            time.sleep(28)
+
+            new_val = self._read_measurement()
+            print(f"📏 New Measurement = {new_val:.2f}")
+            measurements = measurements[-4:] + [new_val]
+            all_measurements.append(new_val)
+
+            rsd = self.calculate_rsd(measurements)
+            print(f"📊 Updated RSD = {rsd:.2f}%")
+
+        # Log all measurements
+        with open(self.csv_filename, 'a', newline='') as csvfile:
+            csvwriter = csv.writer(csvfile)
+            for m in all_measurements:
+                csvwriter.writerow([m])
+
+        # Plot distribution of all measurements
+        fig, ax = plt.subplots()
+        ax.hist(all_measurements, bins=10, edgecolor='black')
+        ax.set_title("Distribution of Measurements")
+        ax.set_xlabel("Measurement Value")
+        ax.set_ylabel("Frequency")
+        self.measurements_plot_placeholder.pyplot(fig)
 
         return np.mean(measurements)
 
@@ -120,7 +158,6 @@ class ExperimentRunner:
         elapsed = time.time() - self.start_time if self.start_time else 0
         mins, secs = divmod(int(elapsed), 60)
 
-        # Update sidebar timer
         self.timer_placeholder.markdown(f"⏱️ **Total Time Running:** {mins:02d}:{secs:02d}")
 
         html = f"""
@@ -178,6 +215,7 @@ class ExperimentRunner:
 
         self.stop_pumps()
         return result
+
 
 
 
