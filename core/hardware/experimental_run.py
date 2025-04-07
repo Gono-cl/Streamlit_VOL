@@ -138,6 +138,29 @@ class ExperimentRunner:
         html += "</ul></div>"
         self.experiment_status_placeholder.markdown(html, unsafe_allow_html=True)
 
+    def simulate_experiment(self, parameters, objectives):
+        print("🎲 Simulating multi-objective experiment...")
+        simulated_result = {}
+
+        for obj in objectives:
+            if obj == "Yield":
+                # Simulate a high value when acid is close to 0.3 and temperature ~40
+                score = np.exp(-((parameters.get("acid", 0.5) - 0.3) ** 2) * 10) * \
+                        np.exp(-((parameters.get("temperature", 50) - 40) ** 2) / 100)
+            elif obj == "Conversion":
+                score = np.exp(-((parameters.get("residence_time", 1.0) - 3.0) ** 2)) + np.random.uniform(0, 0.1)
+            elif obj == "Transformation":
+                score = np.random.uniform(0.5, 1.0)
+            elif obj == "Productivity":
+                score = (parameters.get("pressure", 1.0) / 10) * np.random.uniform(0.7, 1.0)
+            else:
+                score = np.random.uniform(0, 1)  # fallback
+
+            simulated_result[obj] = round(score * 100, 2)  # scale to 0-100%
+
+        print(f"🧪 Simulated result: {simulated_result}")
+        return simulated_result
+
 
     def run_experiment(self, parameters, experiment_number=None, total_iterations=None):
         if experiment_number is not None and total_iterations is not None:

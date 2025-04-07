@@ -14,12 +14,18 @@ from core.hardware.experimental_run import ExperimentRunner
 st.title("🌈 Multi-Objective Optimization")
 
 # --- Sidebar Simulation Toggle and OPC URL ---
-simulation_mode = st.sidebar.checkbox("🧪 Simulation Mode", value=False)
+sim_mode_label = {
+    "off": "🧪 Real Hardware (Full)",
+    "hybrid": "🧪 Hybrid (Simulated Measurement)",
+    "full": "🧪 Full Simulation (No Hardware)"
+}
+simulation_mode = st.sidebar.selectbox("Experiment Mode", options=["off", "hybrid", "full"], format_func=lambda x: sim_mode_label[x])
+
 opc_url = st.sidebar.text_input("🔌 OPC Server URL", value="http://localhost:7000")
 
 # --- Simulation Mode Banner ---
-if simulation_mode:
-    st.warning("⚠️ Simulation Mode is ON — OPC hardware interaction is disabled. Random measurements will be used.")
+if simulation_mode != "off":
+    st.warning("⚠️ Simulation Mode is ON — OPC hardware interaction is partially or fully disabled.")
 
 # --- Experiment Metadata ---
 st.subheader("🧪 Experiment Metadata")
@@ -94,13 +100,20 @@ if st.session_state.get("optimization_running", False):
     results_chart = st.empty()
     progress_bar = st.progress(iteration / total_iterations)
 
-    if iteration < total_iterations:
+    while iteration < total_iterations:
         x = optimizer.ask()
         params = {name: val for (name, *_), val in zip(st.session_state.variables, x)}
-        if simulation_mode:
-            result = runner.simulate_experiment(params, objectives)
-        else:
-            result = runner.run_experiment(params)
+        try:
+            if simulation_mode == "full":
+                result = runner.simulate_experiment(params, objectives)
+            elif simulation_mode == "hybrid":
+                result = runner.simulate_experiment(params, objectives)  # uses hardware for pumps, etc., but fake measurements
+            else:
+                result = runner.run_experiment(params)
+
+        except AttributeError:
+            st.error("⚠️ `simulate_experiment` method is missing in ExperimentRunner.")
+            st.stop()
 
         y_multi = [-result[obj] for obj in objectives]
 
@@ -128,6 +141,33 @@ if st.session_state.get("optimization_running", False):
 
     if iteration == total_iterations:
         st.success("✅ Multi-objective Optimization Complete!")
+
+        # --- Pareto Plot (2D only for now) ---
+        if len(objectives) == 2:
+            obj_x, obj_y = objectives[0], objectives[1]
+            st.markdown(f"### 🎯 Pareto Front: {obj_x} vs {obj_y}")
+            pareto_df = df_results[[obj_x, obj_y]].copy()
+            # Sort by first objective descending
+            pareto_df = pareto_df.sort_values(by=obj_x, ascending=False)
+            # Find Pareto-optimal points
+            pareto_front = []
+            best_so_far = -np.inf
+            for _, row in pareto_df.iterrows():
+                if row[obj_y] > best_so_far:
+                    pareto_front.append(row)
+                    best_so_far = row[obj_y]
+            pareto_front_df = pd.DataFrame(pareto_front)
+            
+            chart = alt.Chart(df_results).mark_circle(size=60).encode(
+                x=alt.X(f"{obj_x}:Q", title=obj_x),
+                y=alt.Y(f"{obj_y}:Q", title=obj_y),
+                tooltip=list(df_results.columns)).interactive()
+            pareto_line = alt.Chart(pareto_front_df).mark_line(color="red").encode(
+                x=alt.X(f"{obj_x}:Q"),y=alt.Y(f"{obj_y}:Q"))
+            st.altair_chart(chart + pareto_line, use_container_width=True)
+        else:
+            st.info("ℹ️ Pareto plot available only for 2 objectives at a time.")
+
 
         timestamp = datetime.now().strftime("%Y-%m-%d %H-%M-%S")
         export_to_csv(df_results, f"{timestamp}_multiobjective_results.csv")
