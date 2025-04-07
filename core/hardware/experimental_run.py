@@ -4,6 +4,8 @@ import csv
 from core.hardware.opc_communication import OPCClient
 import streamlit as st
 import matplotlib.pyplot as plt
+import os
+from datetime import datetime
 
 class ExperimentRunner:
     def __init__(self, opc_client: OPCClient, csv_filename: str, simulation_mode: str = "off"):
@@ -15,6 +17,7 @@ class ExperimentRunner:
         self.timer_placeholder = st.sidebar.empty()
         self.measurements_plot_placeholder = st.empty()
         self.start_time = None
+        self.full_measurement_log = []  # Store all measurements for the full experiment
 
     def initialize_experiment(self, experiment_number, iterations, parameters):
         self.start_time = time.time()
@@ -82,9 +85,9 @@ class ExperimentRunner:
 
     def _read_measurement(self):
         if self.simulation_mode == "full":
-            return np.random.uniform(0, 3)
+            return np.random.uniform(70, 100)
         elif self.simulation_mode == "hybrid":
-            return np.random.uniform(0, 3)
+            return np.random.uniform(70, 100)
         else:
             dan_area = float(self.opc.read_value("OpusOPCSvr.HP-CZC3484P17-%3EDAN+-+Area"))
             water_area = float(self.opc.read_value("OpusOPCSvr.HP-CZC3484P17-%3EWater+-+Area"))
@@ -92,7 +95,7 @@ class ExperimentRunner:
             print(f"Corrected measurement (DAN + 0.0811 * Water): {corrected:.2f}")
             return corrected
 
-    def collect_measurements(self, rsd_threshold=1.0, max_measurements=15):
+    def collect_measurements(self, rsd_threshold=10, max_measurements=15, iteration=0, parameters=None):
         measurements = []
         all_measurements = []
 
@@ -108,7 +111,7 @@ class ExperimentRunner:
 
         while rsd >= rsd_threshold and len(measurements) < max_measurements:
             print("⚠️ RSD too high. Taking another measurement...")
-            time.sleep(28)
+            time.sleep(2)
 
             new_val = self._read_measurement()
             print(f"📏 New Measurement = {new_val:.2f}")
@@ -118,19 +121,15 @@ class ExperimentRunner:
             rsd = self.calculate_rsd(measurements)
             print(f"📊 Updated RSD = {rsd:.2f}%")
 
-        # Log all measurements
-        with open(self.csv_filename, 'a', newline='') as csvfile:
-            csvwriter = csv.writer(csvfile)
-            for m in all_measurements:
-                csvwriter.writerow([m])
-
-        # Plot distribution of all measurements
-        fig, ax = plt.subplots()
-        ax.hist(all_measurements, bins=10, edgecolor='black')
-        ax.set_title("Distribution of Measurements")
-        ax.set_xlabel("Measurement Value")
-        ax.set_ylabel("Frequency")
-        self.measurements_plot_placeholder.pyplot(fig)
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        for idx, val in enumerate(all_measurements, 1):
+            self.full_measurement_log.append({
+                "Iteration": iteration,
+                "Timestamp": timestamp,
+                **parameters,
+                "Measurement #": idx,
+                "Value": val
+            })
 
         return np.mean(measurements)
 
@@ -174,22 +173,33 @@ class ExperimentRunner:
     def simulate_experiment(self, parameters, objectives=None):
         if objectives is None:
             objectives = ["Yield"]
+
+        print("🎲 Simulating multi-objective experiment...")
         simulated_result = {}
 
         for obj in objectives:
             if obj == "Yield":
-                score = np.exp(-((parameters.get("acid", 0.5) - 0.3) ** 2) * 10) * \
-                        np.exp(-((parameters.get("temperature", 50) - 40) ** 2) / 100)
+                if self.simulation_mode in ["off", "hybrid"]:
+                    yield_value = self.collect_measurements(parameters=parameters)
+                else:
+                    score = np.exp(-((parameters.get("acid", 0.5) - 0.3) ** 2) * 10) * \
+                            np.exp(-((parameters.get("temperature", 50) - 40) ** 2) / 100)
+                    yield_value = round(score * 100, 2)
+                simulated_result["Yield"] = yield_value
+
             elif obj == "Conversion":
                 score = np.exp(-((parameters.get("residence_time", 1.0) - 3.0) ** 2)) + np.random.uniform(0, 0.1)
+                simulated_result["Conversion"] = round(score * 100, 2)
+
             elif obj == "Transformation":
-                score = np.random.uniform(0.5, 1.0)
+                simulated_result["Transformation"] = round(np.random.uniform(0.5, 1.0) * 100, 2)
+
             elif obj == "Productivity":
                 score = (parameters.get("pressure", 1.0) / 10) * np.random.uniform(0.7, 1.0)
-            else:
-                score = np.random.uniform(0, 1)
+                simulated_result["Productivity"] = round(score * 100, 2)
 
-            simulated_result[obj] = round(score * 100, 2)
+            else:
+                simulated_result[obj] = round(np.random.uniform(0, 1) * 100, 2)
 
         print(f"🧪 Simulated result: {simulated_result}")
         return simulated_result
@@ -207,14 +217,22 @@ class ExperimentRunner:
         else:
             print("🔁 Full simulation mode enabled: skipping temperature and pump setup.")
 
-        if self.simulation_mode in ["full", "hybrid"]:
-            result = self.simulate_experiment(parameters, objectives)
-        else:
-            mean_measurement = self.collect_measurements()
-            result = {"Yield": mean_measurement}
-
+        result = self.simulate_experiment(parameters, objectives)
         self.stop_pumps()
         return result
+
+    def save_full_measurements_to_csv(self, experiment_name):
+        os.makedirs("raw_measurements", exist_ok=True)
+        filename = f"raw_measurements/{experiment_name.replace(' ', '_')}_measurements.csv"
+        keys = self.full_measurement_log[0].keys() if self.full_measurement_log else []
+        with open(filename, 'w', newline='') as f:
+            writer = csv.DictWriter(f, fieldnames=keys)
+            writer.writeheader()
+            writer.writerows(self.full_measurement_log)
+        print(f"📁 Full measurement log saved to {filename}")
+        return filename
+
+
 
 
 

@@ -144,9 +144,8 @@ if st.session_state.get("optimization_running", False):
             obj_x, obj_y = objectives[0], objectives[1]
             st.markdown(f"### 🎯 Pareto Front: {obj_x} vs {obj_y}")
             pareto_df = df_results[[obj_x, obj_y]].copy()
-            # Sort by first objective descending
             pareto_df = pareto_df.sort_values(by=obj_x, ascending=False)
-            # Find Pareto-optimal points
+
             pareto_front = []
             best_so_far = -np.inf
             for _, row in pareto_df.iterrows():
@@ -154,21 +153,29 @@ if st.session_state.get("optimization_running", False):
                     pareto_front.append(row)
                     best_so_far = row[obj_y]
             pareto_front_df = pd.DataFrame(pareto_front)
-            
+
+            x_min, x_max = df_results[obj_x].min(), df_results[obj_x].max()
+            y_min, y_max = df_results[obj_y].min(), df_results[obj_y].max()
+            x_buffer = (x_max - x_min) * 0.05 if (x_max - x_min) > 0 else 1
+            y_buffer = (y_max - y_min) * 0.05 if (y_max - y_min) > 0 else 1
+
             chart = alt.Chart(df_results).mark_circle(size=60).encode(
-                x=alt.X(f"{obj_x}:Q", title=obj_x),
-                y=alt.Y(f"{obj_y}:Q", title=obj_y),
+                x=alt.X(f"{obj_x}:Q", title=obj_x, scale=alt.Scale(domain=[x_min - x_buffer, x_max + x_buffer])),
+                y=alt.Y(f"{obj_y}:Q", title=obj_y, scale=alt.Scale(domain=[y_min - y_buffer, y_max + y_buffer])),
                 tooltip=list(df_results.columns)).interactive()
             pareto_line = alt.Chart(pareto_front_df).mark_line(color="red").encode(
-                x=alt.X(f"{obj_x}:Q"),y=alt.Y(f"{obj_y}:Q"))
+                x=alt.X(f"{obj_x}:Q"), y=alt.Y(f"{obj_y}:Q"))
+
             st.altair_chart(chart + pareto_line, use_container_width=True)
         else:
             st.info("ℹ️ Pareto plot available only for 2 objectives at a time.")
 
-
         timestamp = datetime.now().strftime("%Y-%m-%d %H-%M-%S")
         export_to_csv(df_results, f"{timestamp}_multiobjective_results.csv")
         export_to_excel(df_results, f"{timestamp}_multiobjective_results.xlsx")
+
+        raw_csv_path = runner.save_full_measurements_to_csv(experiment_name)
+
 
         optimization_settings = {
             "initial_experiments": initial_experiments,
@@ -176,7 +183,8 @@ if st.session_state.get("optimization_running", False):
             "objectives": objectives,
             "method": "ProcessOptimizer",
             "simulation_mode": simulation_mode,
-            "opc_url": opc_url
+            "opc_url": opc_url,
+            "raw_measurement_file": raw_csv_path
         }
 
         db_handler.save_experiment(
@@ -184,9 +192,10 @@ if st.session_state.get("optimization_running", False):
             notes=experiment_notes,
             variables=st.session_state.variables,
             df_results=df_results,
-            best_result={},  # can be filled with Pareto-optimal subset later
+            best_result={},
             settings=optimization_settings
         )
 
         st.session_state.optimization_running = False
+
 
