@@ -1,14 +1,12 @@
 # Example objective functions for VOL simulation mode
 
-# core/objectives.py
-
-# Example objective functions for VOL simulation mode
-
 def normalized_area(raw_area, flow_aq, flow_org):
     """
     Normalize the FT-IR area based on flow dilution
     """
-    return raw_area * (1 + flow_aq / flow_org)
+    norm_area = raw_area * (flow_org/flow_aq)
+    
+    return norm_area
 
 def throughput(norm_area, residence_time):
     """
@@ -28,12 +26,11 @@ def solvent_penalty(norm_area, flow_org, residence_time, weight=10):
     """
     return norm_area - weight * used_organic(flow_org, residence_time)
 
-def extraction_efficiency(norm_area, flow_org, residence_time):
+def extraction_efficiency(norm_area, flow_org):
     """
-    Signal per mL of DCM used (green metric)
+    Signal related to the use of organic
     """
-    org_vol = used_organic(flow_org, residence_time)
-    return norm_area / org_vol if org_vol != 0 else 0
+    return norm_area / flow_org
 
 def yield_proxy(raw_area):
     """
@@ -53,7 +50,7 @@ def simulate_objectives(raw_area, flow_aq, flow_org, residence_time, selected_ob
         "Throughput": throughput(norm_area, residence_time),
         "Used Organic": used_organic(flow_org, residence_time),
         "Solvent Penalty": solvent_penalty(norm_area, flow_org, residence_time),
-        "Extraction Efficiency": extraction_efficiency(norm_area, flow_org, residence_time)
+        "Extraction Efficiency": extraction_efficiency(norm_area, flow_org)
     }
 
     result = {}

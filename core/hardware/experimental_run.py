@@ -54,6 +54,29 @@ class ExperimentRunner:
         if self.simulation_mode in ["off", "hybrid"]:
             self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3APC_OUT", round(pressure, 2))
 
+
+    def set_pump_flows_from_ratio_and_time(self, ratio_org_aq, residence_time, reactor_volume=1.4):
+        """
+        Control pumps based on ratio_org_aq and residence_time.
+        This allows both values to be true variables.
+        """
+        # Total flow in mL/min
+        total_flow = reactor_volume / (residence_time / 60)
+
+        # Calculate flow components
+        flow_aq = total_flow / (1 + ratio_org_aq)
+        flow_org = total_flow - flow_aq
+        flow_react1 = flow_aq / 2
+        flow_react2 = flow_aq / 2
+
+        if self.simulation_mode in ["off", "hybrid"]:
+            self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3APUMP_3", round(flow_org, 2))     # Organic
+            self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3APUMP2.W1", round(flow_react2, 2))  # Reactant 2
+            self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3APUMP1.W1", round(flow_react1, 2))  # Reactant 1
+        else:
+            print("🔁 Simulation mode: skipping pump control.")
+            print(f"→ Organic: {flow_org:.2f} mL/min | React1: {flow_react1:.2f} | React2: {flow_react2:.2f}")
+
     def monitor_temperature(self, target_temp):
         print("INSIDE THE METHOD2")
         
@@ -176,17 +199,30 @@ class ExperimentRunner:
         html += "</ul></div>"
         self.experiment_status_placeholder.markdown(html, unsafe_allow_html=True)
 
+    def synthetic_raw_area(self, res_time, ratio):
+        """
+        Generate synthetic raw area based on residence time and ratio_org_aq.
+        Shorter residence time and lower ratio yield higher area.
+        Output constrained between 3.0 and 4.0.
+        """
+        base = 4.0 - 0.015 * res_time + 0.3 * (1.5 - ratio) 
+        noise = np.random.normal(0, 0.05)
+        return float(np.clip(base + noise, 3.0, 4.0))
+
     def simulate_experiment(self, parameters, objectives=None, directions=None):
         if objectives is None:
             objectives = ["Normalized Area", "Throughput"]
 
         print("🎲 Simulating experiment...")
-
-        raw_area = np.random.uniform(3.0, 4.0)  # Base signal for simulation mode
+        
         reactor_volume = 1.4  # mL
         # Extract required parameters
         res_time = parameters.get("residence_time", 20)
         ratio = parameters.get("ratio_org_aq", 1.0)
+        if self.simulation_mode in ["off"]: 
+            raw_area = self.collect_measurements(self, parameters)
+        else:
+            raw_area = self.synthetic_raw_area(res_time, ratio)
 
         # Calculate flow values
         total_flow = reactor_volume / (res_time / 60)
@@ -206,7 +242,7 @@ class ExperimentRunner:
         if self.simulation_mode in ["off", "hybrid"]:
             self.monitor_temperature(parameters["temperature"])
             self.set_pressure(parameters["pressure"])
-            self.set_pump_flows(parameters["acid"], parameters["residence_time"])
+            self.set_pump_flows_from_ratio_and_time(parameters["ratio_org_aq"], parameters["residence_time"])
             self.countdown(int(parameters["residence_time"]))
         else:
             print("🔁 Full simulation mode enabled: skipping temperature and pump setup.")
