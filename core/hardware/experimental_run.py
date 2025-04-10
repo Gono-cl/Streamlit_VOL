@@ -52,7 +52,10 @@ class ExperimentRunner:
             self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3APC_OUT", round(pressure, 2))
 
     def monitor_temperature(self, target_temp):
+        print("INSIDE THE METHOD2")
+        
         if self.simulation_mode in ["off", "hybrid"]:
+            print("inside the if statement")
             self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3ACHILLER_01.ON", 1)
             self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3ACHILLER_01.W1", target_temp)
 
@@ -195,8 +198,8 @@ class ExperimentRunner:
                 simulated_result["Transformation"] = round(np.random.uniform(0.5, 1.0) * 100, 2)
 
             elif obj == "Productivity":
-                score = (parameters.get("pressure", 1.0) / 10) * np.random.uniform(0.7, 1.0)
-                simulated_result["Productivity"] = round(score * 100, 2)
+                score = (yield_value/(parameters.get("residence_time", 1.0)/60)) * np.random.uniform(0.7, 1.0)
+                simulated_result["Productivity"] = round(score, 2)
 
             else:
                 simulated_result[obj] = round(np.random.uniform(0, 1) * 100, 2)

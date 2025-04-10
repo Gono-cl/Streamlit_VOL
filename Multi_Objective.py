@@ -74,7 +74,7 @@ col5, col6 = st.columns(2)
 initial_experiments = col5.number_input("Initialization Experiments", min_value=1, max_value=100, value=5)
 total_iterations = col6.number_input("Total Iterations", min_value=1, max_value=100, value=20)
 
-objectives = st.multiselect("🎯 Select Objectives to Optimize", ["Yield", "Conversion", "Transformation", "Productivity"])
+objectives = st.multiselect("🎯 Select Objectives to Optimize", ["Yield", "Conversion", "Transformation", "Productivity", "Throughput", "Solvent_Used"])
 
 if st.button("Start Optimization"):
     if len(objectives) < 2:
