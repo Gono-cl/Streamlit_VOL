@@ -78,7 +78,6 @@ class ExperimentRunner:
             print(f"→ Organic: {flow_org:.2f} mL/min | React1: {flow_react1:.2f} | React2: {flow_react2:.2f}")
 
     def monitor_temperature(self, target_temp):
-        print("INSIDE THE METHOD2")
         
         if self.simulation_mode in ["off", "hybrid"]:
             print("inside the if statement")
@@ -112,11 +111,11 @@ class ExperimentRunner:
     def calculate_rsd(self, measurements):
         return (np.std(measurements) / np.mean(measurements)) * 100 if np.mean(measurements) != 0 else float("inf")
 
-    def _read_measurement(self):
+    def _read_measurement(self, res_time=None, ratio=None):
         if self.simulation_mode == "full":
             return np.random.uniform(70, 100)
         elif self.simulation_mode == "hybrid":
-            return np.random.uniform(70, 100)
+            return self.synthetic_raw_area(res_time, ratio)
         else:
             dan_area = float(self.opc.read_value("OpusOPCSvr.HP-CZC3484P17-%3EDAN+-+Area"))
             water_area = float(self.opc.read_value("OpusOPCSvr.HP-CZC3484P17-%3EWater+-+Area"))
@@ -128,8 +127,11 @@ class ExperimentRunner:
         measurements = []
         all_measurements = []
 
+        res_time = parameters.get("residence_time", 20)
+        ratio = parameters.get("ratio_org_aq", 1.0)
+
         while len(measurements) < 5:
-            val = self._read_measurement()
+            val = self._read_measurement(res_time=res_time, ratio=ratio)
             print(f"📏 Measurement {len(measurements)+1} = {val:.2f}")
             measurements.append(val)
             all_measurements.append(val)
@@ -219,8 +221,8 @@ class ExperimentRunner:
         # Extract required parameters
         res_time = parameters.get("residence_time", 20)
         ratio = parameters.get("ratio_org_aq", 1.0)
-        if self.simulation_mode in ["off"]: 
-            raw_area = self.collect_measurements(self, parameters)
+        if self.simulation_mode in ["off", "hybrid"]: 
+            raw_area = self.collect_measurements(parameters=parameters)
         else:
             raw_area = self.synthetic_raw_area(res_time, ratio)
 
