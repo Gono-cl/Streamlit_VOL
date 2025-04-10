@@ -73,8 +73,26 @@ st.subheader("⚙️ Optimization Settings")
 col5, col6 = st.columns(2)
 initial_experiments = col5.number_input("Initialization Experiments", min_value=1, max_value=100, value=5)
 total_iterations = col6.number_input("Total Iterations", min_value=1, max_value=100, value=20)
+OBJECTIVE_OPTIONS = [
+    "Yield",
+    "Normalized Area",
+    "Throughput",
+    "Used Organic",
+    "Solvent Penalty",
+    "Extraction Efficiency"
+]
+objectives = st.multiselect("🎯 Select Objectives to Optimize", OBJECTIVE_OPTIONS)
 
-objectives = st.multiselect("🎯 Select Objectives to Optimize", ["Yield", "Conversion", "Transformation", "Productivity", "Throughput", "Solvent_Used"])
+st.markdown("### Select Maximize or Minimize Objective")
+
+objective_directions = {}
+for obj in objectives:
+    direction = st.selectbox(
+        f"Direction for **{obj}**:",
+        ["maximize", "minimize"],
+        key=f"{obj}_direction"
+    )
+    objective_directions[obj] = direction
 
 if st.button("Start Optimization"):
     if len(objectives) < 2:
@@ -111,7 +129,7 @@ if st.session_state.get("optimization_running", False):
     while iteration < total_iterations:
         x = optimizer.ask()
         params = {name: val for (name, *_), val in zip(st.session_state.variables, x)}
-        result = runner.run_experiment(params, experiment_number=iteration + 1, total_iterations=total_iterations, objectives=objectives)
+        result = runner.run_experiment(params, experiment_number=iteration + 1, total_iterations=total_iterations, objectives=objectives, directions=objective_directions)
         y_multi = [-result[obj] for obj in objectives]
 
         if not isinstance(y_multi, list) or len(y_multi) != len(objectives):
@@ -139,29 +157,54 @@ if st.session_state.get("optimization_running", False):
     if iteration == total_iterations:
         st.success("✅ Multi-objective Optimization Complete!")
 
+        df_results_plot = df_results.copy()
+        for obj in objectives:
+            if objective_directions.get(obj) == "minimize":
+                df_results_plot[obj] = -df_results_plot[obj]
+        # 2. Flip values for Pareto front detection (maximize everything)
+        df_pareto_calc = df_results.copy()
+        for obj in objectives:
+            if objective_directions.get(obj) == "minimize":
+                df_pareto_calc[obj] = -df_pareto_calc[obj]
+
         # --- Pareto Plot (2D only for now) ---
         if len(objectives) == 2:
             obj_x, obj_y = objectives[0], objectives[1]
             st.markdown(f"### 🎯 Pareto Front: {obj_x} vs {obj_y}")
-            pareto_df = df_results[[obj_x, obj_y]].copy()
+
+            
+            pareto_df = df_pareto_calc[[obj_x, obj_y]].copy()
             pareto_df = pareto_df.sort_values(by=obj_x, ascending=False)
 
-            pareto_front = []
+            pareto_front_indices = []
             best_so_far = -np.inf
-            for _, row in pareto_df.iterrows():
+            for idx, row in pareto_df.iterrows():
                 if row[obj_y] > best_so_far:
-                    pareto_front.append(row)
+                    pareto_front_indices.append(idx)
                     best_so_far = row[obj_y]
-            pareto_front_df = pd.DataFrame(pareto_front)
+        
+            pareto_front_df = df_results_plot.loc[pareto_front_indices]
 
-            x_min, x_max = df_results[obj_x].min(), df_results[obj_x].max()
-            y_min, y_max = df_results[obj_y].min(), df_results[obj_y].max()
-            x_buffer = (x_max - x_min) * 0.05 if (x_max - x_min) > 0 else 1
-            y_buffer = (y_max - y_min) * 0.05 if (y_max - y_min) > 0 else 1
+            x_vals = df_results_plot[obj_x]
+            y_vals = df_results_plot[obj_y]
+            x_range = x_vals.max() - x_vals.min()
+            y_range = y_vals.max() - y_vals.min()
+            x_buffer = x_range * 0.05 if x_range > 0 else 1
+            y_buffer = y_range * 0.05 if y_range > 0 else 1
+            x_min = x_vals.min() - x_buffer
+            x_max = x_vals.max() + x_buffer
+            y_min = y_vals.min() - y_buffer
+            y_max = y_vals.max() + y_buffer
 
-            chart = alt.Chart(df_results).mark_circle(size=60).encode(
-                x=alt.X(f"{obj_x}:Q", title=obj_x, scale=alt.Scale(domain=[x_min - x_buffer, x_max + x_buffer])),
-                y=alt.Y(f"{obj_y}:Q", title=obj_y, scale=alt.Scale(domain=[y_min - y_buffer, y_max + y_buffer])),
+            if df_results_plot.empty:
+                st.warning("⚠️ No data to plot. Try running some experiments first.")
+            elif df_results_plot[[obj_x, obj_y]].dropna().empty:
+                st.warning("⚠️ No valid values for selected objectives. Check if the objectives were computed correctly.")
+
+
+            chart = alt.Chart(df_results_plot).mark_circle(size=60).encode(
+                x=alt.X(f"{obj_x}:Q", title=obj_x, scale=alt.Scale(domain=[x_min, x_max])),
+                y=alt.Y(f"{obj_y}:Q", title=obj_y, scale=alt.Scale(domain=[y_min, y_max])),
                 tooltip=list(df_results.columns)).interactive()
             pareto_line = alt.Chart(pareto_front_df).mark_line(color="red").encode(
                 x=alt.X(f"{obj_x}:Q"), y=alt.Y(f"{obj_y}:Q"))

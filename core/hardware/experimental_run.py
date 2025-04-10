@@ -2,10 +2,13 @@ import time
 import numpy as np
 import csv
 from core.hardware.opc_communication import OPCClient
+from core.objectives import simulate_objectives
 import streamlit as st
 import matplotlib.pyplot as plt
 import os
 from datetime import datetime
+import numpy as np
+
 
 class ExperimentRunner:
     def __init__(self, opc_client: OPCClient, csv_filename: str, simulation_mode: str = "off"):
@@ -173,41 +176,29 @@ class ExperimentRunner:
         html += "</ul></div>"
         self.experiment_status_placeholder.markdown(html, unsafe_allow_html=True)
 
-    def simulate_experiment(self, parameters, objectives=None):
+    def simulate_experiment(self, parameters, objectives=None, directions=None):
         if objectives is None:
-            objectives = ["Yield"]
+            objectives = ["Normalized Area", "Throughput"]
 
-        print("🎲 Simulating multi-objective experiment...")
-        simulated_result = {}
+        print("🎲 Simulating experiment...")
 
-        for obj in objectives:
-            if obj == "Yield":
-                if self.simulation_mode in ["off", "hybrid"]:
-                    yield_value = self.collect_measurements(parameters=parameters)
-                else:
-                    score = np.exp(-((parameters.get("acid", 0.5) - 0.3) ** 2) * 10) * \
-                            np.exp(-((parameters.get("temperature", 50) - 40) ** 2) / 100)
-                    yield_value = round(score * 100, 2)
-                simulated_result["Yield"] = yield_value
+        raw_area = np.random.uniform(3.0, 4.0)  # Base signal for simulation mode
+        reactor_volume = 1.4  # mL
+        # Extract required parameters
+        res_time = parameters.get("residence_time", 20)
+        ratio = parameters.get("ratio_org_aq", 1.0)
 
-            elif obj == "Conversion":
-                score = np.exp(-((parameters.get("residence_time", 1.0) - 3.0) ** 2)) + np.random.uniform(0, 0.1)
-                simulated_result["Conversion"] = round(score * 100, 2)
+        # Calculate flow values
+        total_flow = reactor_volume / (res_time / 60)
+        flow_aq = total_flow / (1 + ratio)
+        flow_org = total_flow - flow_aq
 
-            elif obj == "Transformation":
-                simulated_result["Transformation"] = round(np.random.uniform(0.5, 1.0) * 100, 2)
-
-            elif obj == "Productivity":
-                score = (yield_value/(parameters.get("residence_time", 1.0)/60)) * np.random.uniform(0.7, 1.0)
-                simulated_result["Productivity"] = round(score, 2)
-
-            else:
-                simulated_result[obj] = round(np.random.uniform(0, 1) * 100, 2)
+        simulated_result = simulate_objectives(raw_area, flow_aq, flow_org, res_time, selected_objectives=objectives, directions=directions)
 
         print(f"🧪 Simulated result: {simulated_result}")
         return simulated_result
 
-    def run_experiment(self, parameters, experiment_number=None, total_iterations=None, objectives=None):
+    def run_experiment(self, parameters, experiment_number=None, total_iterations=None, objectives=None, directions=None):
         if experiment_number is not None and total_iterations is not None:
             print(f"🔬 Running Experiment {experiment_number} of {total_iterations}")
             self.display_experiment_info(experiment_number, total_iterations, parameters)
