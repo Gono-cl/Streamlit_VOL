@@ -32,6 +32,50 @@ class ExperimentRunner:
                 return
         self.init_csv()
 
+    def check_water_and_clean_probe(self, threshold=3.0):
+        if self.simulation_mode != "off":
+            return  print("Cleaning is only run in real hardware mode")
+            
+
+        try:
+            water_area = self.opc.read_value("OpusOPCSvr.HP-CZC3484P17-%3EWater+-+Area")
+            print(f"💧 Water Area = {water_area:.2f}")
+
+            if water_area > threshold:
+                print("🧼 Cleaning the optical probe due to high water content...")
+                
+                self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3APUMP_3", 0)
+                self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3AV_01_CLOSE", 1)
+                self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3AV_01_OPEN", 1)
+                self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3AV_02_CLOSE", 1)
+                self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3AV_02_OPEN", 1)
+
+                # Start Cleaning
+                self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3APUMP_6.W1", 1)
+                print("🧪 Cleaning with isopropanol...")
+
+                # Cleaning time
+                time.sleep(30)
+
+                # Stop Cleaning 
+                self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3APUMP_6.W1", 0)
+
+                # Switch back valves
+                self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3AV_01_CLOSE", 0)
+                self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3AV_01_OPEN", 0)
+
+                self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3APUMP_3", 1)
+                print("🚿 Flushing DCM to remove isopropanol...")
+                time.sleep(30)
+
+                self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3AV_02_CLOSE", 0)
+                self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3AV_02_OPEN", 0)
+
+                print("✅ Cleaning complete.")
+
+        except Exception as e:
+            print(f"❌ Failed to check water area or perform cleaning: {e}")
+
     def calculate_pump_flows(self, acid, total_acid):
         yes_acid = (acid / 0.6) * total_acid
         no_acid = total_acid - yes_acid
@@ -240,8 +284,9 @@ class ExperimentRunner:
         if experiment_number is not None and total_iterations is not None:
             print(f"🔬 Running Experiment {experiment_number} of {total_iterations}")
             self.display_experiment_info(experiment_number, total_iterations, parameters)
-
+            
         if self.simulation_mode in ["off", "hybrid"]:
+            self.check_water_and_clean_probe()
             self.monitor_temperature(parameters["temperature"])
             self.set_pressure(parameters["pressure"])
             self.set_pump_flows_from_ratio_and_time(parameters["ratio_org_aq"], parameters["residence_time"])
