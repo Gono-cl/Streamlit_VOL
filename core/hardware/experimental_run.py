@@ -127,6 +127,7 @@ class ExperimentRunner:
             print("inside the if statement")
             self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3ACHILLER_01.ON", 1)
             self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3ACHILLER_01.W1", target_temp)
+            self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3APUMP_3", round(flow_org, 0.2)) # Organic
 
             print(f"🧊 Waiting for temperature to reach {target_temp}°C...")
 
@@ -155,7 +156,7 @@ class ExperimentRunner:
     def calculate_rsd(self, measurements):
         return (np.std(measurements) / np.mean(measurements)) * 100 if np.mean(measurements) != 0 else float("inf")
 
-    def _read_measurement(self, res_time=None, ratio=None):
+    def _read_measurement(self, res_time=None, ratio=None, parameters=None):
         if self.simulation_mode == "full":
             return np.random.uniform(70, 100)
         elif self.simulation_mode == "hybrid":
@@ -164,10 +165,13 @@ class ExperimentRunner:
             dan_area = float(self.opc.read_value("OpusOPCSvr.HP-CZC3484P17-%3EDAN+-+Area"))
             water_area = float(self.opc.read_value("OpusOPCSvr.HP-CZC3484P17-%3EWater+-+Area"))
             corrected = dan_area + (0.0811122 * water_area)
+            ratio = parameters.get("ratio_org_aq", 1.0)
+            normalized = corrected * ratio
             print(f"Corrected measurement (DAN + 0.0811 * Water): {corrected:.2f}")
+            print(f"Normalized measurement:{normalized}")
             return corrected
 
-    def collect_measurements(self, rsd_threshold=10, max_measurements=15, iteration=0, parameters=None):
+    def collect_measurements(self, rsd_threshold=1, max_measurements=15, iteration=0, parameters=None):
         measurements = []
         all_measurements = []
 
@@ -179,14 +183,14 @@ class ExperimentRunner:
             print(f"📏 Measurement {len(measurements)+1} = {val:.2f}")
             measurements.append(val)
             all_measurements.append(val)
-            time.sleep(2)
+            time.sleep(28)
 
         rsd = self.calculate_rsd(measurements)
         print(f"\n📊 Initial RSD = {rsd:.2f}%")
 
         while rsd >= rsd_threshold and len(measurements) < max_measurements:
             print("⚠️ RSD too high. Taking another measurement...")
-            time.sleep(2)
+            time.sleep(28)
 
             new_val = self._read_measurement()
             print(f"📏 New Measurement = {new_val:.2f}")
