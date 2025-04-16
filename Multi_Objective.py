@@ -146,6 +146,7 @@ if st.session_state.get("optimization_running", False):
         }
         experiment_data.append(row)
         df_results = pd.DataFrame(experiment_data)
+        raw_csv_path = runner.save_full_measurements_to_csv(experiment_name)
 
         results_chart.line_chart(df_results[["Experiment #"] + objectives].set_index("Experiment #"))
         iteration += 1
@@ -217,7 +218,7 @@ if st.session_state.get("optimization_running", False):
         export_to_csv(df_results, f"{timestamp}_multiobjective_results.csv")
         export_to_excel(df_results, f"{timestamp}_multiobjective_results.xlsx")
 
-        raw_csv_path = runner.save_full_measurements_to_csv(experiment_name)
+        
 
 
         optimization_settings = {

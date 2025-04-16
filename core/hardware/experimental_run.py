@@ -127,7 +127,7 @@ class ExperimentRunner:
             print("inside the if statement")
             self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3ACHILLER_01.ON", 1)
             self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3ACHILLER_01.W1", target_temp)
-            self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3APUMP_3", round(flow_org, 0.2)) # Organic
+            self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3APUMP_3", 0.2) # Organic
 
             print(f"🧊 Waiting for temperature to reach {target_temp}°C...")
 
@@ -156,7 +156,7 @@ class ExperimentRunner:
     def calculate_rsd(self, measurements):
         return (np.std(measurements) / np.mean(measurements)) * 100 if np.mean(measurements) != 0 else float("inf")
 
-    def _read_measurement(self, res_time=None, ratio=None, parameters=None):
+    def _read_measurement(self, res_time=None, ratio=None ):
         if self.simulation_mode == "full":
             return np.random.uniform(70, 100)
         elif self.simulation_mode == "hybrid":
@@ -165,10 +165,9 @@ class ExperimentRunner:
             dan_area = float(self.opc.read_value("OpusOPCSvr.HP-CZC3484P17-%3EDAN+-+Area"))
             water_area = float(self.opc.read_value("OpusOPCSvr.HP-CZC3484P17-%3EWater+-+Area"))
             corrected = dan_area + (0.0811122 * water_area)
-            ratio = parameters.get("ratio_org_aq", 1.0)
             normalized = corrected * ratio
             print(f"Corrected measurement (DAN + 0.0811 * Water): {corrected:.2f}")
-            print(f"Normalized measurement:{normalized}")
+            print(f"Normalized measurement:{normalized:.2f}")
             return corrected
 
     def collect_measurements(self, rsd_threshold=1, max_measurements=15, iteration=0, parameters=None):
@@ -192,7 +191,7 @@ class ExperimentRunner:
             print("⚠️ RSD too high. Taking another measurement...")
             time.sleep(28)
 
-            new_val = self._read_measurement()
+            new_val = self._read_measurement(res_time=res_time, ratio=ratio)
             print(f"📏 New Measurement = {new_val:.2f}")
             measurements = measurements[-4:] + [new_val]
             all_measurements.append(new_val)
@@ -292,7 +291,7 @@ class ExperimentRunner:
         if self.simulation_mode in ["off", "hybrid"]:
             self.check_water_and_clean_probe()
             self.monitor_temperature(parameters["temperature"])
-            self.set_pressure(parameters["pressure"])
+            #self.set_pressure(parameters["pressure"])
             self.set_pump_flows_from_ratio_and_time(parameters["ratio_org_aq"], parameters["residence_time"])
             self.countdown(int(parameters["residence_time"]))
         else:
