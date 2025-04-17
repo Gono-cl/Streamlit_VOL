@@ -44,7 +44,7 @@ class ExperimentRunner:
             if water_area > threshold:
                 print("🧼 Cleaning the optical probe due to high water content...")
                 
-                self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3APUMP_3", 0)
+                self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3APUMP_4", 0)
                 self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3AV_01_CLOSE", 1)
                 self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3AV_01_OPEN", 1)
                 self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3AV_02_CLOSE", 1)
@@ -64,7 +64,7 @@ class ExperimentRunner:
                 self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3AV_01_CLOSE", 0)
                 self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3AV_01_OPEN", 0)
 
-                self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3APUMP_3", 1)
+                self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3APUMP_4", 1)
                 print("🚿 Flushing DCM to remove isopropanol...")
                 time.sleep(30)
 
@@ -88,7 +88,7 @@ class ExperimentRunner:
         yes_acid, no_acid = self.calculate_pump_flows(acid, total_flow)
 
         if self.simulation_mode in ["off", "hybrid"]:
-            self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3APUMP_3", Vorg)
+            self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3APUMP_4", Vorg)
             self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3APUMP2.W1", round(no_acid, 2))
             self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3APUMP1.W1", round(yes_acid, 2))
         else:
@@ -114,7 +114,7 @@ class ExperimentRunner:
         flow_react2 = flow_aq / 2
 
         if self.simulation_mode in ["off", "hybrid"]:
-            self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3APUMP_3", round(flow_org, 2))     # Organic
+            self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3APUMP_4", round(flow_org, 2))     # Organic
             self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3APUMP2.W1", round(flow_react2, 2))  # Reactant 2
             self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3APUMP1.W1", round(flow_react1, 2))  # Reactant 1
         else:
@@ -127,7 +127,7 @@ class ExperimentRunner:
             print("inside the if statement")
             self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3ACHILLER_01.ON", 1)
             self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3ACHILLER_01.W1", target_temp)
-            self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3APUMP_3", 0.2) # Organic
+            self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3APUMP_4", 0.2) # Organic
 
             print(f"🧊 Waiting for temperature to reach {target_temp}°C...")
 
@@ -170,7 +170,7 @@ class ExperimentRunner:
             print(f"Normalized measurement:{normalized:.2f}")
             return corrected
 
-    def collect_measurements(self, rsd_threshold=1, max_measurements=15, iteration=0, parameters=None):
+    def collect_measurements(self, rsd_threshold=5, max_measurements=15, iteration=0, parameters=None):
         measurements = []
         all_measurements = []
 
@@ -213,7 +213,7 @@ class ExperimentRunner:
 
     def stop_pumps(self):
         if self.simulation_mode in ["off", "hybrid"]:
-            for pump in ["PUMP1.W1", "PUMP2.W1", "PUMP_3", "PUMP5.W1", "PC_OUT"]:
+            for pump in ["PUMP1.W1", "PUMP2.W1", "PUMP_4", "PUMP5.W1", "PC_OUT"]:
                 self.opc.write_value(f"Hitec_OPC_DA20_Server-%3EDIAZOAN%3A{pump}", 0)
             print("🛑 All pumps stopped.")
         else:
