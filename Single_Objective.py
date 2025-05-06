@@ -4,6 +4,9 @@ import numpy as np
 import pandas as pd
 import altair as alt
 import time
+import pickle
+import os
+import json
 from core.optimization.bayesian_optimization import StepBayesianOptimizer
 from core.utils.export_tools import export_to_csv, export_to_excel
 from core.utils import db_handler
@@ -11,6 +14,9 @@ from core.hardware.opc_communication import OPCClient
 from core.hardware.experimental_run import ExperimentRunner
 from core.utils.logger import StreamlitLogger
 import sys
+
+SAVE_DIR = "resumable_runs"
+os.makedirs(SAVE_DIR, exist_ok=True)
 
 # --- Page Title ---
 st.title("🌟 Single Objective Optimization")
@@ -22,15 +28,38 @@ sim_mode_label = {
     "full": "🧪 Full Simulation (No Hardware)"
 }
 simulation_mode = st.sidebar.selectbox("Experiment Mode", options=["off", "hybrid", "full"], format_func=lambda x: sim_mode_label[x])
+st.session_state.simulation_mode = simulation_mode
 
 opc_url = st.sidebar.text_input("🔌 OPC Server URL", value="http://em-nun:57080")
+st.session_state.opc_url = opc_url
 
-if simulation_mode!= "off":
+if simulation_mode != "off":
     st.warning("⚠️ Simulation Mode is ON — OPC hardware interaction is partially or fully disabled.")
+
+# --- Resume Section ---
+st.sidebar.markdown("---")
+resume_file = st.sidebar.selectbox("🔄 Resume from Previous Run", options=["None"] + os.listdir(SAVE_DIR))
+if resume_file != "None" and st.sidebar.button("Load Previous Run"):
+    run_path = os.path.join(SAVE_DIR, resume_file)
+    with open(os.path.join(run_path, "optimizer.pkl"), "rb") as f:
+        st.session_state.optimizer = pickle.load(f)
+    df = pd.read_csv(os.path.join(run_path, "experiment_data.csv"))
+    with open(os.path.join(run_path, "metadata.json"), "r") as f:
+        metadata = json.load(f)
+
+    st.session_state.experiment_data = df.to_dict("records")
+    st.session_state.iteration = len(df)
+    st.session_state.variables = metadata["variables"]
+    st.session_state.response_to_optimize = metadata["response"]
+    st.session_state.total_iterations = metadata["total_iterations"]
+    st.session_state.runner = ExperimentRunner(OPCClient(metadata["opc_url"]), "experiment_log.csv", simulation_mode=metadata["simulation_mode"])
+    st.session_state.optimization_running = True
+    st.session_state.run_name = resume_file
 
 # --- Experiment Metadata ---
 st.subheader("🧪 Experiment Metadata")
-experiment_name = st.text_input("Experiment Name")
+experiment_name = st.text_input("Experiment Name", value=st.session_state.get("run_name", datetime.now().strftime("run_%Y%m%d_%H%M%S")))
+st.session_state.run_name = experiment_name
 experiment_date = st.date_input("Experiment Date", datetime.today())
 experiment_notes = st.text_area("Additional Notes")
 
@@ -72,115 +101,131 @@ col5, col6, col7 = st.columns(3)
 initial_experiments = col5.number_input("Initialization Experiments", min_value=1, max_value=100, value=5)
 total_iterations = col6.number_input("Total Iterations", min_value=1, max_value=100, value=20)
 response_to_optimize = col7.selectbox("Response to Optimize", ["Yield", "Conversion", "Transformation", "Productivity"])
+st.session_state.total_iterations = total_iterations
+st.session_state.response_to_optimize = response_to_optimize
 
-# --- Progress and Pause/Resume Controls ---
-if "pause_optimization" not in st.session_state:
-    st.session_state.pause_optimization = False
-if "optimization_running" not in st.session_state:
-    st.session_state.optimization_running = False
-
-if st.button("Pause/Resume Optimization"):
-    st.session_state.pause_optimization = not st.session_state.pause_optimization
-
-# --- Run Optimization ---
-if st.button("Start Optimization"):
+# --- Run & Stop Buttons ---
+col_start, col_stop = st.columns(2)
+if col_start.button("▶ Start Optimization"):
+    run_path = os.path.join(SAVE_DIR, experiment_name)
+    os.makedirs(run_path, exist_ok=True)
     st.session_state.optimizer = StepBayesianOptimizer([
         (name, low, high) for name, low, high, _ in st.session_state.variables
     ])
     st.session_state.experiment_data = []
     st.session_state.iteration = 0
-    st.session_state.opc_client = OPCClient(opc_url)
-    st.session_state.runner = ExperimentRunner(st.session_state.opc_client, "experiment_log.csv", simulation_mode=simulation_mode)
+    st.session_state.runner = ExperimentRunner(OPCClient(opc_url), "experiment_log.csv", simulation_mode=simulation_mode)
     st.session_state.optimization_running = True
-    st.session_state.resume_requested = True
 
-    # --- Live Logger Setup ---
-    log_placeholder = st.empty()
-    logger = StreamlitLogger(placeholder=log_placeholder)
-    sys.stdout = logger  # Redirect print() to Streamlit
+if col_stop.button("🛑 Stop Optimization"):
+    st.session_state.optimization_running = False
+    st.warning("🛑 Optimization manually stopped.")
 
 # --- Optimization Loop ---
 if st.session_state.get("optimization_running", False):
-    if st.session_state.get("resume_requested", False):
-        optimizer = st.session_state.optimizer
-        experiment_data = st.session_state.experiment_data
-        iteration = st.session_state.iteration
-        runner = st.session_state.runner
+    log_placeholder = st.empty()
+    logger = StreamlitLogger(placeholder=log_placeholder)
+    sys.stdout = logger
 
-        results_chart = st.empty()
-        progress_bar = st.progress(iteration / total_iterations)
-        scatter_rows = [st.columns(2) for _ in range((len(st.session_state.variables) + 1) // 2)]
-        scatter_placeholders = [col.empty() for row in scatter_rows for col in row][:len(st.session_state.variables)]
+    optimizer = st.session_state.optimizer
+    experiment_data = st.session_state.experiment_data
+    iteration = st.session_state.iteration
+    runner = st.session_state.runner
+    total_iterations = st.session_state.total_iterations
+    response_to_optimize = st.session_state.response_to_optimize
+    run_name = st.session_state.run_name
+    run_path = os.path.join(SAVE_DIR, run_name)
 
-        while iteration < total_iterations:
-            if st.session_state.pause_optimization:
-                st.warning("⏸ Optimization paused. Press Resume to continue.")
-                break
+    results_chart = st.empty()
+    scatter_rows = [st.columns(2) for _ in range((len(st.session_state.variables) + 1) // 2)]
+    scatter_placeholders = [col.empty() for row in scatter_rows for col in row][:len(st.session_state.variables)]
 
-            x = optimizer.suggest()
-            params = {name: val for (name, *_), val in zip(st.session_state.variables, x)}
-            result = runner.run_experiment(params, experiment_number=iteration + 1, total_iterations=total_iterations)
-            y = -result[response_to_optimize]  # still minimizing
-            optimizer.observe(x, y)
+    while iteration < total_iterations and st.session_state.optimization_running:
+        x = optimizer.suggest()
+        params = {name: val for (name, *_), val in zip(st.session_state.variables, x)}
+        result = runner.run_experiment(params, experiment_number=iteration + 1, total_iterations=total_iterations, objectives=[response_to_optimize])
+        y = -result[response_to_optimize]
+        optimizer.observe(x, y)
 
-            row = {
-                "Experiment #": iteration + 1,
-                "Timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                **params,
-                "Measurement": -y
-            }
-            experiment_data.append(row)
-            df_results = pd.DataFrame(experiment_data)
+        row = {
+            "Experiment #": iteration + 1,
+            "Timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            **params,
+            "Measurement": -y
+        }
+        experiment_data.append(row)
+        df_results = pd.DataFrame(experiment_data)
 
-            results_chart.line_chart(df_results[["Experiment #", "Measurement"]].set_index("Experiment #"), x_label="Experiment", y_label={response_to_optimize}, color="#f0f")
+        os.makedirs(run_path, exist_ok=True)
+        df_results.to_csv(os.path.join(run_path, "experiment_data.csv"), index=False)
+        with open(os.path.join(run_path, "optimizer.pkl"), "wb") as f:
+            pickle.dump(optimizer, f)
+        metadata = {
+            "variables": st.session_state.variables,
+            "response": response_to_optimize,
+            "total_iterations": total_iterations,
+            "opc_url": opc_url,
+            "simulation_mode": simulation_mode
+        }
+        with open(os.path.join(run_path, "metadata.json"), "w") as f:
+            json.dump(metadata, f, indent=4)
 
-            for idx, (name, low, high, _) in enumerate(st.session_state.variables):
-                df = df_results[[name, "Measurement"]]
-                chart = alt.Chart(df).mark_circle(size=60).encode(
-                    x=alt.X(f"{name}:Q", scale=alt.Scale(domain=[low, high])),
-                    y="Measurement:Q"
-                ).properties(
-                    height=350,
-                    title=alt.TitleParams(text=f"{name} vs Measurement", anchor="middle")
-                )
-                scatter_placeholders[idx].altair_chart(chart, use_container_width=True)
+        results_chart.line_chart(df_results[["Experiment #", "Measurement"]].set_index("Experiment #"))
 
-            iteration += 1
-            st.session_state.iteration = iteration
-            st.session_state.experiment_data = experiment_data
-            progress_bar.progress(iteration / total_iterations)
-            time.sleep(10)
-
-        if iteration == total_iterations:
-            st.success("✅ Optimization Complete!")
-            best_row = df_results.loc[df_results["Measurement"].idxmax()]
-            st.markdown("### 🥇 Best Result")
-            st.write(best_row)
-
-            timestamp = datetime.now().strftime("%Y-%m-%d %H-%M-%S")
-            export_to_csv(df_results, f"{timestamp}_optimization_results.csv")
-            export_to_excel(df_results, f"{timestamp}_optimization_results.xlsx")
-
-            optimization_settings = {
-                "initial_experiments": initial_experiments,
-                "total_iterations": total_iterations,
-                "objective": response_to_optimize,
-                "method": "Bayesian Single Objective",
-                "simulation_mode": simulation_mode,
-                "opc_url": opc_url
-            }
-
-            db_handler.save_experiment(
-                name=experiment_name,
-                notes=experiment_notes,
-                variables=st.session_state.variables,
-                df_results=df_results,
-                best_result=best_row,
-                settings=optimization_settings
+        for idx, (name, low, high, _) in enumerate(st.session_state.variables):
+            df = df_results[[name, "Measurement"]]
+            chart = alt.Chart(df).mark_circle(size=60).encode(
+                x=alt.X(f"{name}:Q", scale=alt.Scale(domain=[low, high])),
+                y="Measurement:Q"
+            ).properties(
+                height=350,
+                title=alt.TitleParams(text=f"{name} vs Measurement", anchor="middle")
             )
+            scatter_placeholders[idx].altair_chart(chart, use_container_width=True)
 
-            st.session_state.optimization_running = False
-            st.session_state.resume_requested = False
+        iteration += 1
+        st.session_state.iteration = iteration
+        st.session_state.experiment_data = experiment_data
+        time.sleep(1)
+
+    if experiment_data and iteration == total_iterations:
+        df_results = pd.DataFrame(experiment_data)
+        st.success("✅ Optimization Complete!")
+        best_row = df_results.loc[df_results["Measurement"].idxmax()]
+        st.markdown("### 🥇 Best Result")
+        st.write(best_row)
+
+        export_to_csv(df_results, f"{run_name}_final_results.csv")
+        export_to_excel(df_results, f"{run_name}_final_results.xlsx")
+
+        optimization_settings = {
+            "initial_experiments": initial_experiments,
+            "total_iterations": total_iterations,
+            "objective": response_to_optimize,
+            "method": "Bayesian Single Objective",
+            "simulation_mode": simulation_mode,
+            "opc_url": opc_url
+        }
+
+        db_handler.save_experiment(
+            name=experiment_name,
+            notes=experiment_notes,
+            variables=st.session_state.variables,
+            df_results=df_results,
+            best_result=best_row,
+            settings=optimization_settings
+        )
+
+        st.session_state.optimization_running = False
+
+
+
+
+
+
+
+
+
 
 
 

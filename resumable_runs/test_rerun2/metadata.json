@@ -1,0 +1,1 @@
+{"variables": [["temperature", 10.0, 20.0, "\u00b0C"], ["residence_time", 10.0, 20.0, "s"], ["pressure", 10.0, 20.0, "bar"]], "response": "Yield", "total_iterations": 100, "simulation_mode": "full", "opc_url": "http://em-nun:57080"}
