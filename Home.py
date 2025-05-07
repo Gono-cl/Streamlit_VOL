@@ -1,27 +1,31 @@
 import streamlit as st
 
-
 # App Title
 st.markdown("<h1 style='color:#4CAF50; font-size: 42px;'>🧪 VOL - Virtual Optimization Lab</h1>", unsafe_allow_html=True)
-st.subheader("A Modular Platform for Automated Experimentation")
+st.subheader("A Modular Platform for Automated and Intelligent Experimentation")
 
 # Horizontal line
 st.markdown("---")
 
 # Description
 st.markdown("""
-Welcome to the **Virtual Optimization Lab (VOL)**! This platform is designed to streamline and automate experimental workflows in chemical and process optimization.
+Welcome to **VOL (Virtual Optimization Lab)** — your intelligent assistant for chemical and process experimentation.
+VOL integrates automation, machine learning, and interactive design to help you explore experimental space faster and smarter.
 
 #### With VOL, you can:
-- 🚀 Run **Single-Objective Optimization** using Bayesian methods
-- ⚖️ Conduct **Multi-Objective Optimization** with desirability functions
-- 🧪 Perform structured **Design of Experiments (DoE)**
+- 🚀 Run **Single-Objective Bayesian Optimization** (Real, Hybrid, or Simulated)
+- ⚖️ Perform **Multi-Objective Bayesian Optimization**
+- 🎯 Use **Design of Experiments (DoE)** to structure offline campaigns
+- 🔌 Connect to **real hardware systems via OPC** for live control and data acquisition
+- 🧠 Perform both **automated** and **manual optimization campaigns** 
+- 🔁 **Stop/Resume** any campaign — and even recover from hardware failures
+- 💾 **Save and Reload** optimization runs (pick up where you left off!)
+- 🗂️ Store experiment results in a **structured database** following the **FAIR principles**
+- 🧠 Soon: Use **Previous Campaigns as Starting Points** (Active Learning)
 """)
 
-# Add a nice info box or a motivational quote
+# Info box
 st.info("“Empowering researchers to rapidly explore and optimize experimental space through automation and intelligent design.”")
-
-
 
 # Spacer
 st.markdown("")
@@ -30,18 +34,19 @@ st.markdown("")
 col1, col2 = st.columns([1, 2])
 
 with col1:
-    st.image("assets/image.png",use_container_width=True)
+    st.image("assets/image.png", use_container_width=True)
 
 with col2:
     st.markdown("### How to Get Started:")
     st.markdown("""
-    1. Select a module from the **Navigation** sidebar on the left.
-    2. Configure your experiment variables or objectives.
-    3. Launch the optimization or design process.
-    4. View results live — plotted and stored automatically!
+    1. Select a module from the **sidebar** (left).
+    2. Define your experiment variables and objectives.
+    3. Start an optimization or DoE campaign.
+    4. Monitor live results — all data is automatically saved and visualized.
     
     ---
     """)
-    st.success("Ready to experiment? Choose a module from the sidebar!")
+    st.success("🎯 Ready to experiment? Choose a module from the sidebar!")
+
 
 
