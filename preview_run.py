@@ -24,7 +24,7 @@ if selected_run != "None":
         st.markdown(f"### 📄 Run: `{selected_run}`")
         st.markdown(f"**Variables:** {[v[0] for v in metadata['variables']]}")
         st.markdown(f"**Target:** `{metadata['response']}`")
-        st.markdown(f"**Mode:** `{metadata['simulation_mode']}`")
+        st.markdown(f"**Simulation Mode:** `{metadata['simulation_mode']}`")
         st.markdown(f"**Progress:** {len(df)} / {metadata['total_iterations']} experiments")
 
         st.dataframe(df)
@@ -49,18 +49,7 @@ if selected_run != "None":
             scatter_placeholders[idx].altair_chart(chart, use_container_width=True)
 
         st.markdown("---")
-        if st.button("▶ Resume This Run"):
-            st.session_state.optimizer = pickle.load(open(os.path.join(run_path, "optimizer.pkl"), "rb"))
-            st.session_state.experiment_data = df.to_dict("records")
-            st.session_state.iteration = len(df)
-            st.session_state.variables = metadata["variables"]
-            st.session_state.response_to_optimize = metadata["response"]
-            st.session_state.total_iterations = metadata["total_iterations"]
-            st.session_state.simulation_mode = metadata["simulation_mode"]
-            st.session_state.opc_url = metadata["opc_url"]
-            st.session_state.run_name = selected_run
-            st.session_state.optimization_running = True
-            st.switch_page("single_objective.py")
+        st.info("To Continue with this experiment, select ***Resume from Previous Run*** from the correct page where the experiment was created... for example Single Objective Optimization ")
 
     except Exception as e:
         st.error(f"Failed to load run: {e}")

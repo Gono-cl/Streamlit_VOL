@@ -56,6 +56,7 @@ if resume_file != "None" and st.sidebar.button("Load Previous Run"):
     st.session_state.optimization_running = True
     st.session_state.run_name = resume_file
 
+
 # --- Experiment Metadata ---
 st.subheader("🧪 Experiment Metadata")
 experiment_name = st.text_input("Experiment Name", value=st.session_state.get("run_name", datetime.now().strftime("run_%Y%m%d_%H%M%S")))
@@ -217,6 +218,7 @@ if st.session_state.get("optimization_running", False):
         )
 
         st.session_state.optimization_running = False
+
 
 
 
