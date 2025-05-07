@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 import altair as alt
 import time
-import pickle
+import dill as pickle
 import os
 import json
 from core.optimization.bayesian_optimization import StepBayesianOptimizer

@@ -291,7 +291,7 @@ class ExperimentRunner:
         if self.simulation_mode in ["off", "hybrid"]:
             self.check_water_and_clean_probe()
             self.monitor_temperature(parameters["temperature"])
-            #self.set_pressure(parameters["pressure"])
+            self.set_pressure(parameters["pressure"])
             self.set_pump_flows_from_ratio_and_time(parameters["ratio_org_aq"], parameters["residence_time"])
             self.countdown(int(parameters["residence_time"]))
         else:
