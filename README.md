@@ -8,12 +8,16 @@
 
 ## 🚀 Features
 
-- ✅ Interactive interface for defining optimization goals
-- 📊 Real-time visualization of optimization progress
-- 🧪 Supports continuous and categorical variables
-- 🔁 Easily integrates with experimental data
-- 💻 Built with Python, Streamlit, and Bayesian optimization frameworks
-
+- 🚀 Run **Single-Objective Bayesian Optimization** (Real, Hybrid, or Simulated)
+- ⚖️ Perform **Multi-Objective Bayesian Optimization**
+- 🎯 Use **Design of Experiments (DoE)** to structure offline campaigns
+- 🔌 Connect to **real hardware systems via OPC** for live control and data acquisition
+- 🧠 Perform both **automated** and **manual optimization campaigns** 
+- 🔁 **Stop/Resume** any campaign — and even recover from hardware failures
+- 💾 **Save and Reload** optimization runs (pick up where you left off!)
+- 🗂️ Store experiment results in a **structured database** following the **FAIR principles**
+- 🧠 Soon: Use **Previous Campaigns as Starting Points** (Active Learning)
+""")
 ---
 
 
