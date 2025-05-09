@@ -8,6 +8,18 @@ import plotly.express as px
 
 st.title("🧰 Manual Optimization Campaign")
 
+# --- Reset Button ---
+if st.button("🔄 Reset Campaign"):
+    for key in [
+        "manual_variables", "manual_data", "manual_optimizer",
+        "manual_initialized", "suggestions", "iteration",
+        "initial_results_submitted", "next_suggestion_cached",
+        "submitted_initial", "edited_initial_df"
+    ]:
+        if key in st.session_state:
+            del st.session_state[key]
+    st.rerun()
+
 st.markdown("""
 This module allows users to manually define and run optimization campaigns step-by-step. 
 At each step, the system will suggest a new experiment based on previous results.

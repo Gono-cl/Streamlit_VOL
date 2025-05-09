@@ -32,7 +32,9 @@ PAGES = {
     "🧰 Manual Optimization": "manual_experiments.py",
     "🧪 Design of Experiments": "DoE.py",
     "📚 Experiment DataBase": "experiment_database.py",
-    "🔍 Preview Saved Run": "preview_run.py"
+    "🔍 Preview Saved Run": "preview_run.py",
+    "🎓 Bayesian Optimization Classroom": "BO_classroom.py",
+    "❓ FAQ – Help & Guidance": "faq.py"
 }
 
 # ✅ Navigation Sidebar
