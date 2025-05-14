@@ -4,6 +4,10 @@ import altair as alt
 from datetime import datetime
 from core.optimization.bayesian_optimization import StepBayesianOptimizer
 import plotly.express as px
+from skopt.space import Real, Categorical
+from sklearn.preprocessing import LabelEncoder
+from core.utils import db_handler
+from core.utils.generate_report import generate_report
 
 
 st.title("🧰 Manual Optimization Campaign")
@@ -51,18 +55,29 @@ def show_parallel_coordinates(data: list, response_name: str):
     df = pd.DataFrame(data).copy()
     df[response_name] = pd.to_numeric(df[response_name], errors="coerce")
 
-    # Keep only numeric columns + response
+    # Keep only variables defined by the user
     input_vars = [name for name, *_ in st.session_state.manual_variables]
     cols_to_plot = input_vars + [response_name]
     df = df[cols_to_plot]
 
     st.markdown("### 🔀 Parallel Coordinates Plot")
 
+    # Encode object columns numerically and prepare label legend
+    legend_entries = []
+    for col in df.columns:
+        if df[col].dtype == object:
+            le = LabelEncoder()
+            le = LabelEncoder()
+            df[col] = le.fit_transform(df[col])
+            legend_entries.append((col, dict(enumerate(le.classes_))))
+
+    labels = {col: col for col in df.columns}
+
     fig = px.parallel_coordinates(
         df,
         color=response_name,
         color_continuous_scale=px.colors.sequential.Viridis,
-        labels={col: col for col in df.columns},
+        labels=labels
     )
     fig.update_layout(
         font=dict(size=20, color='black'),
@@ -71,7 +86,7 @@ def show_parallel_coordinates(data: list, response_name: str):
         coloraxis_colorbar=dict(
             title=dict(
                 text=response_name,
-                font=dict(size=20, color='black'),    
+                font=dict(size=20, color='black'),
             ),
             tickfont=dict(size=20, color='black'),
             len=0.8,
@@ -83,6 +98,13 @@ def show_parallel_coordinates(data: list, response_name: str):
 
     st.plotly_chart(fig, use_container_width=True)
 
+    # Display legend for categorical variables
+    if legend_entries:
+        st.markdown("### 🏷️ Categorical Legends")
+        for col, mapping in legend_entries:
+            st.markdown(f"**{col}**:")
+            for code, label in mapping.items():
+                st.markdown(f"- `{code}` → `{label}`")
 
 # --- Session State Initialization ---
 if "manual_variables" not in st.session_state:
@@ -106,26 +128,46 @@ if "submitted_initial" not in st.session_state:
 if "edited_initial_df" not in st.session_state:
     st.session_state.edited_initial_df = None
 
+experiment_name = st.text_input("Experiment Name")
+experiment_notes = st.text_area("Notes (optional)")
+experiment_date = st.date_input("Experiment date")
+
 # --- Variable Definition ---
 st.subheader("🔧 Define Variables")
+
+if "var_type" not in st.session_state:
+    st.session_state.var_type = "Continuous"
+
+st.session_state.var_type = st.selectbox("Variable Type", ["Continuous", "Categorical"], key="var_type_select")
+
 with st.form("manual_var_form"):
-    col1, col2, col3, col4 = st.columns(4)
+    col1, col2, col3 = st.columns([2, 2, 1])
     with col1:
         var_name = st.text_input("Variable Name")
     with col2:
-        lower = st.number_input("Lower Bound", value=0.0, format="%.4f")
+        if st.session_state.var_type == "Continuous":
+            lower = st.number_input("Lower Bound", value=0.0, format="%.4f")
+            upper = st.number_input("Upper Bound", value=1.0, format="%.4f")
+        else:
+            categories = st.text_input("Categories (comma-separated)", value="Type")
     with col3:
-        upper = st.number_input("Upper Bound", value=1.0, format="%.4f")
-    with col4:
         unit = st.text_input("Unit")
+
     add_var = st.form_submit_button("Add Variable")
-    if add_var and var_name and lower < upper:
-        st.session_state.manual_variables.append((var_name, lower, upper, unit))
+    if add_var and var_name:
+        if st.session_state.var_type == "Continuous" and lower < upper:
+            st.session_state.manual_variables.append((var_name, lower, upper, unit, "continuous"))
+        elif st.session_state.var_type == "Categorical" and categories:
+            values = [x.strip() for x in categories.split(",") if x.strip() != ""]
+            st.session_state.manual_variables.append((var_name, values, None, unit, "categorical"))
 
 if st.session_state.manual_variables:
     st.markdown("### 📋 Current Variables")
-    for i, (name, low, high, unit) in enumerate(st.session_state.manual_variables):
-        st.write(f"{i+1}. **{name}**: {low} to {high} {unit}")
+    for i, (name, val1, val2, unit, vtype) in enumerate(st.session_state.manual_variables):
+        if vtype == "continuous":
+            st.write(f"{i+1}. **{name}**: {val1} to {val2} {unit} (continuous)")
+        else:
+            st.write(f"{i+1}. **{name}**: {val1} {unit} (categorical)")
 else:
     st.info("Define at least one variable to start.")
 
@@ -135,15 +177,21 @@ col5, col6 = st.columns(2)
 with col5:
     response = st.selectbox("Response to Optimize", ["Yield", "Conversion", "Transformation", "Productivity"])
 with col6:
-    n_init = st.number_input("# Initial Experiments", min_value=1, max_value=50, value=3)
-    total_iters = st.number_input("Total Iterations", min_value=1, max_value=100, value=10)
+    n_init = st.number_input("# Initial Experiments", min_value=1, max_value=50)
+    total_iters = st.number_input("Total Iterations", min_value=1, max_value=100)
 
 # --- Suggest Initial Experiments ---
 if st.button("🚀 Suggest Initial Experiments"):
     if not st.session_state.manual_variables:
-        st.warning("Please define at least two variables first.")
+        st.warning("Please define at least one variable first.")
     else:
-        opt_vars = [(v[0], v[1], v[2]) for v in st.session_state.manual_variables]
+        opt_vars = []
+        for name, val1, val2, _, vtype in st.session_state.manual_variables:
+            if vtype == "continuous":
+                opt_vars.append(Real(val1, val2, name=name))
+            else:
+                opt_vars.append(Categorical(val1, name=name))
+
         optimizer = StepBayesianOptimizer(opt_vars)
         st.session_state.manual_optimizer = optimizer
         st.session_state.manual_data = []
@@ -152,6 +200,9 @@ if st.button("🚀 Suggest Initial Experiments"):
         st.session_state.initial_results_submitted = False
         st.session_state.next_suggestion_cached = None
         st.session_state.suggestions = [optimizer.suggest() for _ in range(n_init)]
+        st.success("Initial experiments suggested successfully!")
+    st.session_state.manual_optimizer = optimizer
+    st.success("Optimizer initialized with mixed variable types!")
 
 # --- Initial Results Input (only shown once) ---
 if st.session_state.manual_initialized and st.session_state.suggestions and not st.session_state.initial_results_submitted:
@@ -256,6 +307,27 @@ if st.session_state.iteration >= total_iters:
 
     csv = df_results.to_csv(index=False).encode("utf-8")
     st.download_button("📥 Download Results as CSV", data=csv, file_name="manual_optimization_results.csv", mime="text/csv")
+
+    # Save to experiment database
+    if st.button("💾 Save to Database"):
+        best_row = df_results.loc[df_results[response].idxmax()].to_dict()
+
+        optimization_settings = {
+            "initial_experiments": n_init,
+            "total_iterations": total_iters,
+            "objective": response,
+            "method": "Manual Bayesian Optimization"
+        }
+
+        db_handler.save_experiment(
+            name=experiment_name,
+            notes=experiment_notes,
+            variables=st.session_state.manual_variables,
+            df_results=df_results,
+            best_result=best_row,
+            settings=optimization_settings
+        )
+        st.success("✅ Experiment saved successfully!")
 
 
 

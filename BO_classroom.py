@@ -7,6 +7,8 @@ from skopt.utils import use_named_args
 
 st.title("🎓 Bayesian Optimization Classroom")
 
+st.code ( "print(Hello word)", language = "python")
+
 st.markdown("""
 This page introduces the key concepts of **Bayesian Optimization (BO)** through simple explanations and an example based on **reaction optimization in chemistry**.
 """)

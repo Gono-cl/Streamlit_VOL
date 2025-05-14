@@ -1,9 +1,10 @@
 from skopt import Optimizer
+from skopt.space import Space
 
 class StepBayesianOptimizer:
     def __init__(self, variables, base_estimator="GP", acq_func="EI", random_state=42):
-        self.variable_names = [name for name, *_ in variables]
-        self.space = [(low, high) for _, low, high in variables]
+        self.variable_names = [dim.name for dim in variables]
+        self.space = Space(variables)
         self._optimizer = Optimizer(
             dimensions=self.space,
             base_estimator=base_estimator,
