@@ -7,8 +7,49 @@ import plotly.express as px
 from skopt.space import Real, Categorical
 from sklearn.preprocessing import LabelEncoder
 from core.utils import db_handler
-from core.utils.generate_report import generate_report
+import os
+import json
+import dill as pickle  
 
+SAVE_DIR = "resumable_manual_runs"
+os.makedirs(SAVE_DIR, exist_ok=True)
+
+# --- Resume Section ---
+st.sidebar.markdown("---")
+resume_file = st.sidebar.selectbox(
+    "🔄 Resume from Previous Manual Campaign", 
+    options=["None"] + os.listdir(SAVE_DIR)
+)
+if resume_file != "None" and st.sidebar.button("Load Previous Manual Campaign"):
+    run_path = os.path.join(SAVE_DIR, resume_file)
+    with open(os.path.join(run_path, "optimizer.pkl"), "rb") as f:
+        st.session_state.manual_optimizer = pickle.load(f)
+    df = pd.read_csv(os.path.join(run_path, "manual_data.csv"))
+    with open(os.path.join(run_path, "metadata.json"), "r") as f:
+        metadata = json.load(f)
+
+    # Restore session state
+    st.session_state.manual_data = df.to_dict("records")
+    st.session_state.manual_variables = metadata["variables"]
+    st.session_state.iteration = metadata.get("iteration", len(df))
+    st.session_state.campaign_name = resume_file
+    st.session_state.n_init = metadata.get("n_init", 1)
+    st.session_state.total_iters = metadata.get("total_iters", 1)
+    st.session_state.response = metadata.get("response", "Yield")  # <-- Add this line
+    st.session_state.manual_initialized = True
+    st.session_state.initial_results_submitted = True
+
+    # Use the restored response variable
+    response = st.session_state.response
+
+    # Re-observe all previous data points in the optimizer
+    if st.session_state.manual_optimizer is not None:
+        for row in st.session_state.manual_data:
+            x = [row[name] for name, *_ in st.session_state.manual_variables]
+            y_val = row[response]
+            st.session_state.manual_optimizer.observe(x, -y_val)
+
+    st.success(f"Loaded campaign: {resume_file}")
 
 st.title("🧰 Manual Optimization Campaign")
 
@@ -18,7 +59,7 @@ if st.button("🔄 Reset Campaign"):
         "manual_variables", "manual_data", "manual_optimizer",
         "manual_initialized", "suggestions", "iteration",
         "initial_results_submitted", "next_suggestion_cached",
-        "submitted_initial", "edited_initial_df"
+        "submitted_initial", "edited_initial_df", "n_init", "total_iters"
     ]:
         if key in st.session_state:
             del st.session_state[key]
@@ -66,7 +107,6 @@ def show_parallel_coordinates(data: list, response_name: str):
     legend_entries = []
     for col in df.columns:
         if df[col].dtype == object:
-            le = LabelEncoder()
             le = LabelEncoder()
             df[col] = le.fit_transform(df[col])
             legend_entries.append((col, dict(enumerate(le.classes_))))
@@ -127,10 +167,40 @@ if "submitted_initial" not in st.session_state:
     st.session_state.submitted_initial = False
 if "edited_initial_df" not in st.session_state:
     st.session_state.edited_initial_df = None
+if "n_init" not in st.session_state:
+    st.session_state.n_init = 1
+if "total_iters" not in st.session_state:
+    st.session_state.total_iters = 1
 
 experiment_name = st.text_input("Experiment Name")
 experiment_notes = st.text_area("Notes (optional)")
 experiment_date = st.date_input("Experiment date")
+
+# Use the experiment name provided by the user, or fall back to a default
+run_name = experiment_name.strip() if experiment_name.strip() else "manual_experiment"
+st.session_state["campaign_name"] = run_name  # Save it in session state
+run_path = os.path.join(SAVE_DIR, run_name)
+os.makedirs(run_path, exist_ok=True)
+
+# Add a "Save Campaign" button in the sidebar
+if st.sidebar.button("💾 Save Campaign"):
+    # Save optimizer
+    with open(os.path.join(run_path, "optimizer.pkl"), "wb") as f:
+        pickle.dump(st.session_state.manual_optimizer, f)
+    # Save data
+    df = pd.DataFrame(st.session_state.manual_data)
+    df.to_csv(os.path.join(run_path, "manual_data.csv"), index=False)
+    # Save metadata
+    metadata = {
+    "variables": st.session_state.manual_variables,
+    "iteration": st.session_state.get("iteration", len(df)),
+    "n_init": st.session_state.n_init,
+    "total_iters": st.session_state.total_iters,
+    "response": st.session_state.response
+}
+    with open(os.path.join(run_path, "metadata.json"), "w") as f:
+        json.dump(metadata, f, indent=4)
+    st.sidebar.success(f"Campaign '{run_name}' saved successfully!")
 
 # --- Variable Definition ---
 st.subheader("🔧 Define Variables")
@@ -176,9 +246,14 @@ st.subheader("⚙️ Experiment Setup")
 col5, col6 = st.columns(2)
 with col5:
     response = st.selectbox("Response to Optimize", ["Yield", "Conversion", "Transformation", "Productivity"])
+    st.session_state.response = response
 with col6:
-    n_init = st.number_input("# Initial Experiments", min_value=1, max_value=50)
-    total_iters = st.number_input("Total Iterations", min_value=1, max_value=100)
+    n_init = st.number_input(
+        "# Initial Experiments", min_value=1, max_value=50, value=st.session_state.n_init, key="n_init"
+    )
+    total_iters = st.number_input(
+        "Total Iterations", min_value=1, max_value=100, value=st.session_state.total_iters, key="total_iters"
+    )
 
 # --- Suggest Initial Experiments ---
 if st.button("🚀 Suggest Initial Experiments"):

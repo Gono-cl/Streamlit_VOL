@@ -1,0 +1,22 @@
+{
+    "variables": [
+        [
+            "temperature",
+            0.0,
+            1.0,
+            "",
+            "continuous"
+        ],
+        [
+            "residence_time",
+            0.0,
+            1.0,
+            "",
+            "continuous"
+        ]
+    ],
+    "iteration": 6,
+    "n_init": 5,
+    "total_iters": 10,
+    "response": "Yield"
+}
