@@ -35,7 +35,7 @@ if resume_file != "None" and st.sidebar.button("Load Previous Manual Campaign"):
     st.session_state.campaign_name = resume_file
     st.session_state.n_init = metadata.get("n_init", 1)
     st.session_state.total_iters = metadata.get("total_iters", 1)
-    st.session_state.response = metadata.get("response", "Yield")  # <-- Add this line
+    st.session_state.response = metadata.get("response", "Yield")
     st.session_state.manual_initialized = True
     st.session_state.initial_results_submitted = True
 
@@ -59,7 +59,7 @@ if st.button("🔄 Reset Campaign"):
         "manual_variables", "manual_data", "manual_optimizer",
         "manual_initialized", "suggestions", "iteration",
         "initial_results_submitted", "next_suggestion_cached",
-        "submitted_initial", "edited_initial_df", "n_init", "total_iters"
+        "submitted_initial", "edited_initial_df", "n_init", "total_iters", "edit_mode", "recalc_needed"
     ]:
         if key in st.session_state:
             del st.session_state[key]
@@ -171,6 +171,10 @@ if "n_init" not in st.session_state:
     st.session_state.n_init = 1
 if "total_iters" not in st.session_state:
     st.session_state.total_iters = 1
+if "edit_mode" not in st.session_state:
+    st.session_state.edit_mode = False
+if "recalc_needed" not in st.session_state:
+    st.session_state.recalc_needed = False
 
 experiment_name = st.text_input("Experiment Name")
 experiment_notes = st.text_area("Notes (optional)")
@@ -192,12 +196,12 @@ if st.sidebar.button("💾 Save Campaign"):
     df.to_csv(os.path.join(run_path, "manual_data.csv"), index=False)
     # Save metadata
     metadata = {
-    "variables": st.session_state.manual_variables,
-    "iteration": st.session_state.get("iteration", len(df)),
-    "n_init": st.session_state.n_init,
-    "total_iters": st.session_state.total_iters,
-    "response": st.session_state.response
-}
+        "variables": st.session_state.manual_variables,
+        "iteration": st.session_state.get("iteration", len(df)),
+        "n_init": st.session_state.n_init,
+        "total_iters": st.session_state.total_iters,
+        "response": st.session_state.response
+    }
     with open(os.path.join(run_path, "metadata.json"), "w") as f:
         json.dump(metadata, f, indent=4)
     st.sidebar.success(f"Campaign '{run_name}' saved successfully!")
@@ -334,6 +338,56 @@ if st.session_state.submitted_initial:
 if len(st.session_state.manual_data) > 0:
     show_progress_chart(st.session_state.manual_data, response)
     show_parallel_coordinates(st.session_state.manual_data, response)
+
+# --- Edit Previous Results ---
+if len(st.session_state.manual_data) > 0:
+    st.markdown("### ✏️ Edit Previous Results")
+    if st.button("Enable Edit Mode"):
+        st.session_state.edit_mode = True
+
+    if st.session_state.edit_mode:
+        edited_df = st.data_editor(
+            pd.DataFrame(st.session_state.manual_data),
+            key="edit_results_editor"
+        )
+        if st.button("Save Edits"):
+            st.session_state.manual_data = edited_df.to_dict("records")
+            st.session_state.edit_mode = False
+            st.session_state.recalc_needed = True
+            st.success("Edits saved! The optimizer will be recalculated.")
+            st.rerun()
+
+# --- Truncate to a specific experiment ---
+if len(st.session_state.manual_data) > 0:
+    st.markdown("###  Return to a Previous Experiment")
+    max_idx = len(st.session_state.manual_data)
+    trunc_idx = st.number_input(
+        "Keep experiments up to (inclusive):",
+        min_value=1, max_value=max_idx, value=max_idx, step=1
+    )
+    if st.button("Return and Restart From Here"):
+        st.session_state.manual_data = st.session_state.manual_data[:trunc_idx]
+        st.session_state.recalc_needed = True
+        st.success(f"Returned to experiment {trunc_idx}. The optimizer will be recalculated.")
+        st.rerun()
+
+# --- Recalculate optimizer after edits or truncation ---
+if st.session_state.recalc_needed:
+    if st.session_state.manual_variables and st.session_state.manual_data:
+        opt_vars = []
+        for name, val1, val2, _, vtype in st.session_state.manual_variables:
+            if vtype == "continuous":
+                opt_vars.append(Real(val1, val2, name=name))
+            else:
+                opt_vars.append(Categorical(val1, name=name))
+        optimizer = StepBayesianOptimizer(opt_vars)
+        for row in st.session_state.manual_data:
+            x = [row[name] for name, *_ in st.session_state.manual_variables]
+            y_val = row[st.session_state.response]
+            optimizer.observe(x, -y_val)
+        st.session_state.manual_optimizer = optimizer
+        st.session_state.iteration = len(st.session_state.manual_data)
+    st.session_state.recalc_needed = False
 
 # --- Button to get next suggestion manually ---
 if (
