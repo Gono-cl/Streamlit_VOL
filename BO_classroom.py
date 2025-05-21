@@ -7,8 +7,6 @@ from skopt.utils import use_named_args
 
 st.title("🎓 Bayesian Optimization Classroom")
 
-st.code ( "print(Hello word)", language = "python")
-
 st.markdown("""
 This page introduces the key concepts of **Bayesian Optimization (BO)** through simple explanations and an example based on **reaction optimization in chemistry**.
 """)
@@ -61,6 +59,21 @@ def chemical_yield(params):
         np.exp(-((t - 30)**2) / 200)
     )  # Negative for minimization
 
+with st.expander("🔬 Show True Yield Surface (for illustration)"):
+    T_grid = np.linspace(30, 110, 80)
+    t_grid = np.linspace(10, 60, 80)
+    TT, tt = np.meshgrid(T_grid, t_grid)
+    Z = -chemical_yield([TT, tt]) * 100  # convert to %
+
+    fig3, ax3 = plt.subplots(figsize=(6, 4))
+    c = ax3.contourf(TT, tt, Z, levels=30, cmap="viridis")
+    plt.colorbar(c, ax=ax3, label="Yield (%)")
+    ax3.set_xlabel("Temperature (°C)")
+    ax3.set_ylabel("Time (min)")
+    ax3.set_title("True Reaction Yield Surface")
+    st.pyplot(fig3, use_container_width=False)
+
+
 n_calls = st.slider("Number of BO Iterations", min_value=5, max_value=30, value=10)
 n_initial_points = st.slider("Number of Initial Points", min_value=1, max_value=10, value=3)
 acq_func = st.selectbox("Acquisition Function", options=["EI", "PI", "LCB"], index=0)
@@ -100,6 +113,32 @@ if st.button("🚀 Run Optimization"):
     ax2.set_ylabel("Time (min)")
     ax2.set_title("Explored Conditions and Yields")
     st.pyplot(fig2, use_container_width = False)
+
+    # Surrogate model prediction (mean)
+    from skopt.learning import GaussianProcessRegressor
+
+    # Fit GP to observed data
+    gp = result.models[-1]  # Last GP model used
+
+    # Create grid for prediction
+    T_pred = np.linspace(30, 110, 60)
+    t_pred = np.linspace(10, 60, 60)
+    TT_pred, tt_pred = np.meshgrid(T_pred, t_pred)
+    X_pred = np.vstack([TT_pred.ravel(), tt_pred.ravel()]).T
+
+    y_pred, y_std = gp.predict(X_pred, return_std=True)
+    y_pred = -y_pred * 100  # convert to % yield
+
+    fig4, ax4 = plt.subplots(figsize=(6, 4))
+    c2 = ax4.contourf(TT_pred, tt_pred, y_pred.reshape(TT_pred.shape), levels=30, cmap="viridis")
+    plt.colorbar(c2, ax=ax4, label="Predicted Yield (%)")
+    ax4.scatter(T_vals, t_vals, c='red', s=40, label='Sampled')
+    ax4.set_xlabel("Temperature (°C)")
+    ax4.set_ylabel("Time (min)")
+    ax4.set_title("Surrogate Model Prediction (GP Mean)")
+    ax4.legend()
+    st.pyplot(fig4, use_container_width=False)
+
 
 # --- Section 4: Glossary ---
 st.header("📚 BO Glossary")
