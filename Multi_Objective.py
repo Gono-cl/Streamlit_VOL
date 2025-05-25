@@ -11,7 +11,13 @@ from core.hardware.opc_communication import OPCClient
 from core.hardware.experimental_run import ExperimentRunner
 from core.utils.logger import StreamlitLogger
 import sys
+import os
+import json
+import dill as pickle
 
+# --- Save/Resume Section ---
+SAVE_DIR = "resumable_multiobjective_runs"
+os.makedirs(SAVE_DIR, exist_ok=True)
 
 # --- Page Title ---
 st.title("🌈 Multi-Objective Optimization")
@@ -23,16 +29,58 @@ sim_mode_label = {
     "full": "🧪 Full Simulation (No Hardware)"
 }
 simulation_mode = st.sidebar.selectbox("Experiment Mode", options=["off", "hybrid", "full"], format_func=lambda x: sim_mode_label[x])
-
 opc_url = st.sidebar.text_input("🔌 OPC Server URL", value="http://em-nun:57080")
 
+# --- Always initialize session state keys ---
+if "simulation_mode" not in st.session_state:
+    st.session_state.simulation_mode = simulation_mode
+if "opc_url" not in st.session_state:
+    st.session_state.opc_url = opc_url
+
 # --- Simulation Mode Banner ---
-if simulation_mode != "off":
+if st.session_state.simulation_mode != "off":
     st.warning("⚠️ Simulation Mode is ON — OPC hardware interaction is partially or fully disabled.")
+
+# --- Resume Section ---
+st.sidebar.markdown("---")
+resume_file = st.sidebar.selectbox(
+    "🔄 Resume from Previous Multi-Objective Run",
+    options=["None"] + os.listdir(SAVE_DIR)
+)
+if resume_file != "None" and st.sidebar.button("Load Previous Run"):
+    run_path = os.path.join(SAVE_DIR, resume_file)
+    with open(os.path.join(run_path, "optimizer.pkl"), "rb") as f:
+        st.session_state.optimizer = pickle.load(f)
+    df = pd.read_csv(os.path.join(run_path, "experiment_data.csv"))
+    with open(os.path.join(run_path, "metadata.json"), "r") as f:
+        metadata = json.load(f)
+
+    # Restore session state
+    st.session_state.experiment_data = df.to_dict("records")
+    st.session_state.iteration = len(df)
+    st.session_state.variables = metadata["variables"]
+    st.session_state.objectives = metadata["objectives"]
+    st.session_state.total_iterations = metadata["total_iterations"]
+    st.session_state.optimization_running = True
+    st.session_state.run_name = resume_file
+
+    # --- Restore simulation_mode and opc_url from metadata ---
+    st.session_state.simulation_mode = metadata.get("simulation_mode", "off")
+    st.session_state.opc_url = metadata.get("opc_url", "http://em-nun:57080")
+
+    # --- Re-initialize OPC client and runner ---
+    st.session_state.opc_client = OPCClient(st.session_state.opc_url)
+    st.session_state.runner = ExperimentRunner(
+        st.session_state.opc_client,
+        "multi_objective_log.csv",
+        simulation_mode=st.session_state.simulation_mode
+    )
+
+    st.success(f"Loaded run: {resume_file}")
 
 # --- Experiment Metadata ---
 st.subheader("🧪 Experiment Metadata")
-experiment_name = st.text_input("Experiment Name")
+experiment_name = st.text_input("Experiment Name", value=st.session_state.get("run_name", ""))
 experiment_date = st.date_input("Experiment Date", datetime.today())
 experiment_notes = st.text_area("Additional Notes")
 
@@ -83,6 +131,10 @@ OBJECTIVE_OPTIONS = [
 ]
 objectives = st.multiselect("🎯 Select Objectives to Optimize", OBJECTIVE_OPTIONS)
 
+# --- Always keep objectives in session state ---
+if "objectives" not in st.session_state or not st.session_state.objectives:
+    st.session_state.objectives = objectives
+
 st.markdown("### Select Maximize or Minimize Objective")
 
 objective_directions = {}
@@ -101,15 +153,19 @@ if st.button("Start Optimization"):
         st.session_state.optimization_running = True
         st.session_state.iteration = 0
         st.session_state.experiment_data = []
-        st.session_state.opc_client = OPCClient(opc_url)
-        st.session_state.runner = ExperimentRunner(st.session_state.opc_client, "multi_objective_log.csv", simulation_mode=simulation_mode)
+        st.session_state.simulation_mode = simulation_mode
+        st.session_state.opc_url = opc_url
+        st.session_state.opc_client = OPCClient(st.session_state.opc_url)
+        st.session_state.runner = ExperimentRunner(st.session_state.opc_client, "multi_objective_log.csv", simulation_mode=st.session_state.simulation_mode)
         search_space = [(low, high) for _, low, high, _ in st.session_state.variables]
         n_objectives = len(objectives)
+        st.session_state.objectives = objectives  # <-- Always update objectives in session state
         st.session_state.optimizer = Optimizer(
             dimensions=search_space,
             n_initial_points=initial_experiments,
             n_objectives=n_objectives
         )
+        st.session_state.stop_requested = False  # Reset stop flag
     st.markdown("### 📋 Optimization Log")
     # --- Live Logger Setup ---
     log_placeholder = st.empty()
@@ -118,15 +174,27 @@ if st.button("Start Optimization"):
 
 # --- Optimization Loop ---
 if st.session_state.get("optimization_running", False):
+    # --- Stop Button ---
+    if st.button("🛑 Stop Experiment"):
+        st.session_state.stop_requested = True
+
     optimizer = st.session_state.optimizer
     experiment_data = st.session_state.experiment_data
     runner = st.session_state.runner
     iteration = st.session_state.iteration
+    objectives = st.session_state.objectives  # <-- Always use objectives from session state
 
     results_chart = st.empty()
     progress_bar = st.progress(iteration / total_iterations)
 
     while iteration < total_iterations:
+        # --- Stop Check in Loop ---
+        if st.session_state.get("stop_requested", False):
+            st.warning("Experiment stopped by user.")
+            st.session_state.optimization_running = False
+            st.session_state.stop_requested = False  # Reset for next run
+            break
+
         x = optimizer.ask()
         params = {name: val for (name, *_), val in zip(st.session_state.variables, x)}
         result = runner.run_experiment(params, experiment_number=iteration + 1, total_iterations=total_iterations, objectives=objectives, directions=objective_directions)
@@ -155,6 +223,26 @@ if st.session_state.get("optimization_running", False):
         progress_bar.progress(iteration / total_iterations)
         time.sleep(0.5)
 
+        # --- Save after each iteration ---
+        run_name = experiment_name.strip() if experiment_name.strip() else "multiobjective_experiment"
+        run_path = os.path.join(SAVE_DIR, run_name)
+        os.makedirs(run_path, exist_ok=True)
+        df_results.to_csv(os.path.join(run_path, "experiment_data.csv"), index=False)
+        with open(os.path.join(run_path, "optimizer.pkl"), "wb") as f:
+            pickle.dump(optimizer, f)
+        metadata = {
+            "variables": st.session_state.variables,
+            "objectives": objectives,
+            "total_iterations": total_iterations,
+            "experiment_name": experiment_name,
+            "experiment_notes": experiment_notes,
+            "experiment_date": str(experiment_date),
+            "simulation_mode": st.session_state.simulation_mode,
+            "opc_url": st.session_state.opc_url
+        }
+        with open(os.path.join(run_path, "metadata.json"), "w") as f:
+            json.dump(metadata, f, indent=4)
+
     if iteration == total_iterations:
         st.success("✅ Multi-objective Optimization Complete!")
 
@@ -173,7 +261,6 @@ if st.session_state.get("optimization_running", False):
             obj_x, obj_y = objectives[0], objectives[1]
             st.markdown(f"### 🎯 Pareto Front: {obj_x} vs {obj_y}")
 
-            
             pareto_df = df_pareto_calc[[obj_x, obj_y]].copy()
             pareto_df = pareto_df.sort_values(by=obj_x, ascending=False)
 
@@ -202,7 +289,6 @@ if st.session_state.get("optimization_running", False):
             elif df_results_plot[[obj_x, obj_y]].dropna().empty:
                 st.warning("⚠️ No valid values for selected objectives. Check if the objectives were computed correctly.")
 
-
             chart = alt.Chart(df_results_plot).mark_circle(size=60).encode(
                 x=alt.X(f"{obj_x}:Q", title=obj_x, scale=alt.Scale(domain=[x_min, x_max])),
                 y=alt.Y(f"{obj_y}:Q", title=obj_y, scale=alt.Scale(domain=[y_min, y_max])),
@@ -218,16 +304,13 @@ if st.session_state.get("optimization_running", False):
         export_to_csv(df_results, f"{timestamp}_multiobjective_results.csv")
         export_to_excel(df_results, f"{timestamp}_multiobjective_results.xlsx")
 
-        
-
-
         optimization_settings = {
             "initial_experiments": initial_experiments,
             "total_iterations": total_iterations,
             "objectives": objectives,
             "method": "ProcessOptimizer",
-            "simulation_mode": simulation_mode,
-            "opc_url": opc_url,
+            "simulation_mode": st.session_state.simulation_mode,
+            "opc_url": st.session_state.opc_url,
             "raw_measurement_file": raw_csv_path
         }
 
@@ -241,5 +324,3 @@ if st.session_state.get("optimization_running", False):
         )
 
         st.session_state.optimization_running = False
-
-

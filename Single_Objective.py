@@ -7,6 +7,7 @@ import time
 import dill as pickle
 import os
 import json
+from skopt.space import Real, Categorical  # <-- Add this import
 from core.optimization.bayesian_optimization import StepBayesianOptimizer
 from core.utils.export_tools import export_to_csv, export_to_excel
 from core.utils import db_handler
@@ -55,7 +56,6 @@ if resume_file != "None" and st.sidebar.button("Load Previous Run"):
     st.session_state.runner = ExperimentRunner(OPCClient(metadata["opc_url"]), "experiment_log.csv", simulation_mode=metadata["simulation_mode"])
     st.session_state.optimization_running = True
     st.session_state.run_name = resume_file
-
 
 # --- Experiment Metadata ---
 st.subheader("🧪 Experiment Metadata")
@@ -110,9 +110,9 @@ col_start, col_stop = st.columns(2)
 if col_start.button("▶ Start Optimization"):
     run_path = os.path.join(SAVE_DIR, experiment_name)
     os.makedirs(run_path, exist_ok=True)
-    st.session_state.optimizer = StepBayesianOptimizer([
-        (name, low, high) for name, low, high, _ in st.session_state.variables
-    ])
+    # --- FIX: Use Real for continuous variables ---
+    opt_vars = [Real(low, high, name=name) for name, low, high, _ in st.session_state.variables]
+    st.session_state.optimizer = StepBayesianOptimizer(opt_vars)
     st.session_state.experiment_data = []
     st.session_state.iteration = 0
     st.session_state.runner = ExperimentRunner(OPCClient(opc_url), "experiment_log.csv", simulation_mode=simulation_mode)
@@ -218,9 +218,6 @@ if st.session_state.get("optimization_running", False):
         )
 
         st.session_state.optimization_running = False
-
-
-
 
 
 
