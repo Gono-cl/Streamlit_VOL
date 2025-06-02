@@ -1,0 +1,32 @@
+{
+    "variables": [
+        [
+            "temperature",
+            20.0,
+            100.0,
+            "\u00b0C"
+        ],
+        [
+            "pressure",
+            2.0,
+            4.0,
+            "bar"
+        ],
+        [
+            "residence time",
+            20.0,
+            100.0,
+            "s"
+        ]
+    ],
+    "objectives": [
+        "Normalized Area",
+        "Throughput"
+    ],
+    "total_iterations": 20,
+    "experiment_name": "Simulation Mode Test",
+    "experiment_notes": "",
+    "experiment_date": "2025-06-02",
+    "simulation_mode": "full",
+    "opc_url": "http://em-nun:57080"
+}

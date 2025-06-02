@@ -166,11 +166,6 @@ if st.button("Start Optimization"):
             n_objectives=n_objectives
         )
         st.session_state.stop_requested = False  # Reset stop flag
-    st.markdown("### 📋 Optimization Log")
-    # --- Live Logger Setup ---
-    log_placeholder = st.empty()
-    logger = StreamlitLogger(placeholder=log_placeholder)
-    sys.stdout = logger 
 
 # --- Optimization Loop ---
 if st.session_state.get("optimization_running", False):
@@ -182,17 +177,23 @@ if st.session_state.get("optimization_running", False):
     experiment_data = st.session_state.experiment_data
     runner = st.session_state.runner
     iteration = st.session_state.iteration
-    objectives = st.session_state.objectives  # <-- Always use objectives from session state
+    objectives = st.session_state.objectives
 
-    results_chart = st.empty()
+    st.markdown("### 📋 Optimization Log")
+    # --- Live Logger Setup ---
+    log_placeholder = st.empty()
+    logger = StreamlitLogger(placeholder=log_placeholder)
+    sys.stdout = logger 
+
     progress_bar = st.progress(iteration / total_iterations)
+    st.markdown("### Pareto Chart")   
+    pareto_chart_placeholder = st.empty()
 
     while iteration < total_iterations:
-        # --- Stop Check in Loop ---
         if st.session_state.get("stop_requested", False):
             st.warning("Experiment stopped by user.")
             st.session_state.optimization_running = False
-            st.session_state.stop_requested = False  # Reset for next run
+            st.session_state.stop_requested = False
             break
 
         x = optimizer.ask()
@@ -216,7 +217,50 @@ if st.session_state.get("optimization_running", False):
         df_results = pd.DataFrame(experiment_data)
         raw_csv_path = runner.save_full_measurements_to_csv(experiment_name)
 
-        results_chart.line_chart(df_results[["Experiment #"] + objectives].set_index("Experiment #"))
+        # --- Update charts inside the loop ---
+
+        if len(objectives) == 2 and not df_results.empty:
+            obj_x, obj_y = objectives[0], objectives[1]
+            df_results_plot = df_results.copy()
+            for obj in objectives:
+                if st.session_state.get(f"{obj}_direction", "maximize") == "minimize":
+                    df_results_plot[obj] = -df_results_plot[obj]
+            df_pareto_calc = df_results.copy()
+            for obj in objectives:
+                if st.session_state.get(f"{obj}_direction", "maximize") == "minimize":
+                    df_pareto_calc[obj] = -df_pareto_calc[obj]
+
+            pareto_df = df_pareto_calc[[obj_x, obj_y]].copy().sort_values(by=obj_x, ascending=False)
+            pareto_front_indices = []
+            best_so_far = -np.inf
+            for idx, row_ in pareto_df.iterrows():
+                if row_[obj_y] > best_so_far:
+                    pareto_front_indices.append(idx)
+                    best_so_far = row_[obj_y]
+            pareto_front_df = df_results_plot.loc[pareto_front_indices]
+
+            x_vals = df_results_plot[obj_x]
+            y_vals = df_results_plot[obj_y]
+            x_range = x_vals.max() - x_vals.min()
+            y_range = y_vals.max() - y_vals.min()
+            x_buffer = x_range * 0.05 if x_range > 0 else 1
+            y_buffer = y_range * 0.05 if y_range > 0 else 1
+            x_min = x_vals.min() - x_buffer
+            x_max = x_vals.max() + x_buffer
+            y_min = y_vals.min() - y_buffer
+            y_max = y_vals.max() + y_buffer
+
+            chart = alt.Chart(df_results_plot).mark_circle(size=60).encode(
+                x=alt.X(f"{obj_x}:Q", title=obj_x, scale=alt.Scale(domain=[x_min, x_max])),
+                y=alt.Y(f"{obj_y}:Q", title=obj_y, scale=alt.Scale(domain=[y_min, y_max])),
+                tooltip=list(df_results.columns)).interactive()
+            pareto_line = alt.Chart(pareto_front_df).mark_line(color="red").encode(
+                x=alt.X(f"{obj_x}:Q"), y=alt.Y(f"{obj_y}:Q"))
+
+            pareto_chart_placeholder.altair_chart(chart + pareto_line, use_container_width=True)
+        elif len(objectives) > 2:
+            pareto_chart_placeholder.info("ℹ️ Pareto plot available only for 2 objectives at a time.")
+
         iteration += 1
         st.session_state.iteration = iteration
         st.session_state.experiment_data = experiment_data
@@ -245,82 +289,4 @@ if st.session_state.get("optimization_running", False):
 
     if iteration == total_iterations:
         st.success("✅ Multi-objective Optimization Complete!")
-
-        df_results_plot = df_results.copy()
-        for obj in objectives:
-            if objective_directions.get(obj) == "minimize":
-                df_results_plot[obj] = -df_results_plot[obj]
-        # 2. Flip values for Pareto front detection (maximize everything)
-        df_pareto_calc = df_results.copy()
-        for obj in objectives:
-            if objective_directions.get(obj) == "minimize":
-                df_pareto_calc[obj] = -df_pareto_calc[obj]
-
-        # --- Pareto Plot (2D only for now) ---
-        if len(objectives) == 2:
-            obj_x, obj_y = objectives[0], objectives[1]
-            st.markdown(f"### 🎯 Pareto Front: {obj_x} vs {obj_y}")
-
-            pareto_df = df_pareto_calc[[obj_x, obj_y]].copy()
-            pareto_df = pareto_df.sort_values(by=obj_x, ascending=False)
-
-            pareto_front_indices = []
-            best_so_far = -np.inf
-            for idx, row in pareto_df.iterrows():
-                if row[obj_y] > best_so_far:
-                    pareto_front_indices.append(idx)
-                    best_so_far = row[obj_y]
-        
-            pareto_front_df = df_results_plot.loc[pareto_front_indices]
-
-            x_vals = df_results_plot[obj_x]
-            y_vals = df_results_plot[obj_y]
-            x_range = x_vals.max() - x_vals.min()
-            y_range = y_vals.max() - y_vals.min()
-            x_buffer = x_range * 0.05 if x_range > 0 else 1
-            y_buffer = y_range * 0.05 if y_range > 0 else 1
-            x_min = x_vals.min() - x_buffer
-            x_max = x_vals.max() + x_buffer
-            y_min = y_vals.min() - y_buffer
-            y_max = y_vals.max() + y_buffer
-
-            if df_results_plot.empty:
-                st.warning("⚠️ No data to plot. Try running some experiments first.")
-            elif df_results_plot[[obj_x, obj_y]].dropna().empty:
-                st.warning("⚠️ No valid values for selected objectives. Check if the objectives were computed correctly.")
-
-            chart = alt.Chart(df_results_plot).mark_circle(size=60).encode(
-                x=alt.X(f"{obj_x}:Q", title=obj_x, scale=alt.Scale(domain=[x_min, x_max])),
-                y=alt.Y(f"{obj_y}:Q", title=obj_y, scale=alt.Scale(domain=[y_min, y_max])),
-                tooltip=list(df_results.columns)).interactive()
-            pareto_line = alt.Chart(pareto_front_df).mark_line(color="red").encode(
-                x=alt.X(f"{obj_x}:Q"), y=alt.Y(f"{obj_y}:Q"))
-
-            st.altair_chart(chart + pareto_line, use_container_width=True)
-        else:
-            st.info("ℹ️ Pareto plot available only for 2 objectives at a time.")
-
-        timestamp = datetime.now().strftime("%Y-%m-%d %H-%M-%S")
-        export_to_csv(df_results, f"{timestamp}_multiobjective_results.csv")
-        export_to_excel(df_results, f"{timestamp}_multiobjective_results.xlsx")
-
-        optimization_settings = {
-            "initial_experiments": initial_experiments,
-            "total_iterations": total_iterations,
-            "objectives": objectives,
-            "method": "ProcessOptimizer",
-            "simulation_mode": st.session_state.simulation_mode,
-            "opc_url": st.session_state.opc_url,
-            "raw_measurement_file": raw_csv_path
-        }
-
-        db_handler.save_experiment(
-            name=experiment_name,
-            notes=experiment_notes,
-            variables=st.session_state.variables,
-            df_results=df_results,
-            best_result={},
-            settings=optimization_settings
-        )
-
         st.session_state.optimization_running = False
