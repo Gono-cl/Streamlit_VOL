@@ -170,14 +170,14 @@ class ExperimentRunner:
             print(f"Normalized measurement:{normalized:.2f}")
             return corrected
 
-    def collect_measurements(self, rsd_threshold=5, max_measurements=15, iteration=0, parameters=None):
+    def collect_measurements(self, rsd_threshold=2, max_measurements=15, iteration=0, parameters=None):
         measurements = []
         all_measurements = []
 
         res_time = parameters.get("residence_time", 20)
         ratio = parameters.get("ratio_org_aq", 1.0)
 
-        while len(measurements) < 5:
+        while len(measurements) < 3:
             val = self._read_measurement(res_time=res_time, ratio=ratio)
             print(f"📏 Measurement {len(measurements)+1} = {val:.2f}")
             measurements.append(val)
@@ -220,7 +220,7 @@ class ExperimentRunner:
             print("🛑 Simulation mode: skipping pump shutdown.")
 
     def countdown(self, residence_time):
-        for secs in range(residence_time * 3, 0, -1):
+        for secs in range(residence_time * 6, 0, -1):
             mm, ss = secs // 60, secs % 60
             countdown_html = f"""
             <div style='background-color:#fff3cd; padding: 15px; border-left: 5px solid #ffca28; border-radius: 5px;'>
@@ -291,7 +291,6 @@ class ExperimentRunner:
         if self.simulation_mode in ["off", "hybrid"]:
             self.check_water_and_clean_probe()
             self.monitor_temperature(parameters["temperature"])
-            self.set_pressure(parameters["pressure"])
             self.set_pump_flows_from_ratio_and_time(parameters["ratio_org_aq"], parameters["residence_time"])
             self.countdown(int(parameters["residence_time"]))
         else:
@@ -303,8 +302,17 @@ class ExperimentRunner:
                 result = {objectives[0]: result[objectives[0]]}  # Only return the selected objective
 
         else:
-            mean_measurement = self.collect_measurements()
-            result = {objectives[0]: mean_measurement}
+            mean_measurement = self.collect_measurements(parameters = parameters)
+            reactor_volume = 1.4
+            res_time = parameters.get("residence_time", 20)
+            ratio = parameters.get("ratio_org_aq", 1.0)
+            total_flow = reactor_volume /(res_time/60)
+            flow_aq = total_flow / (1 + ratio)
+            flow_org = total_flow - flow_aq
+            
+            result = simulate_objectives(
+                mean_measurement, flow_aq, flow_org, res_time, selected_objectives=objectives, directions=directions
+            )
             
         self.stop_pumps()
         return result

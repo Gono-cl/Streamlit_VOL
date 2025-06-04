@@ -20,13 +20,13 @@ SAVE_DIR = "resumable_multiobjective_runs"
 os.makedirs(SAVE_DIR, exist_ok=True)
 
 # --- Page Title ---
-st.title("🌈 Multi-Objective Optimization")
+st.title("Multi-Objective Optimization")
 
 # --- Sidebar Simulation Toggle and OPC URL ---
 sim_mode_label = {
-    "off": "🧪 Real Hardware (Full)",
-    "hybrid": "🧪 Hybrid (Simulated Measurement)",
-    "full": "🧪 Full Simulation (No Hardware)"
+    "off": " Real Hardware (Full)",
+    "hybrid": "Hybrid (Simulated Measurement)",
+    "full": "Full Simulation (No Hardware)"
 }
 simulation_mode = st.sidebar.selectbox("Experiment Mode", options=["off", "hybrid", "full"], format_func=lambda x: sim_mode_label[x])
 opc_url = st.sidebar.text_input("🔌 OPC Server URL", value="http://em-nun:57080")
