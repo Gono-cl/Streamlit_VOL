@@ -189,11 +189,10 @@ class ExperimentRunner:
 
         while rsd >= rsd_threshold and len(measurements) < max_measurements:
             print("⚠️ RSD too high. Taking another measurement...")
-            time.sleep(28)
-
+            time.sleep(30)  # Wait before next measurement
             new_val = self._read_measurement(res_time=res_time, ratio=ratio)
             print(f"📏 New Measurement = {new_val:.2f}")
-            measurements = measurements[-4:] + [new_val]
+            measurements = measurements[-2:] + [new_val]
             all_measurements.append(new_val)
 
             rsd = self.calculate_rsd(measurements)
@@ -220,7 +219,7 @@ class ExperimentRunner:
             print("🛑 Simulation mode: skipping pump shutdown.")
 
     def countdown(self, residence_time):
-        for secs in range(residence_time * 6, 0, -1):
+        for secs in range(residence_time * 9, 0, -1):
             mm, ss = secs // 60, secs % 60
             countdown_html = f"""
             <div style='background-color:#fff3cd; padding: 15px; border-left: 5px solid #ffca28; border-radius: 5px;'>
@@ -291,6 +290,7 @@ class ExperimentRunner:
         if self.simulation_mode in ["off", "hybrid"]:
             self.check_water_and_clean_probe()
             self.monitor_temperature(parameters["temperature"])
+            self.set_pressure(parameters["pressure"])
             self.set_pump_flows_from_ratio_and_time(parameters["ratio_org_aq"], parameters["residence_time"])
             self.countdown(int(parameters["residence_time"]))
         else:
