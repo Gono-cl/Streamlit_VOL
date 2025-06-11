@@ -32,7 +32,7 @@
     "total_iterations": 20,
     "experiment_name": "Test Real Mode 2",
     "experiment_notes": "",
-    "experiment_date": "2025-06-05",
+    "experiment_date": "2025-06-11",
     "simulation_mode": "off",
     "opc_url": "http://em-nun:57080"
 }
