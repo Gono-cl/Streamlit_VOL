@@ -94,3 +94,10 @@ def load_experiment(exp_id):
     else:
         return None
 
+def delete_experiments(exp_ids):
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.executemany("DELETE FROM experiments WHERE id = ?", [(i,) for i in exp_ids])
+    conn.commit()
+    conn.close()
+

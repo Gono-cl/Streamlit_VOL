@@ -6,13 +6,36 @@ from core.utils.generate_report import generate_report
 import plotly.express as px
 from sklearn.preprocessing import LabelEncoder
 
-st.title("📚 Experiment History")
+st.title("📚 Experiment Database")
+st.markdown("### Experiment History")
 
 experiments = db_handler.list_experiments()
 
 if not experiments:
     st.info("No experiments saved yet.")
 else:
+    # Add a title and make the table expandable
+    with st.expander("🗂️ Show/Hide Experiment List & Delete", expanded=False):
+        st.markdown("### Select experiments to delete")
+        exp_df = pd.DataFrame(experiments, columns=["ID", "Name", "Timestamp"])
+        exp_df["Delete?"] = False  # Add a checkbox column
+
+        selected = st.data_editor(
+            exp_df,
+            column_config={"Delete?": st.column_config.CheckboxColumn("Delete?")},
+            num_rows="dynamic",
+            use_container_width=True,
+            key="exp_editor"
+        )
+
+        # Get IDs of selected experiments
+        to_delete = selected[selected["Delete?"] == True]["ID"].tolist()
+        delete_btn = st.button("🗑️ Delete Selected Experiments", disabled=not to_delete)
+        if delete_btn and to_delete:
+            db_handler.delete_experiments(to_delete)
+            st.success(f"Deleted {len(to_delete)} experiment(s).")
+            st.rerun()
+
     selected_id = st.selectbox("Select an experiment", experiments, format_func=lambda x: f"{x[1]} ({x[2]})")
     if selected_id:
         exp_data = db_handler.load_experiment(selected_id[0])
