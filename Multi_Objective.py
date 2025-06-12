@@ -290,3 +290,42 @@ if st.session_state.get("optimization_running", False):
     if iteration == total_iterations:
         st.success("✅ Multi-objective Optimization Complete!")
         st.session_state.optimization_running = False
+
+        # Save results to CSV and metadata as before...
+
+        # --- Compute Pareto front for saving ---
+        if len(objectives) == 2 and not df_results.empty:
+            obj_x, obj_y = objectives[0], objectives[1]
+            df_pareto_calc = df_results.copy()
+            for obj in objectives:
+                if st.session_state.get(f"{obj}_direction", "maximize") == "minimize":
+                    df_pareto_calc[obj] = -df_pareto_calc[obj]
+            pareto_df = df_pareto_calc[[obj_x, obj_y]].copy().sort_values(by=obj_x, ascending=False)
+            pareto_front_indices = []
+            best_so_far = -np.inf
+            for idx, row_ in pareto_df.iterrows():
+                if row_[obj_y] > best_so_far:
+                    pareto_front_indices.append(idx)
+                    best_so_far = row_[obj_y]
+            pareto_front_df = df_results.loc[pareto_front_indices]
+            best_result = pareto_front_df.to_dict("records")
+        else:
+            best_result = None
+
+        optimization_settings = {
+            "initial_experiments": initial_experiments,
+            "total_iterations": total_iterations,
+            "objectives": objectives,
+            "method": "Bayesian Multi-Objective",
+            "simulation_mode": st.session_state.simulation_mode,
+            "opc_url": st.session_state.opc_url
+        }
+        db_handler.save_experiment(
+            name=experiment_name,
+            notes=experiment_notes,
+            variables=st.session_state.variables,
+            df_results=df_results,
+            best_result=best_result,
+            settings=optimization_settings
+        )
+        st.info("All results and Pareto front saved to the database.")

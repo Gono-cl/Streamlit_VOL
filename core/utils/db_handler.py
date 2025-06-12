@@ -21,7 +21,6 @@ def init_db():
             settings_json TEXT
         )
     """)
-
     conn.commit()
     conn.close()
 
@@ -29,6 +28,12 @@ def save_experiment(name, notes, variables, df_results, best_result, settings):
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    # Serialize best_result as JSON (works for both dict and list)
+    if best_result is not None:
+        best_result_json = json.dumps(best_result)
+    else:
+        best_result_json = None
 
     cursor.execute("""
         INSERT INTO experiments (
@@ -41,7 +46,7 @@ def save_experiment(name, notes, variables, df_results, best_result, settings):
         notes,
         json.dumps(variables),
         df_results.to_json(orient="records"),
-        pd.Series(best_result).to_json(orient="index"),
+        best_result_json,
         json.dumps(settings)
     ))
 
@@ -69,13 +74,21 @@ def load_experiment(exp_id):
 
     if row:
         name, timestamp, notes, var_json, res_json, best_json, settings_json = row
+        # Load best_result as dict or list
+        if best_json:
+            try:
+                best_result = json.loads(best_json)
+            except Exception:
+                best_result = None
+        else:
+            best_result = None
         return {
             "name": name,
             "timestamp": timestamp,
             "notes": notes,
             "variables": json.loads(var_json),
             "df_results": pd.read_json(res_json, orient="records"),
-            "best_result": pd.read_json(best_json, typ="series", orient="index",convert_dates=False) if best_json else None,
+            "best_result": best_result,
             "settings": json.loads(settings_json) if settings_json else None
         }
     else:

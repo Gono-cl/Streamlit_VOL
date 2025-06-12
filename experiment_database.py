@@ -49,8 +49,60 @@ else:
         st.subheader("🥇 Best Result")
         st.write(exp_data["best_result"])
 
+        # --- Show Pareto front if available ---
+        if isinstance(exp_data["best_result"], list) and len(exp_data["best_result"]) > 0 and isinstance(exp_data["best_result"][0], dict):
+            st.markdown("### 🏆 Pareto Front")
+            pareto_df = pd.DataFrame(exp_data["best_result"])
+            st.dataframe(pareto_df, use_container_width=True)
+
+            # --- Full Pareto plot: all experiments + Pareto front ---
+            if "objectives" in settings and len(settings["objectives"]) == 2:
+                obj_x, obj_y = settings["objectives"][:2]
+
+                # Calculate dynamic axis ranges with a small buffer
+                x_vals = df_results[obj_x]
+                y_vals = df_results[obj_y]
+                x_range = x_vals.max() - x_vals.min()
+                y_range = y_vals.max() - y_vals.min()
+                x_buffer = x_range * 0.05 if x_range > 0 else 1
+                y_buffer = y_range * 0.05 if y_range > 0 else 1
+                x_min = x_vals.min() - x_buffer
+                x_max = x_vals.max() + x_buffer
+                y_min = y_vals.min() - y_buffer
+                y_max = y_vals.max() + y_buffer
+
+                # Plot all experiments as blue circles
+                base_chart = alt.Chart(df_results).mark_circle(size=60, color="blue").encode(
+                    x=alt.X(obj_x, title=obj_x, scale=alt.Scale(domain=[x_min, x_max])),
+                    y=alt.Y(obj_y, title=obj_y, scale=alt.Scale(domain=[y_min, y_max])),
+                    tooltip=list(df_results.columns)
+                )
+
+                # Overlay Pareto front as a red line with points
+                if not pareto_df.empty:
+                    pareto_line = alt.Chart(pareto_df).mark_line(point=True, color="red").encode(
+                        x=alt.X(obj_x, title=obj_x, scale=alt.Scale(domain=[x_min, x_max])),
+                        y=alt.Y(obj_y, title=obj_y, scale=alt.Scale(domain=[y_min, y_max])),
+                        tooltip=list(pareto_df.columns)
+                    )
+                    st.altair_chart(base_chart + pareto_line, use_container_width=True)
+                else:
+                    st.altair_chart(base_chart, use_container_width=True)
+
         # Generate and show charts
-        response_name = settings.get("objective", "Response")
+        if "Response" in df_results.columns:
+            response_name = "Response"
+        elif "Measurement" in df_results.columns:
+            response_name = "Measurement"
+        else:
+            # For multi-objective: let user pick one
+            objective_cols = [col for col in df_results.columns if col not in ["Experiment #", "Timestamp"]]
+            if objective_cols:
+                response_name = st.selectbox("Select objective to view:", objective_cols)
+            else:
+                st.error("No objective columns found in results.")
+                st.stop()
+
         df_results[response_name] = pd.to_numeric(df_results[response_name], errors="coerce")
         df_results["Iteration"] = range(1, len(df_results) + 1)
 
@@ -105,4 +157,4 @@ else:
                     for code, label in mapping.items():
                         st.markdown(f"- `{code}` → `{label}`")
 
-      
+
