@@ -30,6 +30,7 @@ PAGES = {
     "🎯 Autonomous Single Objective Optimization": "single_objective.py",
     "📊 Autonomous Multi-Objective Optimization": "multi_objective.py",
     "🧰 Manual Optimization": "manual_experiments.py",
+    "🔄 Custom Workflow": "custom_workflow.py",
     "🧪 Design of Experiments": "DoE.py",
     "📚 Experiment DataBase": "experiment_database.py",
     "🔍 Preview Saved Run": "preview_run.py",
