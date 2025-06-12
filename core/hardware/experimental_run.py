@@ -271,6 +271,14 @@ class ExperimentRunner:
             raw_area = self.collect_measurements(parameters=parameters)
         else:
             raw_area = self.synthetic_raw_area(res_time, ratio)
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            self.full_measurement_log.append({
+                "Iteration": parameters.get("iteration", 0),
+                "Timestamp": timestamp,
+                **parameters,
+                "Measurement #": 1,
+                "Value": raw_area
+            })
 
         # Calculate flow values
         total_flow = reactor_volume / (res_time / 60)
@@ -321,9 +329,12 @@ class ExperimentRunner:
         os.makedirs("raw_measurements", exist_ok=True)
         filename = f"raw_measurements/{experiment_name.replace(' ', '_')}_measurements.csv"
         keys = self.full_measurement_log[0].keys() if self.full_measurement_log else []
-        with open(filename, 'w', newline='') as f:
+        file_exists = os.path.isfile(filename)
+        mode = 'a' if file_exists else 'w'
+        with open(filename, mode, newline='') as f:
             writer = csv.DictWriter(f, fieldnames=keys)
-            writer.writeheader()
+            if not file_exists:
+                writer.writeheader()
             writer.writerows(self.full_measurement_log)
         print(f"📁 Full measurement log saved to {filename}")
         return filename
