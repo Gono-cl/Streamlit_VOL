@@ -337,6 +337,8 @@ class ExperimentRunner:
                 writer.writeheader()
             writer.writerows(self.full_measurement_log)
         print(f"📁 Full measurement log saved to {filename}")
+        # Clear the log after saving so only new measurements are saved next time
+        self.full_measurement_log.clear()
         return filename
 
 
