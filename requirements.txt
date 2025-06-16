@@ -1,0 +1,12 @@
+streamlit
+pandas
+altair
+plotly
+scikit-optimize
+scikit-learn
+dill
+streamlit-sortables
+numpy
+ProcessOptimizer
+matplotlib
+seaborn
