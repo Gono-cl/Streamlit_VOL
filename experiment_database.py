@@ -38,7 +38,7 @@ else:
 
     selected_id = st.selectbox("Select an experiment", experiments, format_func=lambda x: f"{x[1]} ({x[2]})")
     if selected_id:
-        exp_data = db_handler.load_user_experiments(selected_id[0])
+        exp_data = db_handler.load_experiment(selected_id[0])
 
         st.subheader("📋 Metadata")
         st.write(f"**Name:** {exp_data['name']}")
