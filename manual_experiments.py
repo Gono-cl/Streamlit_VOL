@@ -449,6 +449,7 @@ if st.session_state.iteration >= total_iters:
         }
 
         db_handler.save_experiment(
+            user_email=st.user.email,
             name=experiment_name,
             notes=experiment_notes,
             variables=st.session_state.manual_variables,

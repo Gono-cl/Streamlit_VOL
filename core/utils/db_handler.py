@@ -12,6 +12,7 @@ def init_db():
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS experiments (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_email TEXT,
             name TEXT,
             timestamp TEXT,
             notes TEXT,
@@ -24,7 +25,7 @@ def init_db():
     conn.commit()
     conn.close()
 
-def save_experiment(name, notes, variables, df_results, best_result, settings):
+def save_experiment(user_email, name, notes, variables, df_results, best_result, settings):
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -37,10 +38,11 @@ def save_experiment(name, notes, variables, df_results, best_result, settings):
 
     cursor.execute("""
         INSERT INTO experiments (
-            name, timestamp, notes, variables_json, results_json, best_result_json, settings_json
+            user_email, name, timestamp, notes, variables_json, results_json, best_result_json, settings_json
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     """, (
+        user_email,
         name,
         timestamp,
         notes,
@@ -53,10 +55,10 @@ def save_experiment(name, notes, variables, df_results, best_result, settings):
     conn.commit()
     conn.close()
 
-def list_experiments():
+def list_experiments(user_email):
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
-    cursor.execute("SELECT id, name, timestamp FROM experiments ORDER BY id DESC")
+    cursor.execute("SELECT id, name, timestamp FROM experiments WHERE user_email = ? ORDER BY id DESC", (user_email,))
     rows = cursor.fetchall()
     conn.close()
     return rows

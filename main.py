@@ -3,10 +3,7 @@ from pathlib import Path
 import importlib.util
 from core.utils import db_handler
 
-# Initialize your database
-db_handler.init_db()
-
-# ✅ Set up the Streamlit page
+# ===== Streamlit page configuration =====
 st.set_page_config(
     page_title="VOL - Virtual Optimization Lab",
     page_icon="🧪",
@@ -14,7 +11,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# ✅ Hide Streamlit default UI elements
+# ===== Hide default Streamlit UI =====
 hide_streamlit_style = """
     <style>
         #MainMenu {visibility: hidden;}
@@ -24,7 +21,20 @@ hide_streamlit_style = """
 """
 st.markdown(hide_streamlit_style, unsafe_allow_html=True)
 
-# ✅ Define all app pages
+# ===== Initialize database =====
+db_handler.init_db()
+
+# ===== Google OAuth login =====
+if not st.user.is_logged_in:
+    st.button("🔐 Log in with Google", on_click=st.login)
+    st.stop()
+
+# ===== Sidebar: logout + user info =====
+st.sidebar.button("🚪 Log out", on_click=st.logout)
+st.sidebar.write(f"👤 {st.user.name}")
+st.sidebar.write(f"✉️ {st.user.email}")
+
+# ===== Define app pages =====
 PAGES = {
     "🏠 Home": "home.py",
     "🎯 Autonomous Single Objective Optimization": "single_objective.py",
@@ -38,22 +48,22 @@ PAGES = {
     "❓ FAQ – Help & Guidance": "faq.py"
 }
 
-# ✅ Navigation Sidebar
+# ===== Sidebar navigation =====
 st.sidebar.image("assets/image.png", width=300)
 st.sidebar.title("📁 Navigation")
 
-# ✅ Check if a page was requested programmatically (e.g., from preview_run.py)
 if "selected_page" in st.session_state:
     selection = st.session_state.selected_page
-    del st.session_state.selected_page  # Clean up after redirect
+    del st.session_state.selected_page
 else:
     selection = st.sidebar.radio("Go to", list(PAGES.keys()))
 
-# ✅ Load and run the selected page
+# ===== Load selected page =====
 def load_page(page_path):
     spec = importlib.util.spec_from_file_location("page", Path(page_path))
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
 
 load_page(PAGES[selection])
+
 
