@@ -26,9 +26,9 @@ st.markdown(hide_streamlit_style, unsafe_allow_html=True)
 
 # ✅ Define all app pages
 PAGES = {
-    "🏠 Home": "home.py",
-    "🎯 Autonomous Single Objective Optimization": "single_objective.py",
-    "📊 Autonomous Multi-Objective Optimization": "multi_objective.py",
+    "🏠 Home": "Home.py",
+    "🎯 Autonomous Single Objective Optimization": "Single_objective.py",
+    "📊 Autonomous Multi-Objective Optimization": "Multi_objective.py",
     "🧰 Manual Optimization": "manual_experiments.py",
     "🔄 Custom Workflow": "custom_workflow.py",
     "🧪 Design of Experiments": "DoE.py",
