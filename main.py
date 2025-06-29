@@ -83,6 +83,5 @@ def load_page(page_path):
 
 load_page(PAGES[selection])
 
-st.image("https://your-logo-url.com/logo.png", width=150)
 
 
