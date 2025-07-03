@@ -32,11 +32,11 @@ def extraction_efficiency(norm_area, flow_org):
     """
     return norm_area / flow_org
 
-def yield_proxy(raw_area):
+def yield_real(raw_area, flow_org, flow_aq):
     """
-    Simple proxy for yield using raw FT-IR area only
+    Yield using a calibration curve and the flow of organic solvent.
     """
-    return raw_area
+    return ((flow_org * raw_area) / ((flow_aq/2)*2.00)) * 100   
 
 def simulate_objectives(raw_area, flow_aq, flow_org, residence_time, selected_objectives=None, directions=None):
     """
@@ -45,7 +45,7 @@ def simulate_objectives(raw_area, flow_aq, flow_org, residence_time, selected_ob
     norm_area = normalized_area(raw_area, flow_aq, flow_org)
 
     all_objectives = {
-        "Yield": yield_proxy(raw_area),
+        "Yield": yield_real(raw_area, flow_org, flow_aq),
         "Normalized Area": norm_area,
         "Throughput": throughput(norm_area, residence_time),
         "Used Organic": used_organic(flow_org, residence_time),

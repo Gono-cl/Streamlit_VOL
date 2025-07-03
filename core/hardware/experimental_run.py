@@ -168,41 +168,40 @@ class ExperimentRunner:
     def calculate_rsd(self, measurements):
         return (np.std(measurements) / np.mean(measurements)) * 100 if np.mean(measurements) != 0 else float("inf")
 
-    def _read_measurement(self, res_time=None, ratio=None ):
+    def _read_measurement(self, res_time=None, ratio=1.0):
         if self.simulation_mode == "full":
             return np.random.uniform(70, 100)
         elif self.simulation_mode == "hybrid":
             return self.synthetic_raw_area(res_time, ratio)
         else:
-            dan_area = float(self.opc.read_value("OpusOPCSvr.HP-CZC3484P17-%3EDAN+-+Area"))
-            water_area = float(self.opc.read_value("OpusOPCSvr.HP-CZC3484P17-%3EWater+-+Area"))
-            corrected = dan_area + (0.0811122 * water_area)
-            normalized = corrected * ratio
-            print(f"Corrected measurement (DAN + 0.0811 * Water): {corrected:.2f}")
-            print(f"Normalized measurement:{normalized:.2f}")
-            return corrected
+            product_area = float(self.opc.read_value("OpusOPCSvr.HP-CZC3484P17-%3EEDA-AREA")) # Change this part for EDA
+            #water_area = float(self.opc.read_value("OpusOPCSvr.HP-CZC3484P17-%3EWater+-+Area")) # This is OK
+            #corrected = product_area + (0.0811122 * water_area) # Change this part for EDA 
+            #normalized = corrected * ratio
+            return product_area
 
     def collect_measurements(self, rsd_threshold=2, max_measurements=15, iteration=0, parameters=None):
         measurements = []
         all_measurements = []
 
         res_time = parameters.get("residence_time", 20)
-        ratio = parameters.get("ratio_org_aq", 1.0)
+        #ratio = parameters.get("ratio_org_aq", 1.0)
 
         while len(measurements) < 3:
-            val = self._read_measurement(res_time=res_time, ratio=ratio)
+            val = self._read_measurement(res_time=res_time)
             print(f"📏 Measurement {len(measurements)+1} = {val:.2f}")
             measurements.append(val)
             all_measurements.append(val)
-            time.sleep(28)
+            if len(measurements) < 3:
+                time.sleep(28)
 
         rsd = self.calculate_rsd(measurements)
         print(f"\n📊 Initial RSD = {rsd:.2f}%")
 
         while rsd >= rsd_threshold and len(measurements) < max_measurements:
             print("⚠️ RSD too high. Taking another measurement...")
-            time.sleep(30)  # Wait before next measurement
-            new_val = self._read_measurement(res_time=res_time, ratio=ratio)
+            time.sleep(28)  # Wait before next measurement
+            new_val = self._read_measurement(res_time=res_time)
             print(f"📏 New Measurement = {new_val:.2f}")
             measurements = measurements[-2:] + [new_val]
             all_measurements.append(new_val)
@@ -278,11 +277,11 @@ class ExperimentRunner:
         reactor_volume = 1.4  # mL
         # Extract required parameters
         res_time = parameters.get("residence_time", 20)
-        ratio = parameters.get("ratio_org_aq", 1.0)
+        #ratio = parameters.get("ratio_org_aq", 1.0)
         if self.simulation_mode in ["off", "hybrid"]: 
             raw_area = self.collect_measurements(parameters=parameters)
         else:
-            raw_area = self.synthetic_raw_area(res_time, ratio)
+            raw_area = self.synthetic_raw_area(res_time)
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             self.full_measurement_log.append({
                 "Iteration": parameters.get("iteration", 0),
@@ -294,7 +293,7 @@ class ExperimentRunner:
 
         # Calculate flow values
         total_flow = reactor_volume / (res_time / 60)
-        flow_aq = total_flow / (1 + ratio)
+        flow_aq = total_flow / 2
         flow_org = total_flow - flow_aq
 
         simulated_result = simulate_objectives(raw_area, flow_aq, flow_org, res_time, selected_objectives=objectives, directions=directions)
@@ -326,9 +325,9 @@ class ExperimentRunner:
             mean_measurement = self.collect_measurements(parameters = parameters)
             reactor_volume = 1.4
             res_time = parameters.get("residence_time", 20)
-            ratio = parameters.get("ratio_org_aq", 1.0)
+            #ratio = parameters.get("ratio_org_aq", 1.0)
             total_flow = reactor_volume /(res_time/60)
-            flow_aq = total_flow / (1 + ratio)
+            flow_aq = total_flow / 2
             flow_org = total_flow - flow_aq
             
             result = simulate_objectives(

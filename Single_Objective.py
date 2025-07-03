@@ -101,7 +101,15 @@ st.subheader("⚙️ Optimization Settings")
 col5, col6, col7 = st.columns(3)
 initial_experiments = col5.number_input("Initialization Experiments", min_value=1, max_value=100, value=5)
 total_iterations = col6.number_input("Total Iterations", min_value=1, max_value=100, value=20)
-response_to_optimize = col7.selectbox("Response to Optimize", ["Yield", "Conversion", "Transformation", "Productivity"])
+OBJECTIVE_OPTIONS = [
+    "Yield",
+    "Normalized Area",
+    "Throughput",
+    "Used Organic",
+    "Solvent Penalty",
+    "Extraction Efficiency"
+]
+response_to_optimize = col7.selectbox("Response to Optimize",OBJECTIVE_OPTIONS)
 st.session_state.total_iterations = total_iterations
 st.session_state.response_to_optimize = response_to_optimize
 
@@ -152,7 +160,8 @@ if st.session_state.get("optimization_running", False):
             "Experiment #": iteration + 1,
             "Timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             **params,
-            "Measurement": -y
+            "Measurement": -y,
+            response_to_optimize: result[response_to_optimize]
         }
         experiment_data.append(row)
         df_results = pd.DataFrame(experiment_data)
@@ -172,7 +181,7 @@ if st.session_state.get("optimization_running", False):
         with open(os.path.join(run_path, "metadata.json"), "w") as f:
             json.dump(metadata, f, indent=4)
 
-        results_chart.line_chart(df_results[["Experiment #", "Measurement"]].set_index("Experiment #"))
+        results_chart.line_chart(df_results[["Experiment #", response_to_optimize]].set_index("Experiment #"))
 
         for idx, (name, low, high, _) in enumerate(st.session_state.variables):
             df = df_results[[name, "Measurement"]]
