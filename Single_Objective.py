@@ -156,6 +156,7 @@ if st.session_state.get("optimization_running", False):
         }
         experiment_data.append(row)
         df_results = pd.DataFrame(experiment_data)
+        raw_csv_path = runner.save_full_measurements_to_csv(experiment_name)
 
         os.makedirs(run_path, exist_ok=True)
         df_results.to_csv(os.path.join(run_path, "experiment_data.csv"), index=False)
@@ -175,9 +176,12 @@ if st.session_state.get("optimization_running", False):
 
         for idx, (name, low, high, _) in enumerate(st.session_state.variables):
             df = df_results[[name, "Measurement"]]
+            y_min = df["Measurement"].min()
+            y_max = df["Measurement"].max()
+            margin = (y_max - y_min) * 0.05 if y_max > y_min else 1
             chart = alt.Chart(df).mark_circle(size=60).encode(
                 x=alt.X(f"{name}:Q", scale=alt.Scale(domain=[low, high])),
-                y="Measurement:Q"
+                y=alt.Y("Measurement:Q", scale=alt.Scale(domain=[y_min - margin, y_max + margin]))
             ).properties(
                 height=350,
                 title=alt.TitleParams(text=f"{name} vs Measurement", anchor="middle")
@@ -235,7 +239,7 @@ if st.session_state.get("optimization_running", False):
 
 
 
-    
+
 
 
 

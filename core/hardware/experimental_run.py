@@ -81,7 +81,7 @@ class ExperimentRunner:
         no_acid = total_acid - yes_acid
         return yes_acid, no_acid
 
-    def set_pump_flows(self, acid, residence_time):
+    def set_pump_flows_acid(self, acid, residence_time):
         total_flow = 1.4 / (residence_time / 60)
         value1 = total_flow / 4
         Vorg = round(value1 * 2, 2)
@@ -91,6 +91,18 @@ class ExperimentRunner:
             self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3APUMP_4", Vorg)
             self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3APUMP2.W1", round(no_acid, 2))
             self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3APUMP1.W1", round(yes_acid, 2))
+        else:
+            print("🔁 Simulation mode: skipping pump control.")
+    
+    def set_pump_flows(self, residence_time):
+        total_flow = 1.4 / (residence_time / 60)
+        value1 = total_flow / 4
+        Vorg = round(value1 * 2, 2)
+
+        if self.simulation_mode in ["off", "hybrid"]:
+            self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3APUMP_4", Vorg)
+            self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3APUMP2.W1", round(value1, 2))
+            self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3APUMP1.W1", round(value1, 2))
         else:
             print("🔁 Simulation mode: skipping pump control.")
 
@@ -299,7 +311,8 @@ class ExperimentRunner:
             self.check_water_and_clean_probe()
             self.monitor_temperature(parameters["temperature"])
             self.set_pressure(parameters["pressure"])
-            self.set_pump_flows_from_ratio_and_time(parameters["ratio_org_aq"], parameters["residence_time"])
+            self.set_pump_flows(parameters["residence_time"])
+            #self.set_pump_flows_from_ratio_and_time(parameters["ratio_org_aq"], parameters["residence_time"])
             self.countdown(int(parameters["residence_time"]))
         else:
             print("🔁 Full simulation mode enabled: skipping temperature and pump setup.")
