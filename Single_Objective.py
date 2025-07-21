@@ -107,7 +107,9 @@ OBJECTIVE_OPTIONS = [
     "Throughput",
     "Used Organic",
     "Solvent Penalty",
-    "Extraction Efficiency"
+    "Extraction Efficiency",
+    "Space-Time Yield"
+
 ]
 response_to_optimize = col7.selectbox("Response to Optimize",OBJECTIVE_OPTIONS)
 st.session_state.total_iterations = total_iterations

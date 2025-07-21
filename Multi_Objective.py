@@ -127,7 +127,8 @@ OBJECTIVE_OPTIONS = [
     "Throughput",
     "Used Organic",
     "Solvent Penalty",
-    "Extraction Efficiency"
+    "Extraction Efficiency",
+    "Space-Time Yield"
 ]
 objectives = st.multiselect("🎯 Select Objectives to Optimize", OBJECTIVE_OPTIONS)
 
