@@ -8,13 +8,13 @@ def normalized_area(raw_area, flow_aq, flow_org):
     
     return norm_area
 
-def throughput(raw_area, residence_time, flow_organic, Molar_mass = 114.1):
+def throughput(raw_area, flow_org, Molar_mass = 114.1):
     """
     Determine the throughput of the process.
     Throughput is defined as the amount of product per time.
     Units: mg of product per minute. 
     """
-    return raw_area * flow_organic * Molar_mass
+    return raw_area * flow_org * Molar_mass
 
 def used_organic(flow_org, residence_time):
     """
@@ -58,7 +58,7 @@ def simulate_objectives(raw_area, flow_aq, flow_org, residence_time, selected_ob
     all_objectives = {
         "Yield": yield_real(raw_area, flow_org, flow_aq),
         "Normalized Area": norm_area,
-        "Throughput": throughput(norm_area, residence_time),
+        "Throughput": throughput(norm_area, flow_org),
         "Used Organic": used_organic(flow_org, residence_time),
         "Solvent Penalty": solvent_penalty(norm_area, flow_org, residence_time),
         "Extraction Efficiency": extraction_efficiency(norm_area, flow_org),

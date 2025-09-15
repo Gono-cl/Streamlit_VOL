@@ -1,0 +1,32 @@
+{
+    "variables": [
+        [
+            "temperature",
+            25.0,
+            70.0,
+            "\u00b0C"
+        ],
+        [
+            "residence_time",
+            20.0,
+            80.0,
+            "s"
+        ],
+        [
+            "pressure",
+            2.0,
+            4.0,
+            "bar"
+        ]
+    ],
+    "objectives": [
+        "Yield",
+        "Throughput"
+    ],
+    "total_iterations": 20,
+    "experiment_name": "MOO EDA Real Test3",
+    "experiment_notes": "",
+    "experiment_date": "2025-07-23",
+    "simulation_mode": "off",
+    "opc_url": "http://em-nun:57080"
+}

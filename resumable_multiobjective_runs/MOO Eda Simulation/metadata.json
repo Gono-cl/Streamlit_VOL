@@ -1,0 +1,32 @@
+{
+    "variables": [
+        [
+            "temperature",
+            20.0,
+            50.0,
+            "\u00b0C"
+        ],
+        [
+            "residence_time",
+            20.0,
+            40.0,
+            "s"
+        ],
+        [
+            "pressure",
+            2.0,
+            4.0,
+            "bar"
+        ]
+    ],
+    "objectives": [
+        "Yield",
+        "Throughput"
+    ],
+    "total_iterations": 20,
+    "experiment_name": "MOO Eda Simulation",
+    "experiment_notes": "",
+    "experiment_date": "2025-07-21",
+    "simulation_mode": "hybrid",
+    "opc_url": "http://em-nun:57080"
+}
