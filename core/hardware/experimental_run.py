@@ -230,7 +230,7 @@ class ExperimentRunner:
             print("🛑 Simulation mode: skipping pump shutdown.")
 
     def countdown(self, residence_time):
-        for secs in range(residence_time * 9, 0, -1):
+        for secs in range(residence_time * 3, 0, -1):
             mm, ss = secs // 60, secs % 60
             countdown_html = f"""
             <div style='background-color:#fff3cd; padding: 15px; border-left: 5px solid #ffca28; border-radius: 5px;'>
@@ -310,7 +310,8 @@ class ExperimentRunner:
             self.check_water_and_clean_probe()
             self.monitor_temperature(parameters["temperature"])
             self.set_pressure(parameters["pressure"])
-            self.set_pump_flows(parameters["residence_time"])
+            #self.set_pump_flows(parameters["residence_time"])
+            self.set_pump_flows_acid(parameters["acid"], parameters["residence_time"])
             #self.set_pump_flows_from_ratio_and_time(parameters["ratio_org_aq"], parameters["residence_time"])
             self.countdown(int(parameters["residence_time"]))
         else:
@@ -323,7 +324,7 @@ class ExperimentRunner:
 
         else:
             mean_measurement = self.collect_measurements(parameters = parameters)
-            reactor_volume = 1.4
+            reactor_volume = 20
             res_time = parameters.get("residence_time", 20)
             #ratio = parameters.get("ratio_org_aq", 1.0)
             total_flow = reactor_volume /(res_time/60)
