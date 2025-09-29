@@ -9,13 +9,15 @@ class OPCClient:
         self.server_url = server_url
 
     def read_value(self, item):
-        """Reads a value from the OPC server."""
         try:
-            response = requests.get(f"{self.server_url}/read?item={item}")
+            response = requests.get(f"{self.server_url}/read?item={item}", verify=False, timeout=2)
             response.raise_for_status()
-            data = json.loads(response.text)
-            return data.get("data", [{}])[0].get("Value", None)
-        except requests.exceptions.RequestException as e:
+            json_object = response.json()
+            data = json_object.get("data", [])
+            if not data:
+                return None
+            return data[0]["Properties"]["Value"]
+        except Exception as e:
             print(f"Error reading from OPC: {e}")
             return None
 

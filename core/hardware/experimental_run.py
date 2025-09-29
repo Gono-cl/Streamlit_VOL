@@ -2,6 +2,7 @@ import time
 import numpy as np
 import csv
 from core.hardware.opc_communication import OPCClient
+from core.hardware.autosampler import AutoSampler
 from core.objectives import simulate_objectives
 import streamlit as st
 import matplotlib.pyplot as plt
@@ -11,8 +12,10 @@ import numpy as np
 
 
 class ExperimentRunner:
-    def __init__(self, opc_client: OPCClient, csv_filename: str, simulation_mode: str = "off"):
+    def __init__(self, opc_client: OPCClient, csv_filename: str, simulation_mode: str = "off", use_autosampler: bool = False):
         self.opc = opc_client
+        self.use_autosampler = use_autosampler
+        self.autosampler = AutoSampler(opc_client, vial_volume_ml=2.0) if use_autosampler else None
         self.csv_filename = csv_filename
         self.simulation_mode = simulation_mode  # Options: "off", "full", "hybrid"
         self.experiment_status_placeholder = st.sidebar.empty()
@@ -21,6 +24,8 @@ class ExperimentRunner:
         self.measurements_plot_placeholder = st.empty()
         self.start_time = None
         self.full_measurement_log = []  # Store all measurements for the full experiment
+        self.tray_pos_waste = 0
+        self.tray_pos_collect = 1
 
     def initialize_experiment(self, experiment_number, iterations, parameters):
         self.start_time = time.time()
@@ -137,9 +142,11 @@ class ExperimentRunner:
         
         if self.simulation_mode in ["off", "hybrid"]:
             print("inside the if statement")
+            print("SELF",self.use_autosampler)
             self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3ACHILLER_01.ON", 1)
             self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3ACHILLER_01.W1", target_temp)
             self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3APUMP_4", 0.2) # Organic
+            print(target_temp)
 
             print(f"🧊 Waiting for temperature to reach {target_temp}°C...")
 
@@ -181,7 +188,7 @@ class ExperimentRunner:
             return product_area
 
     def collect_measurements(self, rsd_threshold=2, max_measurements=15, iteration=0, parameters=None):
-        measurements = []
+        measurements = [] 
         all_measurements = []
 
         res_time = parameters.get("residence_time", 20)
@@ -230,7 +237,7 @@ class ExperimentRunner:
             print("🛑 Simulation mode: skipping pump shutdown.")
 
     def countdown(self, residence_time):
-        for secs in range(residence_time * 3, 0, -1):
+        for secs in range(residence_time * 1, 0, -1):
             mm, ss = secs // 60, secs % 60
             countdown_html = f"""
             <div style='background-color:#fff3cd; padding: 15px; border-left: 5px solid #ffca28; border-radius: 5px;'>
@@ -310,10 +317,10 @@ class ExperimentRunner:
             self.check_water_and_clean_probe()
             self.monitor_temperature(parameters["temperature"])
             self.set_pressure(parameters["pressure"])
-            #self.set_pump_flows(parameters["residence_time"])
-            self.set_pump_flows_acid(parameters["acid"], parameters["residence_time"])
+            self.set_pump_flows(parameters["residence_time"])
             #self.set_pump_flows_from_ratio_and_time(parameters["ratio_org_aq"], parameters["residence_time"])
             self.countdown(int(parameters["residence_time"]))
+
         else:
             print("🔁 Full simulation mode enabled: skipping temperature and pump setup.")
 
@@ -324,17 +331,26 @@ class ExperimentRunner:
 
         else:
             mean_measurement = self.collect_measurements(parameters = parameters)
-            reactor_volume = 20
+            reactor_volume = 1.4
             res_time = parameters.get("residence_time", 20)
             #ratio = parameters.get("ratio_org_aq", 1.0)
             total_flow = reactor_volume /(res_time/60)
             flow_aq = total_flow / 2
             flow_org = total_flow - flow_aq
-            
+            # collect sample into vial placed in autosampler
             result = simulate_objectives(
                 mean_measurement, flow_aq, flow_org, res_time, selected_objectives=objectives, directions=directions
             )
-            
+
+        if self.use_autosampler:
+            self.autosampler.clean_before_collect(self.tray_pos_waste)
+            self.autosampler.move_prepare_needle(self.tray_pos_collect)
+            self.autosampler.start_collection(flow_rate=1.4, volume=2.0)
+            self.tray_pos_waste += 2
+            self.tray_pos_collect += 2
+        else:
+            print("ℹ️ Autosampler disabled: skipping sample collection.")
+
         self.stop_pumps()
         return result
 
@@ -354,8 +370,7 @@ class ExperimentRunner:
         self.full_measurement_log.clear()
         return filename
 
-
-
+    
 
 
 

@@ -31,11 +31,16 @@ sim_mode_label = {
 simulation_mode = st.sidebar.selectbox("Experiment Mode", options=["off", "hybrid", "full"], format_func=lambda x: sim_mode_label[x])
 opc_url = st.sidebar.text_input("🔌 OPC Server URL", value="http://em-nun:57080")
 
+# --- Sidebar: Use Autosampler ---
+use_autosampler = st.sidebar.checkbox("Use Autosampler", value=True)
+st.session_state.use_autosampler = use_autosampler
+
 # --- Always initialize session state keys ---
 if "simulation_mode" not in st.session_state:
     st.session_state.simulation_mode = simulation_mode
 if "opc_url" not in st.session_state:
     st.session_state.opc_url = opc_url
+    
 
 # --- Simulation Mode Banner ---
 if st.session_state.simulation_mode != "off":
@@ -73,7 +78,8 @@ if resume_file != "None" and st.sidebar.button("Load Previous Run"):
     st.session_state.runner = ExperimentRunner(
         st.session_state.opc_client,
         "multi_objective_log.csv",
-        simulation_mode=st.session_state.simulation_mode
+        simulation_mode=st.session_state.simulation_mode,
+        use_autosampler=st.session_state.use_autosampler
     )
 
     st.success(f"Loaded run: {resume_file}")
