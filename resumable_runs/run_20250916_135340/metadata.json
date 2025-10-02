@@ -1,0 +1,26 @@
+{
+    "variables": [
+        [
+            "pressure",
+            2.0,
+            4.0,
+            "bar"
+        ],
+        [
+            "residence_time",
+            20.0,
+            40.0,
+            "s"
+        ],
+        [
+            "temperature",
+            20.0,
+            40.0,
+            "\u00b0C"
+        ]
+    ],
+    "response": "Yield",
+    "total_iterations": 20,
+    "opc_url": "http://em-flaut:57080",
+    "simulation_mode": "hybrid"
+}

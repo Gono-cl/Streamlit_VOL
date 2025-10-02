@@ -2,6 +2,7 @@ import time
 import numpy as np
 import csv
 from core.hardware.opc_communication import OPCClient
+from core.hardware.autosampler import AutoSampler
 from core.objectives import simulate_objectives
 import streamlit as st
 import matplotlib.pyplot as plt
@@ -13,6 +14,7 @@ import numpy as np
 class ExperimentRunner:
     def __init__(self, opc_client: OPCClient, csv_filename: str, simulation_mode: str = "off"):
         self.opc = opc_client
+        self.autosampler = AutoSampler(opc_client, vial_volume_ml=2.0)
         self.csv_filename = csv_filename
         self.simulation_mode = simulation_mode  # Options: "off", "full", "hybrid"
         self.experiment_status_placeholder = st.sidebar.empty()
@@ -21,6 +23,8 @@ class ExperimentRunner:
         self.measurements_plot_placeholder = st.empty()
         self.start_time = None
         self.full_measurement_log = []  # Store all measurements for the full experiment
+        self.tray_pos_waste = 0
+        self.tray_pos_collect = 1
 
     def initialize_experiment(self, experiment_number, iterations, parameters):
         self.start_time = time.time()
@@ -181,7 +185,7 @@ class ExperimentRunner:
             return product_area
 
     def collect_measurements(self, rsd_threshold=2, max_measurements=15, iteration=0, parameters=None):
-        measurements = []
+        measurements = [] 
         all_measurements = []
 
         res_time = parameters.get("residence_time", 20)
@@ -313,6 +317,7 @@ class ExperimentRunner:
             self.set_pump_flows(parameters["residence_time"])
             #self.set_pump_flows_from_ratio_and_time(parameters["ratio_org_aq"], parameters["residence_time"])
             self.countdown(int(parameters["residence_time"]))
+
         else:
             print("🔁 Full simulation mode enabled: skipping temperature and pump setup.")
 
@@ -329,11 +334,16 @@ class ExperimentRunner:
             total_flow = reactor_volume /(res_time/60)
             flow_aq = total_flow / 2
             flow_org = total_flow - flow_aq
-            
+            # collect sample into vial placed in autosampler
             result = simulate_objectives(
                 mean_measurement, flow_aq, flow_org, res_time, selected_objectives=objectives, directions=directions
             )
-            
+        self.autosampler.clean_before_collect(self.tray_pos_waste)
+        self.autosampler.move_prepare_needle(self.tray_pos_collect)
+        self.autosampler.start_collection(flow_rate=1.4, volume=2.0)
+        self.tray_pos_waste += 2
+        self.tray_pos_collect += 2
+
         self.stop_pumps()
         return result
 
@@ -353,8 +363,7 @@ class ExperimentRunner:
         self.full_measurement_log.clear()
         return filename
 
-
-
+    
 
 
 
