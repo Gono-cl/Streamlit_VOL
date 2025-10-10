@@ -2,6 +2,7 @@ import streamlit as st
 from pathlib import Path
 import importlib.util
 from core.utils import db_handler
+import socket
 
 # ===== Streamlit page configuration =====
 st.set_page_config(
@@ -16,13 +17,19 @@ hide_streamlit_style = """
     <style>
         #MainMenu {visibility: hidden;}
         footer {visibility: hidden;}
-        header {visibility: hidden;}
     </style>
 """
+
 st.markdown(hide_streamlit_style, unsafe_allow_html=True)
 
 # ===== Initialize database =====
 db_handler.init_db()
+
+hostname = socket.gethostname()
+local_ip = socket.gethostbyname(hostname)
+
+if local_ip.startswith("127."):
+    st.user = type("obj", (), {"is_logged_in": True, "name": "LocalDev", "email": "dev@local.com"})()
 
 # ===== Google OAuth login =====
 if not st.user.is_logged_in:
@@ -47,7 +54,8 @@ if not st.user.is_logged_in:
     st.stop()
 
 # ===== Sidebar: logout + user info =====
-st.sidebar.button("🚪 Log out", on_click=st.logout)
+if not local_ip.startswith("127."):
+    st.sidebar.button("🚪 Log out", on_click=st.logout)
 st.sidebar.write(f"👤 {st.user.name}")
 st.sidebar.write(f"✉️ {st.user.email}")
 
@@ -82,6 +90,5 @@ def load_page(page_path):
     spec.loader.exec_module(module)
 
 load_page(PAGES[selection])
-
 
 

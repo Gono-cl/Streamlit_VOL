@@ -34,8 +34,21 @@ st.session_state.simulation_mode = simulation_mode
 opc_url = st.sidebar.text_input("🔌 OPC Server URL", value="http://em-nun:57080")
 st.session_state.opc_url = opc_url
 
+# --- Sidebar: Use Autosampler ---
+use_autosampler = st.sidebar.checkbox("Use Autosampler", value=True)
+st.session_state.use_autosampler = use_autosampler
+
+volume_to_collect = st.sidebar.number_input(
+    "Desired volume (ml):",
+    min_value=0.0,
+    max_value=6.0,
+    value=3.0,
+    step=0.5
+)
+
 if simulation_mode != "off":
     st.warning("⚠️ Simulation Mode is ON — OPC hardware interaction is partially or fully disabled.")
+    
 
 # --- Resume Section ---
 st.sidebar.markdown("---")
@@ -53,7 +66,7 @@ if resume_file != "None" and st.sidebar.button("Load Previous Run"):
     st.session_state.variables = metadata["variables"]
     st.session_state.response_to_optimize = metadata["response"]
     st.session_state.total_iterations = metadata["total_iterations"]
-    st.session_state.runner = ExperimentRunner(OPCClient(metadata["opc_url"]), "experiment_log.csv", simulation_mode=metadata["simulation_mode"])
+    st.session_state.runner = ExperimentRunner(OPCClient(metadata["opc_url"]), "experiment_log.csv", simulation_mode=metadata["simulation_mode"],use_autosampler=st.session_state.use_autosampler, volume_to_collect=volume_to_collect)
     st.session_state.optimization_running = True
     st.session_state.run_name = resume_file
 
@@ -67,13 +80,22 @@ experiment_notes = st.text_area("Additional Notes")
 # --- Define Variables ---
 st.subheader("⚙️ Optimization Variables")
 
+VARIABLE_OPTIONS = {
+    "Temperature": "temperature",
+    "Pressure": "pressure",
+    "Ratio oraganic/aqueous": "ratio_org_aq",
+    "Acid": "acid",
+    "Residence Time": "residence_time"
+}
+
 if "variables" not in st.session_state:
     st.session_state.variables = []
 
 with st.form(key="variable_form"):
     col1, col2, col3, col4 = st.columns(4)
     with col1:
-        var_name = st.text_input("Variable Name")
+        display_name = st.selectbox("Variable Name", list(VARIABLE_OPTIONS.keys()))
+        var_name = VARIABLE_OPTIONS[display_name]  # Use internal variable name
     with col2:
         lower_bound = st.number_input("Lower Bound", value=0.0, format="%.4f")
     with col3:
@@ -125,7 +147,7 @@ if col_start.button("▶ Start Optimization"):
     st.session_state.optimizer = StepBayesianOptimizer(opt_vars)
     st.session_state.experiment_data = []
     st.session_state.iteration = 0
-    st.session_state.runner = ExperimentRunner(OPCClient(opc_url), "experiment_log.csv", simulation_mode=simulation_mode)
+    st.session_state.runner = ExperimentRunner(OPCClient(opc_url), "experiment_log.csv", simulation_mode=simulation_mode, use_autosampler=st.session_state.use_autosampler, volume_to_collect=volume_to_collect)
     st.session_state.optimization_running = True
 
 if col_stop.button("🛑 Stop Optimization"):

@@ -2,7 +2,7 @@ import time
 from core.hardware.opc_communication import OPCClient
 
 class AutoSampler:
-    def __init__(self, opc_client: OPCClient, vial_volume_ml=2.0):
+    def __init__(self, opc_client: OPCClient, vial_volume_ml=6.0):
         self.opc = opc_client
         self.current_position = None
         self.vial_volume = vial_volume_ml
@@ -12,21 +12,32 @@ class AutoSampler:
         self.opc.write_value("Hitec_OPC_DA20_Server->DIAZOAN:AUTOSAMPLER.POS_T", pos)
         pos_out = self.opc.read_value("Hitec_OPC_DA20_Server->DIAZOAN:AUTOSAMPLER.T_POS")
         
+        last_print_time = 0
+        print_interval = 5 
+        check_interval = 1 
+
         while True:
             pos_out = self.opc.read_value("Hitec_OPC_DA20_Server->DIAZOAN:AUTOSAMPLER.T_POS")
             if pos_out == pos:
                 print(f"✅ Autosampler reached target position {pos}")
                 return pos_out  # return the exact position
 
-            else:
+            now = time.time()
+            if now - last_print_time >= print_interval:
                 print(f"⏳ Waiting for autosampler to move... (current: {pos_out})")
-            time.sleep(1)
-        
+                last_print_time = now
+
+            time.sleep(check_interval)
+       
 
     def needle_down(self):    
         """Lower the needle and wait until done."""
-        self.opc.write_value("Hitec_OPC_DA20_Server->DIAZOAN:AUTOSAMPLER.POS_N", 3000)
+        self.opc.write_value("Hitec_OPC_DA20_Server->DIAZOAN:AUTOSAMPLER.POS_N", 1892)
         needle_stat = self.opc.read_value("Hitec_OPC_DA20_Server->DIAZOAN:AUTOSAMPLER.N_STAT")
+
+        last_print_time = 0
+        print_interval = 5 
+        check_interval = 1  
 
         while True:
             needle_stat = self.opc.read_value("Hitec_OPC_DA20_Server->DIAZOAN:AUTOSAMPLER.N_STAT")
@@ -34,14 +45,21 @@ class AutoSampler:
             if needle_stat == 1:
                 print("✅ Needle down")
                 return True
-            else:
-                print("⏳ Waiting for needle to lower...")
-            time.sleep(1)
             
-    def needle_up(self):    
+            now = time.time()
+            if now - last_print_time >= print_interval:
+                print("⏳ Waiting for needle to lower...")
+                last_print_time = now
+
+            time.sleep(check_interval)
+            
+    def needle_up(self):
         """Raise the needle and wait until done."""
         self.opc.write_value("Hitec_OPC_DA20_Server->DIAZOAN:AUTOSAMPLER.POS_N", 0)
-        needle_stat = self.opc.read_value("Hitec_OPC_DA20_Server->DIAZOAN:AUTOSAMPLER.N_STAT")
+
+        last_print_time = 0
+        print_interval = 5 
+        check_interval = 1  
 
         while True:
             needle_stat = self.opc.read_value("Hitec_OPC_DA20_Server->DIAZOAN:AUTOSAMPLER.N_STAT")
@@ -50,9 +68,12 @@ class AutoSampler:
                 print("✅ Needle raised")
                 return True
 
-            else:
+            now = time.time()
+            if now - last_print_time >= print_interval:
                 print("⏳ Waiting for needle to raise...")
-            time.sleep(1)
+                last_print_time = now
+
+            time.sleep(check_interval)
         
     def set_valve_collect(self):
         self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3AV_02_CLOSE", 0)
@@ -82,20 +103,30 @@ class AutoSampler:
         print(f"=== Cleaning finished ===")
 
     def start_collection(self, flow_rate, volume):
-        (f"=== Start collecting sample to position ===")
+        print("=== Start collecting sample to position ===")
 
         self.set_valve_collect()
 
         collected_volume = 0.0
         t0 = time.time()
+
+        last_print_time = 0
+        print_interval = 10   
+        check_interval = 1  
+
         while collected_volume < self.vial_volume and collected_volume < volume:
             elapsed_min = (time.time() - t0) / 60
             collected_volume = elapsed_min * flow_rate
-            print(f"📊 Collected {collected_volume:.2f} ml")
-            time.sleep(2)
 
-        print("🧪 Vial is full or we reached the desire volume")
+            now = time.time()
+            if now - last_print_time >= print_interval:
+                print(f"📊 Collected {collected_volume:.2f} ml")
+                last_print_time = now
+
+            time.sleep(check_interval)
+
+        print("🧪 Vial is full or desired volume reached")
         self.set_valve_waste()
         self.needle_up()
-        print(f"=== Sample collection finished ===")
+        print("=== Sample collection finished ===")
         return True
