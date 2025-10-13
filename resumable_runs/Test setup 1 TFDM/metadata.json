@@ -1,0 +1,32 @@
+{
+    "variables": [
+        [
+            "temperature",
+            20.0,
+            70.0,
+            "\u00b0C"
+        ],
+        [
+            "residence_time",
+            120.0,
+            600.0,
+            "s"
+        ],
+        [
+            "pressure",
+            2.0,
+            6.0,
+            "bar"
+        ],
+        [
+            "acid",
+            0.2,
+            0.4,
+            "M"
+        ]
+    ],
+    "response": "Yield",
+    "total_iterations": 10,
+    "opc_url": "http://em-nun:57080",
+    "simulation_mode": "hybrid"
+}

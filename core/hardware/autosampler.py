@@ -103,7 +103,7 @@ class AutoSampler:
         print(f"=== Cleaning finished ===")
 
     def start_collection(self, flow_rate, volume):
-        print("=== Start collecting sample to position ===")
+        print(f"=== Start collecting sample to position. Volume: {volume}, flow rate: {flow_rate} ===")
 
         self.set_valve_collect()
 
@@ -114,7 +114,7 @@ class AutoSampler:
         print_interval = 10   
         check_interval = 1  
 
-        while collected_volume < self.vial_volume and collected_volume < volume:
+        while collected_volume < volume:
             elapsed_min = (time.time() - t0) / 60
             collected_volume = elapsed_min * flow_rate
 
@@ -124,8 +124,7 @@ class AutoSampler:
                 last_print_time = now
 
             time.sleep(check_interval)
-
-        print("🧪 Vial is full or desired volume reached")
+        print("🧪 desired volume reached")
         self.set_valve_waste()
         self.needle_up()
         print("=== Sample collection finished ===")
