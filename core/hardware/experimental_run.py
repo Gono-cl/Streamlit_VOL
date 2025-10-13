@@ -298,13 +298,13 @@ class ExperimentRunner:
         html += "</ul></div>"
         self.experiment_status_placeholder.markdown(html, unsafe_allow_html=True)
 
-    def synthetic_raw_area(self, res_time, ratio):
+    def synthetic_raw_area(self, res_time):
         """
         Generate synthetic raw area based on residence time and ratio_org_aq.
         Shorter residence time and lower ratio yield higher area.
         Output constrained between 3.0 and 4.0.
         """
-        base = 4.0 - 0.015 * res_time + 0.3 * (1.5 - ratio) 
+        base = 4.0 - 0.015 * res_time + 0.3 * (1.5) 
         noise = np.random.normal(0, 0.05)
         return float(np.clip(base + noise, 3.0, 4.0))
 

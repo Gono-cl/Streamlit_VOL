@@ -64,13 +64,10 @@ PAGES = {
     "🏠 Home": "Home.py",
     "🎯 Autonomous Single Objective Optimization": "Single_Objective.py",
     "📊 Autonomous Multi-Objective Optimization": "Multi_Objective.py",
-    "🧰 Manual Optimization": "manual_experiments.py",
-    "🔄 Custom Workflow": "custom_workflow.py",
-    "🧪 Design of Experiments": "DoE.py",
-    "📚 Experiment DataBase": "experiment_database.py",
+    "📊 Data Analysis & Visualization": "data_analysis.py",
     "🔍 Preview Saved Run": "preview_run.py",
-    "🎓 Bayesian Optimization Classroom": "BO_classroom.py",
-    "❓ FAQ – Help & Guidance": "faq.py"
+    "📚 Experiment DataBase": "experiment_database.py"
+    
 }
 
 # ===== Sidebar navigation =====

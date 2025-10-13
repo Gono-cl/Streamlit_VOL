@@ -172,6 +172,92 @@ for obj in objectives:
     )
     objective_directions[obj] = direction
 
+# Initialization controls
+col_b, col_c = st.columns(2)
+init_strategy = col_b.selectbox("Init Strategy", ["Random", "LHS"], index=0)
+random_seed = int(col_c.number_input("Random Seed", min_value=0, max_value=2147483647, value=42, step=1))
+
+# Reuse previous multi-objective campaigns
+st.markdown("### Reuse Previous Multi-Objective Campaigns (as init)")
+available_mo = [d for d in os.listdir(SAVE_DIR) if os.path.isdir(os.path.join(SAVE_DIR, d))]
+reuse_runs = st.multiselect("Select runs to reuse", options=available_mo)
+
+def lhs_samples(bounds, n, rng):
+    d = len(bounds)
+    if d == 0 or n <= 0:
+        return []
+    lhs = np.zeros((n, d))
+    for j in range(d):
+        perm = rng.permutation(n)
+        lhs[:, j] = (perm + rng.random(n)) / n
+    for j, (low, high) in enumerate(bounds):
+        lhs[:, j] = low + lhs[:, j] * (high - low)
+    return [lhs[i, :].tolist() for i in range(n)]
+
+# Build and preview reusable data from selected runs
+if reuse_runs and objectives:
+    if st.button("Load Previous Data"):
+        curr_names = [n for n, *_ in st.session_state.variables]
+        rows = []
+        for run in reuse_runs:
+            rpath = os.path.join(SAVE_DIR, run)
+            meta_path = os.path.join(rpath, "metadata.json")
+            data_path = os.path.join(rpath, "experiment_data.csv")
+            if not (os.path.exists(meta_path) and os.path.exists(data_path)):
+                continue
+            try:
+                with open(meta_path, "r") as f:
+                    meta = json.load(f)
+                prev_vars = meta.get("variables", [])
+                prev_names = [n for n, *_ in prev_vars]
+                if prev_names != curr_names:
+                    continue
+                df_prev = pd.read_csv(data_path)
+                # require all selected objectives
+                if not all(obj in df_prev.columns for obj in objectives):
+                    continue
+                for idx, row in df_prev.iterrows():
+                    try:
+                        xvals = [float(row[name]) for name in curr_names]
+                        yvals = {obj: float(row[obj]) for obj in objectives}
+                    except Exception:
+                        continue
+                    rec = {"Run": run, "Row": int(idx), "Select": True}
+                    for name, val in zip(curr_names, xvals):
+                        rec[name] = val
+                    for obj in objectives:
+                        rec[obj] = yvals[obj]
+                    rows.append(rec)
+            except Exception:
+                continue
+        st.session_state.reuse_candidates_mo = pd.DataFrame(rows) if rows else pd.DataFrame([])
+
+if st.session_state.get("reuse_candidates_mo") is not None:
+    df_show = st.session_state.reuse_candidates_mo.copy()
+    if not df_show.empty:
+        st.markdown("#### Select specific multi-objective data points to reuse")
+        edited = st.data_editor(df_show, num_rows="fixed")
+        st.session_state.reuse_candidates_mo = edited
+        if st.button("Apply Selected As Initial Data"):
+            curr_names = [n for n, *_ in st.session_state.variables]
+            preloaded = []
+            for _, r in edited.iterrows():
+                if not bool(r.get("Select", False)):
+                    continue
+                try:
+                    params = {name: float(r[name]) for name in curr_names}
+                    obj_vals = {obj: float(r[obj]) for obj in objectives}
+                except Exception:
+                    continue
+                preloaded.append({
+                    "params": params,
+                    "objectives": obj_vals,
+                    "source": f"Reused:{r.get('Run','')}#{int(r.get('Row',-1))}"
+                })
+            st.session_state.preloaded_rows_mo = preloaded
+            st.success(f"Prepared {len(preloaded)} initial data points. They will be attached on start.")
+    else:
+        st.info("No matching previous multi-objective data found for current variables/objectives.")
 if st.button("Start Optimization"):
     if len(objectives) < 2:
         st.error("Please select at least two objectives to perform multi-objective optimization.")
@@ -183,15 +269,68 @@ if st.button("Start Optimization"):
         st.session_state.opc_url = opc_url
         st.session_state.opc_client = OPCClient(st.session_state.opc_url)
         st.session_state.runner = ExperimentRunner(st.session_state.opc_client, "multi_objective_log.csv", simulation_mode=st.session_state.simulation_mode, use_autosampler=st.session_state.use_autosampler, volume_to_collect=volume_to_collect)
-        search_space = [(low, high) for _, low, high, _ in st.session_state.variables]
+        campaign_bounds = [(low, high) for _, low, high, _ in st.session_state.variables]
+        # Expand model bounds to include selected reuse rows
+        model_bounds = campaign_bounds.copy()
+        reuse_df_prev = st.session_state.get("reuse_candidates_mo")
+        if reuse_df_prev is not None and not reuse_df_prev.empty:
+            curr_names = [n for n, *_ in st.session_state.variables]
+            for j, name in enumerate(curr_names):
+                try:
+                    mask = reuse_df_prev.get("Select", True)
+                    col_vals = reuse_df_prev.loc[mask.astype(bool), name].astype(float)
+                    if len(col_vals) > 0:
+                        low_c, high_c = campaign_bounds[j]
+                        model_low = float(min(low_c, col_vals.min()))
+                        model_high = float(max(high_c, col_vals.max()))
+                        model_bounds[j] = (model_low, model_high)
+                except Exception:
+                    pass
         n_objectives = len(objectives)
         st.session_state.objectives = objectives  # <-- Always update objectives in session state
+        # Build optimizer with model bounds (we manage initialization ourselves)
         st.session_state.optimizer = Optimizer(
-            dimensions=search_space,
-            n_initial_points=initial_experiments,
+            dimensions=model_bounds,
+            n_initial_points=0,
             n_objectives=n_objectives
         )
         st.session_state.stop_requested = False  # Reset stop flag
+
+        # Seed reused data from applied selected rows and prepare initial queue
+        rng = np.random.default_rng(random_seed)
+        bounds = [(low, high) for _, low, high, _ in st.session_state.variables]
+        reused_count = 0
+        preloaded = st.session_state.get("preloaded_rows_mo")
+        if preloaded:
+            curr_names = [n for n, *_ in st.session_state.variables]
+            for rec in preloaded:
+                params = rec.get("params", {})
+                obj_vals = rec.get("objectives", {})
+                try:
+                    x = [float(params[name]) for name in curr_names]
+                    y_multi = [-float(obj_vals[obj]) for obj in objectives]
+                except Exception:
+                    continue
+                st.session_state.optimizer.tell(x, y_multi)
+                reused_count += 1
+                # Append to current experiment_data as pre-existing rows
+                row = {
+                    "Experiment #": len(st.session_state.experiment_data) + 1,
+                    "Timestamp": "Reused",
+                    **params,
+                    **{obj: obj_vals.get(obj) for obj in objectives},
+                    "Source": rec.get("source", "Reused")
+                }
+                st.session_state.experiment_data.append(row)
+            st.session_state.iteration = len(st.session_state.experiment_data)
+
+        init_needed = max(0, int(initial_experiments) - reused_count)
+        if init_strategy == "LHS":
+            init_points = lhs_samples(bounds, init_needed, rng)
+        else:
+            init_points = [[rng.uniform(low, high) for (low, high) in bounds] for _ in range(init_needed)]
+        st.session_state.initial_queue = init_points
+        st.session_state.reused_count = reused_count
 
 # --- Optimization Loop ---
 if st.session_state.get("optimization_running", False):
@@ -222,7 +361,14 @@ if st.session_state.get("optimization_running", False):
             st.session_state.stop_requested = False
             break
 
-        x = optimizer.ask()
+        # Use queued initial points first, else ask and clip to campaign bounds
+        if st.session_state.get("initial_queue"):
+            x = st.session_state.initial_queue.pop(0)
+        else:
+            x = optimizer.ask()
+            # Clip to campaign bounds to enforce current limits
+            campaign_bounds = [(low, high) for _, low, high, _ in st.session_state.variables]
+            x = [min(max(val, low), high) for val, (low, high) in zip(x, campaign_bounds)]
         params = {name: val for (name, *_), val in zip(st.session_state.variables, x)}
         result = runner.run_experiment(params, experiment_number=iteration + 1, total_iterations=total_iterations, objectives=objectives, directions=objective_directions)
         y_multi = [-result[obj] for obj in objectives]
@@ -303,12 +449,17 @@ if st.session_state.get("optimization_running", False):
         metadata = {
             "variables": st.session_state.variables,
             "objectives": objectives,
+            "objective_directions": {obj: st.session_state.get(f"{obj}_direction", "maximize") for obj in objectives},
             "total_iterations": total_iterations,
             "experiment_name": experiment_name,
             "experiment_notes": experiment_notes,
             "experiment_date": str(experiment_date),
             "simulation_mode": st.session_state.simulation_mode,
-            "opc_url": st.session_state.opc_url
+            "opc_url": st.session_state.opc_url,
+            "init_strategy": init_strategy,
+            "random_seed": random_seed,
+            "reused_runs": reuse_runs,
+            "reused_count": st.session_state.get("reused_count", 0)
         }
         with open(os.path.join(run_path, "metadata.json"), "w") as f:
             json.dump(metadata, f, indent=4)

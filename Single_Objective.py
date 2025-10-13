@@ -137,18 +137,162 @@ response_to_optimize = col7.selectbox("Response to Optimize",OBJECTIVE_OPTIONS)
 st.session_state.total_iterations = total_iterations
 st.session_state.response_to_optimize = response_to_optimize
 
+# Additional BO settings
+col_a, col_b, col_c = st.columns(3)
+acq_func = col_a.selectbox("Acquisition Function", ["EI", "PI", "LCB", "gp_hedge"], index=0)
+init_strategy = col_b.selectbox("Init Strategy", ["Random", "LHS"], index=0)
+random_seed = int(col_c.number_input("Random Seed", min_value=0, max_value=2147483647, value=42, step=1))
+
+# Reuse previous campaigns as initial data
+st.markdown("### Reuse Previous Campaigns (as init)")
+available_runs = [d for d in os.listdir(SAVE_DIR) if os.path.isdir(os.path.join(SAVE_DIR, d))]
+reuse_runs = st.multiselect("Select previous runs to reuse", options=available_runs)
+
+def lhs_samples(bounds, n, rng):
+    d = len(bounds)
+    if d == 0 or n <= 0:
+        return []
+    lhs = np.zeros((n, d))
+    for j in range(d):
+        perm = rng.permutation(n)
+        lhs[:, j] = (perm + rng.random(n)) / n
+    for j, (low, high) in enumerate(bounds):
+        lhs[:, j] = low + lhs[:, j] * (high - low)
+    return [lhs[i, :].tolist() for i in range(n)]
+
+# Build and preview reusable data from selected runs
+if reuse_runs:
+    if st.button("Load Previous Data"):
+        curr_names = [n for n, *_ in st.session_state.variables]
+        rows = []
+        for run in reuse_runs:
+            rpath = os.path.join(SAVE_DIR, run)
+            meta_path = os.path.join(rpath, "metadata.json")
+            data_path = os.path.join(rpath, "experiment_data.csv")
+            if not (os.path.exists(meta_path) and os.path.exists(data_path)):
+                continue
+            try:
+                with open(meta_path, "r") as f:
+                    meta = json.load(f)
+                prev_vars = meta.get("variables", [])
+                prev_resp = meta.get("response")
+                prev_names = [n for n, *_ in prev_vars]
+                if prev_names != curr_names or prev_resp != response_to_optimize:
+                    continue
+                df_prev = pd.read_csv(data_path)
+                for idx, row in df_prev.iterrows():
+                    try:
+                        xvals = [float(row[name]) for name in curr_names]
+                        yval = float(row.get(response_to_optimize, row.get("Measurement")))
+                    except Exception:
+                        continue
+                    rec = {"Run": run, "Row": int(idx), "Select": True}
+                    for name, val in zip(curr_names, xvals):
+                        rec[name] = val
+                    rec[response_to_optimize] = yval
+                    rows.append(rec)
+            except Exception:
+                continue
+        if rows:
+            st.session_state.reuse_candidates = pd.DataFrame(rows)
+        else:
+            st.session_state.reuse_candidates = pd.DataFrame([])
+
+if st.session_state.get("reuse_candidates") is not None:
+    df_show = st.session_state.reuse_candidates.copy()
+    if not df_show.empty:
+        st.markdown("#### Select specific data points to reuse")
+        edited = st.data_editor(df_show, num_rows="fixed")
+        st.session_state.reuse_candidates = edited
+        # Apply selection into a preload buffer for the campaign
+        if st.button("Apply Selected As Initial Data"):
+            curr_names = [n for n, *_ in st.session_state.variables]
+            preloaded = []
+            for _, r in edited.iterrows():
+                if not bool(r.get("Select", False)):
+                    continue
+                try:
+                    params = {name: float(r[name]) for name in curr_names}
+                    resp_val = float(r.get(response_to_optimize))
+                except Exception:
+                    continue
+                preloaded.append({
+                    "params": params,
+                    "response": resp_val,
+                    "source": f"Reused:{r.get('Run','')}#{int(r.get('Row',-1))}"
+                })
+            st.session_state.preloaded_rows_so = preloaded
+            st.success(f"Prepared {len(preloaded)} initial data points. They will be attached on start.")
+    else:
+        st.info("No matching previous data found for current variables/response.")
+
 # --- Run & Stop Buttons ---
 col_start, col_stop = st.columns(2)
 if col_start.button("▶ Start Optimization"):
     run_path = os.path.join(SAVE_DIR, experiment_name)
     os.makedirs(run_path, exist_ok=True)
-    # --- FIX: Use Real for continuous variables ---
-    opt_vars = [Real(low, high, name=name) for name, low, high, _ in st.session_state.variables]
-    st.session_state.optimizer = StepBayesianOptimizer(opt_vars)
+    # --- Build model bounds (union of campaign bounds and selected reuse rows) ---
+    curr_names = [name for name, *_ in st.session_state.variables]
+    campaign_bounds = [(low, high) for _, low, high, _ in st.session_state.variables]
+    model_bounds = campaign_bounds.copy()
+    reuse_df_preview = st.session_state.get("reuse_candidates")
+    if reuse_df_preview is not None and not reuse_df_preview.empty:
+        for j, name in enumerate(curr_names):
+            try:
+                mask = reuse_df_preview.get("Select", True)
+                col_vals = reuse_df_preview.loc[mask.astype(bool), name].astype(float)
+                if len(col_vals) > 0:
+                    low_c, high_c = campaign_bounds[j]
+                    model_low = float(min(low_c, col_vals.min()))
+                    model_high = float(max(high_c, col_vals.max()))
+                    model_bounds[j] = (model_low, model_high)
+            except Exception:
+                pass
+    # Create optimizer with model bounds; clip suggestions to campaign bounds
+    opt_vars = [Real(lb, ub, name=name) for (name, _l, _u, _u2), (lb, ub) in zip(st.session_state.variables, model_bounds)]
+    st.session_state.optimizer = StepBayesianOptimizer(opt_vars, acq_func=acq_func, random_state=random_seed, suggest_bounds=campaign_bounds)
     st.session_state.experiment_data = []
     st.session_state.iteration = 0
     st.session_state.runner = ExperimentRunner(OPCClient(opc_url), "experiment_log.csv", simulation_mode=simulation_mode, use_autosampler=st.session_state.use_autosampler, volume_to_collect=volume_to_collect)
     st.session_state.optimization_running = True
+
+    # Prepare reuse data and initial queue
+    rng = np.random.default_rng(random_seed)
+    bounds = campaign_bounds
+
+    # If user applied preloaded initial data, attach them now to optimizer and experiment log
+    reused_count = 0
+    preloaded = st.session_state.get("preloaded_rows_so")
+    if preloaded:
+        curr_names = [n for n, *_ in st.session_state.variables]
+        for rec in preloaded:
+            params = rec.get("params", {})
+            try:
+                x = [float(params[name]) for name in curr_names]
+                y = -float(rec.get("response"))
+            except Exception:
+                continue
+            st.session_state.optimizer.observe(x, y)
+            reused_count += 1
+            # Add to experiment_data as an already completed row
+            row = {
+                "Experiment #": len(st.session_state.experiment_data) + 1,
+                "Timestamp": "Reused",
+                **params,
+                "Measurement": -y,
+                response_to_optimize: -y,
+                "Source": rec.get("source", "Reused")
+            }
+            st.session_state.experiment_data.append(row)
+        st.session_state.iteration = len(st.session_state.experiment_data)
+
+    init_needed = max(0, int(initial_experiments) - reused_count)
+    if init_strategy == "LHS":
+        init_points = lhs_samples(bounds, init_needed, rng)
+    else:
+        init_points = [[rng.uniform(low, high) for (low, high) in bounds] for _ in range(init_needed)]
+    st.session_state.initial_queue = init_points
+    st.session_state.reused_count = reused_count
 
 if col_stop.button("🛑 Stop Optimization"):
     st.session_state.optimization_running = False
@@ -174,7 +318,11 @@ if st.session_state.get("optimization_running", False):
     scatter_placeholders = [col.empty() for row in scatter_rows for col in row][:len(st.session_state.variables)]
 
     while iteration < total_iterations and st.session_state.optimization_running:
-        x = optimizer.suggest()
+        # Use any queued initial points first
+        if st.session_state.get("initial_queue"):
+            x = st.session_state.initial_queue.pop(0)
+        else:
+            x = optimizer.suggest()
         params = {name: val for (name, *_), val in zip(st.session_state.variables, x)}
         result = runner.run_experiment(params, experiment_number=iteration + 1, total_iterations=total_iterations, objectives=[response_to_optimize])
         y = -result[response_to_optimize]
@@ -200,7 +348,12 @@ if st.session_state.get("optimization_running", False):
             "response": response_to_optimize,
             "total_iterations": total_iterations,
             "opc_url": opc_url,
-            "simulation_mode": simulation_mode
+            "simulation_mode": simulation_mode,
+            "acq_func": acq_func,
+            "init_strategy": init_strategy,
+            "random_seed": random_seed,
+            "reused_runs": reuse_runs,
+            "reused_count": st.session_state.get("reused_count", 0)
         }
         with open(os.path.join(run_path, "metadata.json"), "w") as f:
             json.dump(metadata, f, indent=4)
