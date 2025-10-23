@@ -53,8 +53,6 @@ class ExperimentRunner:
                 self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3APUMP3.W1", 0)
                 self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3AV_01_CLOSE", 1)
                 self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3AV_01_OPEN", 1)
-                self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3AV_02_CLOSE", 1)
-                self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3AV_02_OPEN", 1)
 
                 # Start Cleaning
                 self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3APUMP_6.W1", 1)
@@ -72,10 +70,6 @@ class ExperimentRunner:
 
                 self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3APUMP3.W1", 1)
                 print("🚿 Flushing DCM to remove isopropanol...")
-                time.sleep(30)
-
-                self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3AV_02_CLOSE", 0)
-                self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3AV_02_OPEN", 0)
 
                 print("✅ Cleaning complete.")
 
@@ -91,19 +85,20 @@ class ExperimentRunner:
         total_flow = round(total_flow, 3)
         return [flow_aq, flow_org, total_flow]
     
-    def calculate_flows1(self, acid, residence_time):
+    def calculate_flows1(self, residence_time):
         #total_flow = reactor_volume / (residence_time / 60)
         #flow_aq = total_flow / (1 + ratio_org_aq)
         #flow_org = total_flow - flow_aq
         #flow_aq = round(flow_aq, 3)
         #flow_org = round(flow_org, 3)
         #total_flow = round(total_flow, 3)
-        total_flow = 20 / (residence_time / 60)
-        value1 = total_flow / 3
-        value1 = round(value1,2)
-        Vorg = round(value1, 2)
-        yes_acid, no_acid = self.calculate_pump_flows(acid, value1)
-        return total_flow
+        total_flow = 11.4 / (residence_time / 60)
+        org_flow = total_flow / 2
+        #value1 = total_flow / 3
+        #value1 = round(value1,2)
+        #Vorg = round(value1, 2)
+        #yes_acid, no_acid = self.calculate_pump_flows(acid, value1)
+        return org_flow
 
 
     def calculate_pump_flows(self, acid, total_acid):
@@ -120,22 +115,22 @@ class ExperimentRunner:
 
         if self.simulation_mode in ["off", "hybrid"]:
             self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3APUMP3.W1", Vorg) # flow DCM
-            self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3APUMP2.W1", round(yes_acid, 2)) # flow TFEA + acid
-            self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3APUMP1.W1", round(no_acid, 2)) # flow TFEA
+            self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3APUMP1.W1", round(yes_acid, 2)) # flow TFEA + acid
+            self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3APUMP2.W1", round(no_acid, 2)) # flow TFEA
             self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3APUMP_4", value1) # flow NaNO2
         
         else:
             print("🔁 Simulation mode: skipping pump control.")
     
     def set_pump_flows(self, residence_time):
-        total_flow = 1.4 / (residence_time / 60)
+        total_flow = 11.4/ (residence_time / 60)
         value1 = total_flow / 4
         Vorg = round(value1 * 2, 2)
 
         if self.simulation_mode in ["off", "hybrid"]:
             self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3APUMP3.W1", Vorg)
-            self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3APUMP2.W1", round(value1, 2))
-            self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3APUMP1.W1", round(value1, 2))
+            self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3APUMP1.W1", round(value1, 2)) # NaNO2 1.2 M 
+            self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3APUMP2.W1", round(value1, 2)) # TFEA 1.0 M +  HCl 0.1 M
         else:
             print("🔁 Simulation mode: skipping pump control.")
 
@@ -159,8 +154,8 @@ class ExperimentRunner:
 
         if self.simulation_mode in ["off", "hybrid"]:
             self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3APUMP3.W1", round(flow_org, 2))     # Organic
-            self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3APUMP2.W1", round(flow_react2, 2))  # Reactant 2
-            self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3APUMP1.W1", round(flow_react1, 2))  # Reactant 1
+            self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3APUMP1.W1", round(flow_react2, 2))  # Reactant 2
+            self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3APUMP2.W1", round(flow_react1, 2))  # Reactant 1
         else:
             print("🔁 Simulation mode: skipping pump control.")
             print(f"→ Organic: {flow_org:.2f} mL/min | React1: {flow_react1:.2f} | React2: {flow_react2:.2f}")
@@ -197,10 +192,9 @@ class ExperimentRunner:
                 diff = abs(current_temp - target_temp)
                 print(f"📉 ΔT = {diff:.2f}°C")
 
-                if diff <= 8.5:
+                if diff <= 0.5:
                     print(f"✅ Target temperature reached: {current_temp:.2f}°C")
                     break
-
                 time.sleep(5)
         else:
             print("🌡️ Simulation mode: skipping temperature control.")
@@ -214,13 +208,16 @@ class ExperimentRunner:
         elif self.simulation_mode == "hybrid":
             return self.synthetic_raw_area(res_time, ratio)
         else:
-            product_area = float(self.opc.read_value("OpusOPCSvr.HP-CZC3484P17-%3EEDA-AREA")) # Change this part for EDA
-            #water_area = float(self.opc.read_value("OpusOPCSvr.HP-CZC3484P17-%3EWater+-+Area")) # This is OK
-            #corrected = product_area + (0.0811122 * water_area) # Change this part for EDA 
-            #normalized = corrected * ratio
-            return product_area
+            product_area = float(self.opc.read_value("OpusOPCSvr.HP-CZC3484P17-%3ETFDM+-+Area")) # 
+            water_area = float(self.opc.read_value("OpusOPCSvr.HP-CZC3484P17-%3EWater+-+Area")) # This is OK
 
-    def collect_measurements(self, rsd_threshold=2, max_measurements=15, iteration=0, parameters=None):
+            if water_area > 1.0:
+                product_area = product_area + (0.0811122 * water_area) # Corrected area foir analyte using water
+            #normalized = corrected * ratio
+        
+        return product_area
+
+    def collect_measurements(self, rsd_threshold=3, max_measurements=15, iteration=0, parameters=None):
         measurements = [] 
         all_measurements = []
 
@@ -263,14 +260,14 @@ class ExperimentRunner:
 
     def stop_pumps(self):
         if self.simulation_mode in ["off", "hybrid"]:
-            for pump in ["PUMP1.W1", "PUMP2.W1", "PUMP3.W1", "PUMP5.W1", "PC_OUT"]:
+            for pump in ["PUMP2.W1", "PUMP1.W1", "PUMP3.W1", "PUMP5.W1", "PC_OUT"]:
                 self.opc.write_value(f"Hitec_OPC_DA20_Server-%3EDIAZOAN%3A{pump}", 0)
             print("🛑 All pumps stopped.")
         else:
             print("🛑 Simulation mode: skipping pump shutdown.")
 
     def countdown(self, residence_time):
-        for secs in range(residence_time * 3, 0, -1):
+        for secs in range( residence_time * 3, 0, -1):
             mm, ss = secs // 60, secs % 60
             countdown_html = f"""
             <div style='background-color:#fff3cd; padding: 15px; border-left: 5px solid #ffca28; border-radius: 5px;'>
@@ -351,7 +348,8 @@ class ExperimentRunner:
             self.check_water_and_clean_probe()
             self.monitor_temperature(parameters["temperature"])
             self.set_pressure(parameters["pressure"])
-            self.set_pump_flows_acid( parameters["acid"], parameters["residence_time"])
+            self.set_pump_flows(parameters["residence_time"])
+            # self.set_pump_flows_acid( parameters["acid"], parameters["residence_time"])
             #self.set_pump_flows_from_ratio_and_time(parameters["ratio_org_aq"], parameters["residence_time"])
             self.countdown(int(parameters["residence_time"]))
 
@@ -380,10 +378,10 @@ class ExperimentRunner:
         if self.use_autosampler:
             self.autosampler.clean_before_collect(self.tray_pos_waste)
             self.autosampler.move_prepare_needle(self.tray_pos_collect)
-            flow_org = self.calculate_flows1(parameters["acid"], parameters["residence_time"])
+            flow_org = self.calculate_flows1(parameters["residence_time"])
             self.autosampler.start_collection(flow_rate=flow_org, volume=self.volume_to_collect)  # Collect desired volume
-            self.tray_pos_waste += 2
-            self.tray_pos_collect += 2
+            self.tray_pos_waste = (self.tray_pos_waste + 2) % 32
+            self.tray_pos_collect = (self.tray_pos_collect + 2) % 32
         else:
             print("ℹ️ Autosampler disabled: skipping sample collection.")
 
