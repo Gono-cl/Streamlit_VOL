@@ -578,6 +578,64 @@ if col_start.button("▶ Start Optimization"):
     st.session_state.initial_queue = init_points
     st.session_state.reused_count = reused_count
 
+# --- Edit results and refit optimizer ---
+if st.session_state.get("experiment_data"):
+    with st.expander("Edit Results and Refit Optimizer", expanded=False):
+        try:
+            df_current = pd.DataFrame(st.session_state.experiment_data)
+            st.markdown("You can correct measured values below; applying will refit the optimizer to all current data.")
+            edited_df = st.data_editor(df_current, num_rows="fixed")
+            if st.button("Apply Edits & Refit"):
+                # Ensure numeric types for variables and objective, sync Measurement with objective
+                var_names = [name for name, *_ in st.session_state.variables]
+                obj = st.session_state.response_to_optimize
+                df_fixed = edited_df.copy()
+                # Coerce numeric columns
+                for col in var_names + [obj]:
+                    if col in df_fixed.columns:
+                        df_fixed[col] = pd.to_numeric(df_fixed[col], errors='coerce')
+                # Sync Measurement to objective when present
+                if "Measurement" in df_fixed.columns and obj in df_fixed.columns:
+                    df_fixed["Measurement"] = df_fixed[obj]
+
+                # Update session data
+                st.session_state.experiment_data = df_fixed.to_dict(orient='records')
+                st.session_state.iteration = len(st.session_state.experiment_data)
+
+                # Rebuild optimizer from scratch and observe all edited rows
+                campaign_bounds = [(low, high) for _, low, high, _ in st.session_state.variables]
+                opt_vars = [Real(lb, ub, name=name) for (name, _l, _u, _u2), (lb, ub) in zip(st.session_state.variables, campaign_bounds)]
+                new_opt = StepBayesianOptimizer(opt_vars, acq_func=acq_func, random_state=random_seed, suggest_bounds=campaign_bounds)
+
+                for row in df_fixed.itertuples(index=False):
+                    try:
+                        x = [float(getattr(row, name)) for name in var_names]
+                        y = -float(getattr(row, obj))
+                        new_opt.observe(x, y)
+                    except Exception:
+                        # Skip rows with missing data
+                        continue
+
+                st.session_state.optimizer = new_opt
+                # Clear any initial queue to avoid replaying
+                st.session_state.initial_queue = []
+
+                # Persist edited results to disk if a run path is known
+                run_name = st.session_state.get("run_name")
+                if run_name:
+                    run_path = os.path.join(SAVE_DIR, run_name)
+                    try:
+                        os.makedirs(run_path, exist_ok=True)
+                        df_fixed.to_csv(os.path.join(run_path, "experiment_data.csv"), index=False)
+                        with open(os.path.join(run_path, "optimizer.pkl"), "wb") as f:
+                            pickle.dump(new_opt, f)
+                    except Exception:
+                        pass
+
+                st.success("Applied edits and refit optimizer.")
+        except Exception as e:
+            st.error(f"Failed to render editor: {e}")
+
 if col_stop.button("🛑 Stop Optimization"):
     st.session_state.optimization_running = False
     st.warning("🛑 Optimization manually stopped.")
