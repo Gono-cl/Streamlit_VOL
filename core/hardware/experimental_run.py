@@ -211,7 +211,7 @@ class ExperimentRunner:
             product_area = float(self.opc.read_value("OpusOPCSvr.HP-CZC3484P17-%3ETFDM+-+Area")) # 
             water_area = float(self.opc.read_value("OpusOPCSvr.HP-CZC3484P17-%3EWater+-+Area")) # This is OK
 
-            if water_area > 1.0:
+            if water_area > 0.1:
                 product_area = product_area + (0.0811122 * water_area) # Corrected area foir analyte using water
             #normalized = corrected * ratio
         
