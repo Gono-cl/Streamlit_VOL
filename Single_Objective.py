@@ -19,6 +19,22 @@ import sys
 SAVE_DIR = "resumable_runs"
 os.makedirs(SAVE_DIR, exist_ok=True)
 
+# --- Helpers ---
+def sanitize_filename(name: str) -> str:
+    """Make a safe folder/file name for Windows: strip trailing spaces/dots and replace invalid chars."""
+    if not isinstance(name, str):
+        name = str(name)
+    # Strip whitespace at ends (Windows disallows trailing spaces and dots)
+    cleaned = name.strip().rstrip(".")
+    # Replace invalid characters
+    invalid = '<>:"/\\|?*'
+    for ch in invalid:
+        cleaned = cleaned.replace(ch, "_")
+    # Collapse multiple spaces
+    cleaned = " ".join(cleaned.split())
+    # Fallback if empty
+    return cleaned or "run"
+
 # --- Page Title ---
 st.title("🌟 Single Objective Optimization")
 
@@ -74,6 +90,12 @@ if resume_file != "None" and st.sidebar.button("Load Previous Run"):
 st.subheader("🧪 Experiment Metadata")
 experiment_name = st.text_input("Experiment Name", value=st.session_state.get("run_name", datetime.now().strftime("run_%Y%m%d_%H%M%S")))
 st.session_state.run_name = experiment_name
+# Sanitize for filesystem safety and keep it consistent throughout the session
+safe_name = sanitize_filename(st.session_state.run_name)
+if safe_name != st.session_state.run_name:
+    st.info(f"Adjusted run name to '{safe_name}' for filesystem compatibility.")
+st.session_state.run_name = safe_name
+experiment_name = safe_name
 experiment_date = st.date_input("Experiment Date", datetime.today())
 experiment_notes = st.text_area("Additional Notes")
 
@@ -160,6 +182,154 @@ def lhs_samples(bounds, n, rng):
         lhs[:, j] = low + lhs[:, j] * (high - low)
     return [lhs[i, :].tolist() for i in range(n)]
 
+def _normalize_points(points, bounds):
+    norm = []
+    for x in points:
+        nx = []
+        for (val, (low, high)) in zip(x, bounds):
+            rng = (high - low)
+            if rng > 0:
+                nx.append((float(val) - low) / rng)
+            else:
+                nx.append(0.5)
+        norm.append(nx)
+    return np.array(norm) if norm else np.empty((0, len(bounds)))
+
+def gap_aware_initial_points(bounds, n, rng, existing_points=None, method="LHS", pool_factor=10):
+    """
+    Generate n initial points that are well-spread relative to existing_points using farthest-point sampling
+    from a larger pool (drawn via LHS or Random within campaign bounds).
+    """
+    if n <= 0:
+        return []
+    d = len(bounds)
+    # Build candidate pool
+    pool_n = max(n * max(2, int(pool_factor)), n)
+    if method == "LHS":
+        pool_real = lhs_samples(bounds, pool_n, rng)
+    else:
+        pool_real = [[rng.uniform(low, high) for (low, high) in bounds] for _ in range(pool_n)]
+    pool_norm = _normalize_points(pool_real, bounds)
+
+    # Normalize existing
+    existing_points = existing_points or []
+    exist_norm = _normalize_points(existing_points, bounds)
+
+    selected = []
+    selected_idx = []
+    # Precompute min distance to existing for all candidates
+    if exist_norm.shape[0] > 0:
+        # pairwise distances to existing, then min over existing
+        # (pool_norm is Mxd, exist_norm is Exd)
+        # Compute efficient squared distances
+        min_d2 = np.full(pool_norm.shape[0], np.inf)
+        for e in exist_norm:
+            diff = pool_norm - e
+            d2 = np.einsum('ij,ij->i', diff, diff)
+            min_d2 = np.minimum(min_d2, d2)
+    else:
+        min_d2 = np.full(pool_norm.shape[0], np.inf)
+
+    taken = np.zeros(pool_norm.shape[0], dtype=bool)
+    for _ in range(n):
+        # pick index with maximum min distance
+        # break if pool exhausted
+        avail = (~taken)
+        if not np.any(avail):
+            break
+        idx = int(np.argmax(np.where(avail, min_d2, -1)))
+        taken[idx] = True
+        selected_idx.append(idx)
+        selected.append(pool_real[idx])
+        # update min_d2 with the newly selected point
+        p = pool_norm[idx]
+        diff = pool_norm - p
+        d2 = np.einsum('ij,ij->i', diff, diff)
+        min_d2 = np.minimum(min_d2, d2)
+
+    return selected
+
+def augmented_lhs_with_reuse(bounds, total_points, rng, reused_points=None, trials=30):
+    """
+    Build a Latin hypercube of size `total_points` and align it to reused points,
+    returning the remaining rows as new points. Chooses the best of several trials
+    by maximizing the minimum pairwise distance in normalized space for the union
+    (reused + new rows).
+    """
+    d = len(bounds)
+    m = int(total_points)
+    if m <= 0:
+        return []
+    reused_points = reused_points or []
+    r = len(reused_points)
+    if r >= m:
+        return []
+
+    def _lhs_unit(n):
+        if n <= 0:
+            return np.empty((0, d))
+        M = np.zeros((n, d))
+        for j in range(d):
+            perm = rng.permutation(n)
+            M[:, j] = (perm + rng.random(n)) / n
+        return M
+
+    def _to_real(U):
+        R = np.zeros_like(U)
+        for j, (low, high) in enumerate(bounds):
+            R[:, j] = low + U[:, j] * (high - low)
+        return R
+
+    def _norm_real(X):
+        return _normalize_points(X, bounds)
+
+    reused_norm = _normalize_points(reused_points, bounds)
+
+    best_score = -np.inf
+    best_new_real = []
+
+    for _ in range(max(1, trials)):
+        U = _lhs_unit(m)  # m x d normalized LHS
+        # Greedy assign: map each reused to a unique row in U (closest by L2)
+        unused = set(range(m))
+        assign = []  # (reused_idx, row_idx)
+        for rp in reused_norm:
+            if not unused:
+                break
+            un_idx = np.array(sorted(list(unused)))
+            diff = U[un_idx] - rp
+            d2 = np.einsum('ij,ij->i', diff, diff)
+            j = int(un_idx[int(np.argmin(d2))])
+            assign.append(j)
+            unused.remove(j)
+
+        # Remaining rows are candidates for new points
+        if not unused and r < m:
+            # all rows consumed; skip this trial
+            continue
+        new_rows_U = U[list(sorted(unused))]
+        # Score = min pairwise distance of union(reused_norm, new_rows_U)
+        union = new_rows_U
+        if reused_norm.shape[0] > 0:
+            union = np.vstack([reused_norm, new_rows_U])
+        # compute pairwise distances and take min (avoid diag)
+        if union.shape[0] > 1:
+            # compute condensed min distance
+            mn = np.inf
+            for i in range(union.shape[0]):
+                d2 = np.einsum('ij,ij->i', (union - union[i]), (union - union[i]))
+                d2[i] = np.inf
+                mn = min(mn, float(np.min(d2)))
+            score = mn
+        else:
+            score = 0.0
+
+        if score > best_score:
+            best_score = score
+            best_new_real = _to_real(new_rows_U).tolist()
+
+    return best_new_real
+
 # Build and preview reusable data from selected runs
 if reuse_runs:
     if st.button("Load Previous Data"):
@@ -223,8 +393,100 @@ if st.session_state.get("reuse_candidates") is not None:
                 })
             st.session_state.preloaded_rows_so = preloaded
             st.success(f"Prepared {len(preloaded)} initial data points. They will be attached on start.")
+
     else:
         st.info("No matching previous data found for current variables/response.")
+
+# --- Preview Initial Design (reused + generated) before starting ---
+st.markdown("#### Preview Initial Design")
+if st.button("Preview Initial Design (Before Start)"):
+    try:
+        curr_names = [n for n, *_ in st.session_state.variables]
+        campaign_bounds = [(low, high) for _, low, high, _ in st.session_state.variables]
+        rng = np.random.default_rng(random_seed)
+
+        # Collect selected reused points if available (no need to press Apply)
+        preview_reused = []
+        reuse_df_preview = st.session_state.get("reuse_candidates")
+        if reuse_df_preview is not None and not reuse_df_preview.empty:
+            for _, r in reuse_df_preview.iterrows():
+                if not bool(r.get("Select", False)):
+                    continue
+                try:
+                    x = [float(r[name]) for name in curr_names]
+                except Exception:
+                    continue
+                preview_reused.append(x)
+
+        reused_count = len(preview_reused)
+        init_needed = max(0, int(initial_experiments) - reused_count)
+
+        # Generate additional initial points (within campaign bounds)
+        if init_strategy == "LHS":
+            gen_points = augmented_lhs_with_reuse(
+                campaign_bounds,
+                total_points=int(initial_experiments),
+                rng=rng,
+                reused_points=preview_reused,
+                trials=30,
+            )
+        else:
+            gen_points = gap_aware_initial_points(
+                campaign_bounds,
+                init_needed,
+                rng,
+                existing_points=preview_reused,
+                method="Random",
+                pool_factor=30
+            )
+
+        # Build a preview dataframe
+        rows = []
+        order = 1
+        for x in preview_reused:
+            rows.append({**{n: v for n, v in zip(curr_names, x)}, "Source": "Reused", "Order": order})
+            order += 1
+        for x in gen_points:
+            rows.append({**{n: v for n, v in zip(curr_names, x)}, "Source": ("LHS" if init_strategy == "LHS" else "Random"), "Order": order})
+            order += 1
+
+        df_preview = pd.DataFrame(rows)
+        st.session_state.initial_design_preview = df_preview
+        st.session_state.initial_design_preview_bounds = campaign_bounds
+    except Exception as e:
+        st.error(f"Failed to build preview: {e}")
+
+# Render preview if available
+df_preview = st.session_state.get("initial_design_preview")
+if df_preview is not None and not df_preview.empty:
+    st.info(f"Initial design preview: {len(df_preview)} points (Reused: {(df_preview['Source']=='Reused').sum()}, New: {(df_preview['Source']!='Reused').sum()})")
+    st.dataframe(df_preview)
+
+    # Per-variable spread plots
+    bounds = st.session_state.get("initial_design_preview_bounds") or [(low, high) for _, low, high, _ in st.session_state.variables]
+    var_cols = [n for n, *_ in st.session_state.variables]
+    # Create a grid of small charts for each variable
+    chart_rows = [st.columns(1) for _ in range((len(var_cols) + 1) // 1)]
+    chart_placeholders = [col.empty() for row in chart_rows for col in row][:len(var_cols)]
+    for idx, ((name, low, high, _), placeholder) in enumerate(zip(st.session_state.variables, chart_placeholders)):
+        try:
+            chart = alt.Chart(df_preview).mark_tick(size=50, thickness=2).encode(
+                x=alt.X(
+                    f"{name}:Q",
+                    scale=alt.Scale(domain=[low, high], nice=False),
+                    axis=alt.Axis(title=name, tickCount=6, ticks=True, labels=True, grid=True, format=".3g")
+                ),
+                color=alt.Color("Source:N", legend=alt.Legend(orient='top')),
+                tooltip=["Order:Q", "Source:N"] + [name]
+            ).properties(
+                height=300,
+                width=400,
+                title=alt.TitleParams(text=f"{name} initial spread", anchor="middle")
+            )
+            placeholder.altair_chart(chart, use_container_width=True)
+        except Exception:
+            # Best-effort plotting; skip if something goes wrong for a variable
+            pass
 
 # --- Run & Stop Buttons ---
 col_start, col_stop = st.columns(2)
@@ -287,10 +549,32 @@ if col_start.button("▶ Start Optimization"):
         st.session_state.iteration = len(st.session_state.experiment_data)
 
     init_needed = max(0, int(initial_experiments) - reused_count)
+    # Build existing points from reused preloaded selections for gap-aware fill
+    existing_points = []
+    if preloaded:
+        for rec in preloaded:
+            try:
+                x = [float(rec["params"][name]) for name, *_ in st.session_state.variables]
+                existing_points.append(x)
+            except Exception:
+                pass
     if init_strategy == "LHS":
-        init_points = lhs_samples(bounds, init_needed, rng)
+        init_points = augmented_lhs_with_reuse(
+            bounds,
+            total_points=int(initial_experiments),
+            rng=rng,
+            reused_points=existing_points,
+            trials=30,
+        )
     else:
-        init_points = [[rng.uniform(low, high) for (low, high) in bounds] for _ in range(init_needed)]
+        init_points = gap_aware_initial_points(
+            bounds,
+            init_needed,
+            rng,
+            existing_points=existing_points,
+            method="Random",
+            pool_factor=30
+        )
     st.session_state.initial_queue = init_points
     st.session_state.reused_count = reused_count
 
@@ -358,7 +642,20 @@ if st.session_state.get("optimization_running", False):
         with open(os.path.join(run_path, "metadata.json"), "w") as f:
             json.dump(metadata, f, indent=4)
 
-        results_chart.line_chart(df_results[["Experiment #", response_to_optimize]].set_index("Experiment #"))
+        # Progress line chart with non-zero baseline for better contrast
+        y_vals = df_results[response_to_optimize]
+        y_min = y_vals.min()
+        y_max = y_vals.max()
+        margin = (y_max - y_min) * 0.05 if y_max > y_min else 1
+        line = alt.Chart(df_results).mark_line(point=True).encode(
+            x=alt.X("Experiment #:Q"),
+            y=alt.Y(f"{response_to_optimize}:Q", scale=alt.Scale(domain=[y_min - margin, y_max + margin])),
+            tooltip=["Experiment #", response_to_optimize]
+        ).properties(
+            height=300,
+            title=alt.TitleParams(text=f"{response_to_optimize} vs Experiment #", anchor="middle")
+        )
+        results_chart.altair_chart(line, use_container_width=True)
 
         for idx, (name, low, high, _) in enumerate(st.session_state.variables):
             df = df_results[[name, "Measurement"]]

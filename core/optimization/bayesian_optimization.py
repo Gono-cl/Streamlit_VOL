@@ -3,14 +3,16 @@ from skopt.space import Space
 
 
 class StepBayesianOptimizer:
-    def __init__(self, variables, base_estimator="GP", acq_func="EI", random_state=42, suggest_bounds=None):
+    def __init__(self, variables, base_estimator="GP", acq_func="EI", random_state=42, suggest_bounds=None, n_initial_points=0):
         self.variable_names = [dim.name for dim in variables]
         self.space = Space(variables)
         self._optimizer = Optimizer(
             dimensions=self.space,
             base_estimator=base_estimator,
             acq_func=acq_func,
-            random_state=random_state
+            random_state=random_state,
+            # We manage the initial design externally (reuse + LHS/Random queue)
+            n_initial_points=n_initial_points
         )
         # suggest_bounds: list of (low, high) for clipping suggestions to campaign bounds
         self.suggest_bounds = suggest_bounds
@@ -34,4 +36,3 @@ class StepBayesianOptimizer:
     @property
     def skopt_optimizer(self):
         return self._optimizer
-
