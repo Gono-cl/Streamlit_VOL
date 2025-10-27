@@ -399,6 +399,24 @@ if st.session_state.get("reuse_candidates") is not None:
 
 # --- Preview Initial Design (reused + generated) before starting ---
 st.markdown("#### Preview Initial Design")
+sort_options = ["Do not sort"]
+if st.session_state.variables:
+    sort_options += [name for name, *_ in st.session_state.variables]
+col_sort, col_dir = st.columns([2, 1])
+with col_sort:
+    st.selectbox(
+        "Sort by variable",
+        options=sort_options,
+        key="initial_sort_by",
+        index=0
+    )
+with col_dir:
+    st.radio(
+        "Direction",
+        options=["Ascending", "Descending"],
+        key="initial_sort_direction",
+        index=0
+    )
 if st.button("Preview Initial Design (Before Start)"):
     try:
         curr_names = [n for n, *_ in st.session_state.variables]
@@ -441,16 +459,30 @@ if st.button("Preview Initial Design (Before Start)"):
             )
 
         # Build a preview dataframe
-        rows = []
-        order = 1
+        rows_reused = []
+        rows_generated = []
         for x in preview_reused:
-            rows.append({**{n: v for n, v in zip(curr_names, x)}, "Source": "Reused", "Order": order})
-            order += 1
+            rows_reused.append({**{n: v for n, v in zip(curr_names, x)}, "Source": "Reused"})
         for x in gen_points:
-            rows.append({**{n: v for n, v in zip(curr_names, x)}, "Source": ("LHS" if init_strategy == "LHS" else "Random"), "Order": order})
-            order += 1
+            rows_generated.append({**{n: v for n, v in zip(curr_names, x)}, "Source": ("LHS" if init_strategy == "LHS" else "Random")})
 
-        df_preview = pd.DataFrame(rows)
+        df_reused = pd.DataFrame(rows_reused)
+        df_generated = pd.DataFrame(rows_generated)
+
+        sort_choice = st.session_state.get("initial_sort_by", "Do not sort")
+        sort_direction = st.session_state.get("initial_sort_direction", "Ascending")
+        ascending = (sort_direction != "Descending")
+        if not df_generated.empty and sort_choice and sort_choice != "Do not sort" and sort_choice in df_generated.columns:
+            df_generated = df_generated.sort_values(
+                by=sort_choice,
+                ascending=ascending,
+                kind="mergesort"
+            ).reset_index(drop=True)
+
+        df_preview = pd.concat([df_reused, df_generated], ignore_index=True)
+        if not df_preview.empty:
+            df_preview["Order"] = np.arange(1, len(df_preview) + 1)
+
         st.session_state.initial_design_preview = df_preview
         st.session_state.initial_design_preview_bounds = campaign_bounds
     except Exception as e:
@@ -575,6 +607,17 @@ if col_start.button("▶ Start Optimization"):
             method="Random",
             pool_factor=30
         )
+    sort_choice = st.session_state.get("initial_sort_by", "Do not sort")
+    sort_direction = st.session_state.get("initial_sort_direction", "Ascending")
+    if sort_choice and sort_choice != "Do not sort" and init_points:
+        var_names = [name for name, *_ in st.session_state.variables]
+        if sort_choice in var_names:
+            sort_index = var_names.index(sort_choice)
+            init_points = sorted(
+                init_points,
+                key=lambda row: row[sort_index],
+                reverse=(sort_direction == "Descending")
+            )
     st.session_state.initial_queue = init_points
     st.session_state.reused_count = reused_count
 
@@ -763,8 +806,6 @@ if st.session_state.get("optimization_running", False):
         )
 
         st.session_state.optimization_running = False
-
-
 
 
 
