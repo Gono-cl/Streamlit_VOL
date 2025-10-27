@@ -102,22 +102,22 @@ class ExperimentRunner:
 
 
     def calculate_pump_flows(self, acid, total_acid):
-        yes_acid = (acid / 0.6) * total_acid
+        yes_acid =  total_acid * (acid - 0.1 / 0.5)
         no_acid = total_acid - yes_acid
         return yes_acid, no_acid
 
     def set_pump_flows_acid(self, acid, residence_time):
-        total_flow = 20 / (residence_time / 60)
-        value1 = total_flow / 3
+        total_flow = 6.4 / (residence_time / 60)
+        value1 = total_flow / 4
         value1 = round(value1,2)
-        Vorg = round(value1, 2)
+        Vorg = round(value1 * 2, 2)
         yes_acid, no_acid = self.calculate_pump_flows(acid, value1)
 
         if self.simulation_mode in ["off", "hybrid"]:
-            self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3APUMP3.W1", Vorg) # flow DCM
-            self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3APUMP1.W1", round(yes_acid, 2)) # flow TFEA + acid
-            self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3APUMP2.W1", round(no_acid, 2)) # flow TFEA
-            self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3APUMP_4", value1) # flow NaNO2
+            self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3APUMP3.W1", Vorg) # flow DCM 
+            self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3APUMP1.W1", round(yes_acid, 2)) # flow TFEA + acid 0.6 M
+            self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3APUMP2.W1", round(no_acid, 2)) # flow TFEA + acid 0.1 M
+            self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3APUMP_4", value1) # flow NaNO2 
         
         else:
             print("🔁 Simulation mode: skipping pump control.")
@@ -137,6 +137,8 @@ class ExperimentRunner:
     def set_pressure(self, pressure):
         if self.simulation_mode in ["off", "hybrid"]:
             self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3APC_OUT", round(pressure, 2))
+            self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3APUMP3.W1", 2.0) # increase the pressure faster
+            time.sleep(30) # wait 30 seconds to reach the desired pressure, this could be improved using the pressure reading to make it more dynamic. 
 
 
     def set_pump_flows_from_ratio_and_time(self, ratio_org_aq, residence_time, reactor_volume=1.4):
@@ -348,8 +350,8 @@ class ExperimentRunner:
             self.check_water_and_clean_probe()
             self.monitor_temperature(parameters["temperature"])
             self.set_pressure(parameters["pressure"])
-            self.set_pump_flows(parameters["residence_time"])
-            # self.set_pump_flows_acid( parameters["acid"], parameters["residence_time"])
+            #self.set_pump_flows(parameters["residence_time"])
+            self.set_pump_flows_acid( parameters["acid"], parameters["residence_time"])
             #self.set_pump_flows_from_ratio_and_time(parameters["ratio_org_aq"], parameters["residence_time"])
             self.countdown(int(parameters["residence_time"]))
 
