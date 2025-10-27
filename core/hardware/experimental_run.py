@@ -92,7 +92,7 @@ class ExperimentRunner:
         #flow_aq = round(flow_aq, 3)
         #flow_org = round(flow_org, 3)
         #total_flow = round(total_flow, 3)
-        total_flow = 11.4 / (residence_time / 60)
+        total_flow = 6.4 / (residence_time / 60)
         org_flow = total_flow / 2
         #value1 = total_flow / 3
         #value1 = round(value1,2)
@@ -102,7 +102,7 @@ class ExperimentRunner:
 
 
     def calculate_pump_flows(self, acid, total_acid):
-        yes_acid =  total_acid * (acid - 0.1 / 0.5)
+        yes_acid =  total_acid * ((acid - 0.1) / 0.5)
         no_acid = total_acid - yes_acid
         return yes_acid, no_acid
 
@@ -214,7 +214,7 @@ class ExperimentRunner:
             water_area = float(self.opc.read_value("OpusOPCSvr.HP-CZC3484P17-%3EWater+-+Area")) # This is OK
 
             if water_area > 0.1:
-                product_area = product_area + (0.0811122 * water_area) # Corrected area foir analyte using water
+                product_area = product_area + (0.0913 * water_area) # Corrected area foir analyte using water
             #normalized = corrected * ratio
         
         return product_area
