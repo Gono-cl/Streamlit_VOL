@@ -22,18 +22,16 @@
             "residence_time",
             60.0,
             300.0,
-            "s"
+            "s "
         ]
     ],
     "response": "Yield",
-    "total_iterations": 16,
+    "total_iterations": 20,
     "opc_url": "http://em-nun:57080",
     "simulation_mode": "off",
     "acq_func": "EI",
-    "init_strategy": "LHS",
+    "init_strategy": "Random",
     "random_seed": 42,
-    "reused_runs": [
-        "TFDM test 4"
-    ],
-    "reused_count": 9
+    "reused_runs": [],
+    "reused_count": 0
 }

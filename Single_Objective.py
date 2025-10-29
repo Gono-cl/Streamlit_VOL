@@ -147,7 +147,7 @@ initial_experiments = col5.number_input("Initialization Experiments", min_value=
 total_iterations = col6.number_input("Total Iterations", min_value=1, max_value=100, value=20)
 OBJECTIVE_OPTIONS = [
     "Yield",
-    "Normalized Area",
+    "Area",
     "Throughput",
     "Used Organic",
     "Solvent Penalty",

@@ -56,8 +56,8 @@ def simulate_objectives(raw_area, flow_aq, flow_org, residence_time, selected_ob
 
 
     all_objectives = {
-        "Yield": yield_real(raw_area, flow_org, flow_aq),
-        "Normalized Area": norm_area,
+        "Yield": norm_area,
+        "Area": norm_area,
         "Throughput": throughput(norm_area, flow_org),
         "Used Organic": used_organic(flow_org, residence_time),
         "Solvent Penalty": solvent_penalty(norm_area, flow_org, residence_time),
