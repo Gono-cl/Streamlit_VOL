@@ -102,8 +102,23 @@ class ExperimentRunner:
 
 
     def calculate_pump_flows(self, acid, total_acid):
-        yes_acid =  total_acid * ((acid - 0.1) / 0.5)
-        no_acid = total_acid - yes_acid
+        """
+        Compute flow split between two stock solutions to achieve target acid concentration.
+
+        Stocks:
+        - Stock A ("yes_acid"): 0.2 M acid
+        - Stock B ("no_acid"):  0.0 M acid
+
+        For a desired concentration `acid` in [0.0, 0.2], the fraction from Stock A is
+        f = acid / 0.2. The remainder comes from Stock B. Values are clamped to bounds.
+        """
+        # Clamp target to supported range [0.0, 0.2]
+        target = max(0.0, min(float(acid), 0.2))
+        # Fraction of the 0.2 M stock required
+        frac_strong = target / 0.2 if 0.2 != 0 else 0.0
+        # Compute individual flows that sum to total_acid
+        yes_acid = total_acid * frac_strong      # 0.2 M stock flow
+        no_acid = total_acid - yes_acid          # 0.0 M stock flow
         return yes_acid, no_acid
 
     def set_pump_flows_acid(self, acid, residence_time):
@@ -115,8 +130,8 @@ class ExperimentRunner:
 
         if self.simulation_mode in ["off", "hybrid"]:
             self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3APUMP3.W1", Vorg) # flow DCM 
-            self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3APUMP1.W1", round(yes_acid, 2)) # flow TFEA + acid 0.6 M
-            self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3APUMP2.W1", round(no_acid, 2)) # flow TFEA + acid 0.1 M
+            self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3APUMP1.W1", round(yes_acid, 2)) # flow TFEA + acid 0.2 M
+            self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3APUMP2.W1", round(no_acid, 2)) # flow TFEA + acid 0.0 M
             self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3APUMP_4", value1) # flow NaNO2 
         
         else:
