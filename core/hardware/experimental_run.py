@@ -284,7 +284,7 @@ class ExperimentRunner:
             print("🛑 Simulation mode: skipping pump shutdown.")
 
     def countdown(self, residence_time):
-        for secs in range( residence_time * 3, 0, -1):
+        for secs in range( residence_time * 4, 0, -1):
             mm, ss = secs // 60, secs % 60
             countdown_html = f"""
             <div style='background-color:#fff3cd; padding: 15px; border-left: 5px solid #ffca28; border-radius: 5px;'>

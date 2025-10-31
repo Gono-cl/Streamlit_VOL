@@ -1,0 +1,37 @@
+{
+    "variables": [
+        [
+            "temperature",
+            20.0,
+            50.0,
+            "\u00b0C"
+        ],
+        [
+            "pressure",
+            2.0,
+            4.0,
+            "bar"
+        ],
+        [
+            "acid",
+            0.01,
+            0.19,
+            "M"
+        ],
+        [
+            "residence_time",
+            60.0,
+            180.0,
+            "s"
+        ]
+    ],
+    "response": "Yield",
+    "total_iterations": 20,
+    "opc_url": "http://em-nun:57080",
+    "simulation_mode": "off",
+    "acq_func": "EI",
+    "init_strategy": "Random",
+    "random_seed": 42,
+    "reused_runs": [],
+    "reused_count": 7
+}
