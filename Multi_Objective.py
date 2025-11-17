@@ -49,7 +49,12 @@ if "simulation_mode" not in st.session_state:
     st.session_state.simulation_mode = simulation_mode
 if "opc_url" not in st.session_state:
     st.session_state.opc_url = opc_url
-    
+if "init_strategy" not in st.session_state:
+    st.session_state.init_strategy = "Random"
+if "random_seed" not in st.session_state:
+    st.session_state.random_seed = 42
+if "acq_func" not in st.session_state:
+    st.session_state.acq_func = "EI"
 
 # --- Simulation Mode Banner ---
 if st.session_state.simulation_mode != "off":
@@ -75,6 +80,9 @@ if resume_file != "None" and st.sidebar.button("Load Previous Run"):
     st.session_state.variables = metadata["variables"]
     st.session_state.objectives = metadata["objectives"]
     st.session_state.total_iterations = metadata["total_iterations"]
+    st.session_state.init_strategy = metadata.get("init_strategy", st.session_state.get("init_strategy", "Random"))
+    st.session_state.random_seed = metadata.get("random_seed", st.session_state.get("random_seed", 42))
+    st.session_state.acq_func = metadata.get("acq_func", st.session_state.get("acq_func", "EI"))
     st.session_state.optimization_running = True
     st.session_state.run_name = resume_file
 
@@ -146,6 +154,22 @@ st.subheader("⚙️ Optimization Settings")
 col5, col6 = st.columns(2)
 initial_experiments = col5.number_input("Initialization Experiments", min_value=1, max_value=100, value=5)
 total_iterations = col6.number_input("Total Iterations", min_value=1, max_value=100, value=20)
+init_options = ["Random", "LHS"]
+init_default = st.session_state.get("init_strategy", init_options[0])
+if init_default not in init_options:
+    init_default = init_options[0]
+seed_default = int(st.session_state.get("random_seed", 42))
+acq_options = ["EI", "PI", "LCB", "gp_hedge"]
+acq_default = st.session_state.get("acq_func", acq_options[0])
+if acq_default not in acq_options:
+    acq_default = acq_options[0]
+col7, col8, col9 = st.columns(3)
+init_strategy = col7.selectbox("Init Strategy", init_options, index=init_options.index(init_default))
+st.session_state.init_strategy = init_strategy
+random_seed = int(col8.number_input("Random Seed", min_value=0, max_value=2147483647, value=seed_default, step=1))
+st.session_state.random_seed = random_seed
+acq_func = col9.selectbox("Acquisition Function", acq_options, index=acq_options.index(acq_default))
+st.session_state.acq_func = acq_func
 OBJECTIVE_OPTIONS = [
     "Yield",
     "Normalized Area",
@@ -172,11 +196,6 @@ for obj in objectives:
     )
     objective_directions[obj] = direction
 
-# Initialization controls
-col_b, col_c = st.columns(2)
-init_strategy = col_b.selectbox("Init Strategy", ["Random", "LHS"], index=0)
-random_seed = int(col_c.number_input("Random Seed", min_value=0, max_value=2147483647, value=42, step=1))
-
 # Reuse previous multi-objective campaigns
 st.markdown("### Reuse Previous Multi-Objective Campaigns (as init)")
 available_mo = [d for d in os.listdir(SAVE_DIR) if os.path.isdir(os.path.join(SAVE_DIR, d))]
@@ -193,6 +212,133 @@ def lhs_samples(bounds, n, rng):
     for j, (low, high) in enumerate(bounds):
         lhs[:, j] = low + lhs[:, j] * (high - low)
     return [lhs[i, :].tolist() for i in range(n)]
+
+def _normalize_points(points, bounds):
+    norm = []
+    for x in points:
+        nx = []
+        for (val, (low, high)) in zip(x, bounds):
+            rng = (high - low)
+            if rng > 0:
+                nx.append((float(val) - low) / rng)
+            else:
+                nx.append(0.5)
+        norm.append(nx)
+    return np.array(norm) if norm else np.empty((0, len(bounds)))
+
+def gap_aware_initial_points(bounds, n, rng, existing_points=None, method="LHS", pool_factor=10):
+    """
+    Generate n initial points that are well-spread relative to existing_points using farthest-point sampling
+    from a larger pool (drawn via LHS or Random within campaign bounds).
+    """
+    if n <= 0:
+        return []
+    d = len(bounds)
+    pool_n = max(n * max(2, int(pool_factor)), n)
+    if method == "LHS":
+        pool_real = lhs_samples(bounds, pool_n, rng)
+    else:
+        pool_real = [[rng.uniform(low, high) for (low, high) in bounds] for _ in range(pool_n)]
+    pool_norm = _normalize_points(pool_real, bounds)
+
+    existing_points = existing_points or []
+    exist_norm = _normalize_points(existing_points, bounds)
+
+    selected = []
+    if pool_norm.size == 0:
+        return selected
+    if exist_norm.shape[0] > 0:
+        min_d2 = np.full(pool_norm.shape[0], np.inf)
+        for e in exist_norm:
+            diff = pool_norm - e
+            d2 = np.einsum("ij,ij->i", diff, diff)
+            min_d2 = np.minimum(min_d2, d2)
+    else:
+        min_d2 = np.full(pool_norm.shape[0], np.inf)
+
+    taken = np.zeros(pool_norm.shape[0], dtype=bool)
+    for _ in range(n):
+        avail = (~taken)
+        if not np.any(avail):
+            break
+        idx = int(np.argmax(np.where(avail, min_d2, -1)))
+        taken[idx] = True
+        selected.append(pool_real[idx])
+        p = pool_norm[idx]
+        diff = pool_norm - p
+        d2 = np.einsum("ij,ij->i", diff, diff)
+        min_d2 = np.minimum(min_d2, d2)
+    return selected
+
+def augmented_lhs_with_reuse(bounds, total_points, rng, reused_points=None, trials=30):
+    """
+    Build a Latin hypercube of size `total_points` and align it to reused points,
+    returning the remaining rows as new points. Chooses the best of several trials
+    by maximizing the minimum pairwise distance in normalized space for the union
+    (reused + new rows).
+    """
+    d = len(bounds)
+    m = int(total_points)
+    if m <= 0:
+        return []
+    reused_points = reused_points or []
+    r = len(reused_points)
+    if r >= m:
+        return []
+
+    def _lhs_unit(n):
+        if n <= 0:
+            return np.empty((0, d))
+        M = np.zeros((n, d))
+        for j in range(d):
+            perm = rng.permutation(n)
+            M[:, j] = (perm + rng.random(n)) / n
+        return M
+
+    def _to_real(U):
+        R = np.zeros_like(U)
+        for j, (low, high) in enumerate(bounds):
+            R[:, j] = low + U[:, j] * (high - low)
+        return R
+
+    reused_norm = _normalize_points(reused_points, bounds)
+
+    best_score = -np.inf
+    best_new_real = []
+
+    for _ in range(max(1, trials)):
+        U = _lhs_unit(m)
+        unused = set(range(m))
+        for rp in reused_norm:
+            if not unused:
+                break
+            un_idx = np.array(sorted(list(unused)))
+            diff = U[un_idx] - rp
+            d2 = np.einsum("ij,ij->i", diff, diff)
+            j = int(un_idx[int(np.argmin(d2))])
+            unused.remove(j)
+
+        if not unused and r < m:
+            continue
+        new_rows_U = U[list(sorted(unused))]
+        union = new_rows_U
+        if reused_norm.shape[0] > 0:
+            union = np.vstack([reused_norm, new_rows_U])
+        if union.shape[0] > 1:
+            mn = np.inf
+            for i in range(union.shape[0]):
+                d2 = np.einsum("ij,ij->i", (union - union[i]), (union - union[i]))
+                d2[i] = np.inf
+                mn = min(mn, float(np.min(d2)))
+            score = mn
+        else:
+            score = 0.0
+
+        if score > best_score:
+            best_score = score
+            best_new_real = _to_real(new_rows_U).tolist()
+
+    return best_new_real
 
 # Build and preview reusable data from selected runs
 if reuse_runs and objectives:
@@ -258,7 +404,132 @@ if st.session_state.get("reuse_candidates_mo") is not None:
             st.success(f"Prepared {len(preloaded)} initial data points. They will be attached on start.")
     else:
         st.info("No matching previous multi-objective data found for current variables/objectives.")
-if st.button("Start Optimization"):
+
+# --- Preview Initial Design (reused + generated) before starting ---
+st.markdown("#### Preview Initial Design")
+sort_options = ["Do not sort"]
+if st.session_state.variables:
+    sort_options += [name for name, *_ in st.session_state.variables]
+col_sort, col_dir = st.columns([2, 1])
+with col_sort:
+    st.selectbox(
+        "Sort by variable",
+        options=sort_options,
+        key="initial_sort_by",
+        index=0
+    )
+with col_dir:
+    st.radio(
+        "Direction",
+        options=["Ascending", "Descending"],
+        key="initial_sort_direction",
+        index=0
+    )
+
+if st.button("Preview Initial Design (Before Start)"):
+    try:
+        curr_names = [n for n, *_ in st.session_state.variables]
+        if not curr_names:
+            st.warning("Add at least one variable to preview the design.")
+        else:
+            campaign_bounds = [(low, high) for _, low, high, _ in st.session_state.variables]
+            rng = np.random.default_rng(random_seed)
+
+            preview_reused = []
+            reuse_df_preview = st.session_state.get("reuse_candidates_mo")
+            if reuse_df_preview is not None and not reuse_df_preview.empty:
+                for _, r in reuse_df_preview.iterrows():
+                    if not bool(r.get("Select", False)):
+                        continue
+                    try:
+                        x = [float(r[name]) for name in curr_names]
+                    except Exception:
+                        continue
+                    preview_reused.append(x)
+
+            reused_count = len(preview_reused)
+            init_needed = max(0, int(initial_experiments) - reused_count)
+            if init_strategy == "LHS":
+                gen_points = augmented_lhs_with_reuse(
+                    campaign_bounds,
+                    total_points=int(initial_experiments),
+                    rng=rng,
+                    reused_points=preview_reused,
+                    trials=30,
+                )
+            else:
+                gen_points = gap_aware_initial_points(
+                    campaign_bounds,
+                    init_needed,
+                    rng,
+                    existing_points=preview_reused,
+                    method="Random",
+                    pool_factor=30,
+                )
+
+            rows_reused = [{**{n: v for n, v in zip(curr_names, x)}, "Source": "Reused"} for x in preview_reused]
+            rows_generated = [{**{n: v for n, v in zip(curr_names, x)}, "Source": ("LHS" if init_strategy == "LHS" else "Random")} for x in gen_points]
+
+            df_reused = pd.DataFrame(rows_reused)
+            df_generated = pd.DataFrame(rows_generated)
+
+            sort_choice = st.session_state.get("initial_sort_by", "Do not sort")
+            sort_direction = st.session_state.get("initial_sort_direction", "Ascending")
+            ascending = (sort_direction != "Descending")
+            frames = [df_reused, df_generated]
+            df_preview = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame([])
+            if not df_preview.empty and sort_choice and sort_choice != "Do not sort" and sort_choice in df_preview.columns:
+                df_preview = df_preview.sort_values(
+                    by=sort_choice,
+                    ascending=ascending,
+                    kind="mergesort"
+                ).reset_index(drop=True)
+            if not df_preview.empty:
+                df_preview["Order"] = np.arange(1, len(df_preview) + 1)
+            st.session_state.initial_design_preview = df_preview
+            st.session_state.initial_design_preview_bounds = campaign_bounds
+    except Exception as e:
+        st.error(f"Failed to build preview: {e}")
+
+df_preview = st.session_state.get("initial_design_preview")
+if df_preview is not None and not df_preview.empty:
+    reused_total = int((df_preview["Source"] == "Reused").sum()) if "Source" in df_preview.columns else 0
+    st.info(f"Initial design preview: {len(df_preview)} points (Reused: {reused_total}, New: {len(df_preview) - reused_total})")
+    st.dataframe(df_preview)
+
+    bounds = st.session_state.get("initial_design_preview_bounds") or [(low, high) for _, low, high, _ in st.session_state.variables]
+    var_cols = [n for n, *_ in st.session_state.variables]
+    chart_rows = [st.columns(1) for _ in range((len(var_cols) + 1) // 1)]
+    chart_placeholders = [col.empty() for row in chart_rows for col in row][:len(var_cols)]
+    for idx, ((name, low, high, _), placeholder) in enumerate(zip(st.session_state.variables, chart_placeholders)):
+        try:
+            chart = alt.Chart(df_preview).mark_tick(size=50, thickness=2).encode(
+                x=alt.X(
+                    f"{name}:Q",
+                    scale=alt.Scale(domain=[low, high], nice=False),
+                    axis=alt.Axis(title=name, tickCount=6, ticks=True, labels=True, grid=True, format=".3g")
+                ),
+                color=alt.Color("Source:N", legend=alt.Legend(orient='top')),
+                tooltip=["Order:Q", "Source:N", name]
+            ).properties(
+                height=300,
+                width=400,
+                title=alt.TitleParams(text=f"{name} initial spread", anchor="middle")
+            )
+            placeholder.altair_chart(chart, use_container_width=True)
+        except Exception:
+            pass
+
+col_actions_left, col_actions_right = st.columns([1, 1])
+start_clicked = col_actions_left.button("▶️ Start Optimization")
+stop_clicked = col_actions_right.button("🛑 Stop Optimization")
+if stop_clicked:
+    if st.session_state.get("optimization_running", False):
+        st.session_state.stop_requested = True
+        st.warning("Stop requested. The optimization will halt after the current iteration.")
+    else:
+        st.info("No optimization is currently running.")
+if start_clicked:
     if len(objectives) < 2:
         st.error("Please select at least two objectives to perform multi-objective optimization.")
     else:
@@ -289,20 +560,31 @@ if st.button("Start Optimization"):
         n_objectives = len(objectives)
         st.session_state.objectives = objectives  # <-- Always update objectives in session state
         # Build optimizer with model bounds (we manage initialization ourselves)
-        st.session_state.optimizer = Optimizer(
-            dimensions=model_bounds,
-            n_initial_points=0,
-            n_objectives=n_objectives
-        )
+        optimizer_kwargs = {
+            "dimensions": model_bounds,
+            "n_initial_points": 0,
+            "n_objectives": n_objectives
+        }
+        try:
+            st.session_state.optimizer = Optimizer(acq_func=acq_func, **optimizer_kwargs)
+        except TypeError as exc:
+            if "acq_func" not in str(exc):
+                raise
+            st.session_state.optimizer = Optimizer(**optimizer_kwargs)
+            try:
+                setattr(st.session_state.optimizer, "acq_func", acq_func)
+            except Exception:
+                pass
         st.session_state.stop_requested = False  # Reset stop flag
 
         # Seed reused data from applied selected rows and prepare initial queue
         rng = np.random.default_rng(random_seed)
         bounds = [(low, high) for _, low, high, _ in st.session_state.variables]
+        curr_names = [n for n, *_ in st.session_state.variables]
         reused_count = 0
+        existing_points = []
         preloaded = st.session_state.get("preloaded_rows_mo")
         if preloaded:
-            curr_names = [n for n, *_ in st.session_state.variables]
             for rec in preloaded:
                 params = rec.get("params", {})
                 obj_vals = rec.get("objectives", {})
@@ -313,6 +595,7 @@ if st.button("Start Optimization"):
                     continue
                 st.session_state.optimizer.tell(x, y_multi)
                 reused_count += 1
+                existing_points.append(x)
                 # Append to current experiment_data as pre-existing rows
                 row = {
                     "Experiment #": len(st.session_state.experiment_data) + 1,
@@ -326,9 +609,30 @@ if st.button("Start Optimization"):
 
         init_needed = max(0, int(initial_experiments) - reused_count)
         if init_strategy == "LHS":
-            init_points = lhs_samples(bounds, init_needed, rng)
+            init_points = augmented_lhs_with_reuse(
+                bounds,
+                total_points=int(initial_experiments),
+                rng=rng,
+                reused_points=existing_points,
+                trials=30,
+            )
         else:
-            init_points = [[rng.uniform(low, high) for (low, high) in bounds] for _ in range(init_needed)]
+            init_points = gap_aware_initial_points(
+                bounds,
+                init_needed,
+                rng,
+                existing_points=existing_points,
+                method="Random",
+                pool_factor=30,
+            )
+        sort_choice = st.session_state.get("initial_sort_by", "Do not sort")
+        sort_direction = st.session_state.get("initial_sort_direction", "Ascending")
+        if init_points and sort_choice and sort_choice != "Do not sort":
+            curr_names = [n for n, *_ in st.session_state.variables]
+            if sort_choice in curr_names:
+                idx = curr_names.index(sort_choice)
+                reverse = (sort_direction == "Descending")
+                init_points = sorted(init_points, key=lambda x: x[idx], reverse=reverse)
         st.session_state.initial_queue = init_points
         st.session_state.reused_count = reused_count
 
@@ -458,6 +762,7 @@ if st.session_state.get("optimization_running", False):
             "opc_url": st.session_state.opc_url,
             "init_strategy": init_strategy,
             "random_seed": random_seed,
+            "acq_func": acq_func,
             "reused_runs": reuse_runs,
             "reused_count": st.session_state.get("reused_count", 0)
         }
@@ -495,7 +800,10 @@ if st.session_state.get("optimization_running", False):
             "objectives": objectives,
             "method": "Bayesian Multi-Objective",
             "simulation_mode": st.session_state.simulation_mode,
-            "opc_url": st.session_state.opc_url
+            "opc_url": st.session_state.opc_url,
+            "init_strategy": init_strategy,
+            "random_seed": random_seed,
+            "acq_func": acq_func
         }
         db_handler.save_experiment(
             name=experiment_name,
