@@ -28,6 +28,13 @@ class ExperimentRunner:
         self.tray_pos_collect = 1
         self.volume_to_collect = volume_to_collect  # Volume to collect in mL
 
+    
+    #--------------------------------------------------------------------------------------------------------------------------------------------
+    #--------------------------------------------------------------------------------------------------------------------------------------------
+    #                                                       STANDARD PROCESS FUNCTIONS
+    #--------------------------------------------------------------------------------------------------------------------------------------------
+    # -------------------------------------------------------------------------------------------------------------------------------------------
+
     def initialize_experiment(self, experiment_number, iterations, parameters):
         self.start_time = time.time()
         print(f"🔬 Running Experiment {experiment_number} of {iterations}")
@@ -216,6 +223,13 @@ class ExperimentRunner:
         else:
             print("🌡️ Simulation mode: skipping temperature control.")
 
+    
+    #--------------------------------------------------------------------------------------------------------------------------------------------
+    #--------------------------------------------------------------------------------------------------------------------------------------------
+    #                                                       REAL TIME MEASUREMENTS FUNCTIONS
+    #--------------------------------------------------------------------------------------------------------------------------------------------
+    # --------------------------------------------------------------------------------------------------------------------------------------------
+
     def calculate_rsd(self, measurements):
         return (np.std(measurements) / np.mean(measurements)) * 100 if np.mean(measurements) != 0 else float("inf")
 
@@ -355,6 +369,132 @@ class ExperimentRunner:
 
         print(f"🧪 Simulated result: {simulated_result}")
         return simulated_result
+    
+    #--------------------------------------------------------------------------------------------------------------------------------------------
+    #--------------------------------------------------------------------------------------------------------------------------------------------
+    #                                                       ELECTROCHEMICAL FUNCTIONS
+    #--------------------------------------------------------------------------------------------------------------------------------------------
+    # --------------------------------------------------------------------------------------------------------------------------------------------
+    def flow_electrochemical_cell(self, flow_rate):
+        """Set flow rate for electrochemical reaction, using a single pump."""
+
+        # Extract flow rate from parameters
+        flow_rate = parameters.get("flow_rate", 1.0)
+
+        #set the value of pump 1 , containing the reaction mixture
+        self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3APUMP1.W1", round(flow_rate, 2))
+
+    def flow_electrochemical_cell_dual(self, flow_rate, base_concentration):
+        """Set the flow rates from 2 variables like in the case of different amount of Base or Acid."""
+        
+        # Extract values from parameters
+        flow_rate = parameters.get("flow_rate", 1.0)
+        base_concentration = parameters.get("base_concentration", 0.1)
+
+        # There are 2 solutions containing the same starting material concentration but different base concentration
+        pump1_base = 0.0  # M
+        pump2_base = 2.0  # M
+
+        flow_rate1, flow_rate2 = self.calculate_base_flows(base_concentration, flow_rate, pump1_base, pump2_base)
+
+        # Set the flow rates for both pumps
+        self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3APUMP1.W1", round(flow_rate1, 2))  # Pump 1 Low Base concentration
+        self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3APUMP3.W1", round(flow_rate2, 2))  # Pump 2 High Base concentration
+
+    def calculate_base_flows(self, target_base_conc, total_flow, pump1_base, pump2_base):
+        """
+        Compute flow split between two stock solutions to achieve target base concentration.
+
+        Stocks:
+        - Stock A ("pump1_base"): e.g., 0.0 M base
+        - Stock B ("pump2_base"): e.g., 2.0 M base
+
+        For a desired concentration `target_base_conc`, the fraction from Stock B is
+        f = (target_base_conc - pump1_base) / (pump2_base - pump1_base). The remainder comes from Stock A. Values are clamped to bounds.
+        """
+        # Clamp target to supported range
+        target_base_conc = parameters.get("base_concentration", 0.1)
+        target = max(min(float(target_base_conc), pump2_base), pump1_base)
+        # Fraction of the higher concentration stock required
+        frac_strong = (target - pump1_base) / (pump2_base - pump1_base) if (pump2_base - pump1_base) != 0 else 0.0
+        # Compute individual flows that sum to total_flow
+        flow_pump2 = total_flow * frac_strong      # Higher concentration stock flow
+        flow_pump1 = total_flow - flow_pump2       # Lower concentration stock flow
+        return flow_pump1, flow_pump2
+
+
+    def set_voltage (self, voltage): 
+        """Set the voltage for the electrochemical cell."""
+        
+        voltage = parameters.get("Voltage", 1.0)
+        self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3AELECTROCHEMICAL_CELL.VOLTAGE", round(voltage, 2)) # change for the correct tag name
+        self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3AELECTROCHEMICAL_CELL.OFF", 0) # turn off the electrochemical cell
+        self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3AELECTROCHEMICAL_CELL.ON", 1) # turn on the electrochemical cell
+    
+    def set_current (self, current):
+        """Set the current for the electrochemical cell."""
+        
+        current = parameters.get("Current", 1.0)
+        self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3AELECTROCHEMICAL_CELL.CURRENT", round(current, 2)) # change for the correct tag name
+        self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3AELECTROCHEMICAL_CELL.OFF", 0) # turn off the electrochemical cell
+        self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3AELECTROCHEMICAL_CELL.ON", 1) # turn on the electrochemical cell
+    
+    def turn_off_power_supply(self):
+        """Turn off the power supply for the electrochemical cell."""
+        self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3AELECTROCHEMICAL_CELL.ON", 0) # turn off the electrochemical cell
+        sefl.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3AELECTROCHEMICAL_CELL.OFF", 1) # turn off the electrochemical cell
+    
+    def filling_electrochemical_cell(self, duration=60):
+        """Fill the electrochemical cell for a specified duration."""
+        self.flow_electrochemical_cell(1.0)  # Set a default flow rate for filling
+        print(f"Filling electrochemical cell for {duration} seconds...")
+        time.sleep(duration)
+    
+    def cleaning_electrochemical_cell(self):
+        """Clean the electrochemical cell by flushing with different solvent."""
+        print("Starting cleaning of electrochemical cell...")
+        time.sleep(1)
+
+        #set the automatic valves to cleaning position
+        self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3AV_01_CLOSE", 1)
+        self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3AV_01_OPEN", 1)
+        print("Valves switched to cleaning position.")
+                
+        # rotary valve position for first cleaning solvent
+        self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3AROTARY_VALVE_POS", 1) # change for the correct tag name and position
+
+        # start the cleaning pump 
+        self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3ACLEANING_PUMP.W6", 2) # peristaltic pump with a flow of 2 ml/min
+        print("Cleaning electrochemical cell with solvent 1...")    
+        time.sleep(60)  # cleaning time 1 minute
+        self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3ACLEANING_PUMP.W6", 0) # stop the cleaning pump
+        print("First cleaning step complete.")
+
+        # rotary valve position for second cleaning solvent
+        self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3AROTARY_VALVE_POS", 2) # change for the correct tag name and position
+        # start the cleaning pump
+        self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3ACLEANING_PUMP.W6", 2) # peristaltic pump with a flow of 2 ml/min
+        print("Cleaning electrochemical cell with solvent 2...")    
+        time.sleep(60)  # cleaning time 1 minute
+        self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3ACLEANING_PUMP.W6", 0) # stop the cleaning pump
+        print("Second cleaning step complete.")
+
+        time.sleep(3) # delay to ensure pump is fully stopped
+
+        #set the automatic valves to reaction position
+        self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3AV_01_CLOSE", 0)
+        self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3AV_01_OPEN", 0) 
+        print("Valves switched back to reaction position.")
+        time.sleep(1)
+        print("✅ Cleaning of electrochemical cell complete.")
+
+
+    #--------------------------------------------------------------------------------------------------------------------------------------------
+    #--------------------------------------------------------------------------------------------------------------------------------------------
+    #                                                       RUNNING EXPERIMENT FUNCTIONS
+    #--------------------------------------------------------------------------------------------------------------------------------------------
+    # --------------------------------------------------------------------------------------------------------------------------------------------
+
 
     def run_experiment(self, parameters, experiment_number=None, total_iterations=None, objectives=None, directions=None):
         if experiment_number is not None and total_iterations is not None:
@@ -404,6 +544,13 @@ class ExperimentRunner:
 
         self.stop_pumps()
         return result
+    
+
+    #--------------------------------------------------------------------------------------------------------------------------------------------
+    #--------------------------------------------------------------------------------------------------------------------------------------------
+    #                                                       SAVING FUNCTIONS
+    #--------------------------------------------------------------------------------------------------------------------------------------------
+    # --------------------------------------------------------------------------------------------------------------------------------------------
 
     def save_full_measurements_to_csv(self, experiment_name):
         os.makedirs("raw_measurements", exist_ok=True)

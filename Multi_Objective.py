@@ -116,7 +116,11 @@ VARIABLE_OPTIONS = {
     "Pressure": "pressure",
     "Ratio oraganic/aqueous": "ratio_org_aq",
     "Acid": "acid",
-    "Residence Time": "residence_time"
+    "Residence Time": "residence_time",
+    "Flow Rate": "flow_rate",
+    "Base Concentration": "base_concentration",
+    "Voltage": "Voltage",
+    "Current": "Current",
 }
 
 if "variables" not in st.session_state:
