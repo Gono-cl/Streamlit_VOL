@@ -1,0 +1,31 @@
+{
+    "variables": [
+        [
+            "flow_rate",
+            0.25,
+            1.0,
+            "ml/min"
+        ],
+        [
+            "base_concentration",
+            560.0,
+            1600.0,
+            "mM"
+        ],
+        [
+            "Voltage",
+            1.5,
+            3.5,
+            "V"
+        ]
+    ],
+    "response": "Yield",
+    "total_iterations": 20,
+    "opc_url": "http://em-nun:57080",
+    "simulation_mode": "off",
+    "acq_func": "EI",
+    "init_strategy": "Random",
+    "random_seed": 42,
+    "reused_runs": [],
+    "reused_count": 0
+}

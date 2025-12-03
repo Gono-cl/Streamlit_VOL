@@ -1,6 +1,12 @@
 # Example objective functions for VOL simulation mode
 
-def normalized_area(raw_area, flow_aq, flow_org):
+def area(raw_area):
+    """
+    Raw Value obtained directly from the FT-IR.
+    """
+    return raw_area
+
+def norm_area(raw_area, flow_aq, flow_org):
     """
     Normalize the FT-IR area based on flow dilution
     """
@@ -48,30 +54,33 @@ def space_time_yield(raw_area, flow_org, flow_aq, residence_time, reactor_volume
     yield_value = yield_real(raw_area, flow_org, flow_aq)
     return yield_value / (reactor_volume * residence_time)
 
-def simulate_objectives(raw_area, flow_aq, flow_org, residence_time, selected_objectives=None, directions=None):
-    """
-    Compute selected objectives for simulation mode.
-    """
-    norm_area = normalized_area(raw_area, flow_aq, flow_org)
 
+def simulate_objectives(raw_area, flow_aq=1.0, flow_org=1.0, residence_time=1.0, selected_objectives=None, directions=None):
+    """
+    Compute selected objectives
+    """
 
-    all_objectives = {
-        "Yield": norm_area,
-        "Area": norm_area,
-        "Throughput": throughput(norm_area, flow_org),
+    # Precompute shared values
+    normalized_area = norm_area(raw_area, flow_aq, flow_org)
+    computed = {
+        "Yield": area(raw_area),
+        "Area": normalized_area,
+        "Throughput": throughput(raw_area, flow_org),
         "Used Organic": used_organic(flow_org, residence_time),
-        "Solvent Penalty": solvent_penalty(norm_area, flow_org, residence_time),
-        "Extraction Efficiency": extraction_efficiency(norm_area, flow_org),
-        "Space-Time Yield": space_time_yield(raw_area, flow_org, flow_aq, residence_time)  
+        "Solvent Penalty": solvent_penalty(normalized_area, flow_org, residence_time),
+        "Extraction Efficiency": extraction_efficiency(normalized_area, flow_org),
+        "Space-Time Yield": space_time_yield(raw_area, flow_org, flow_aq, residence_time)
     }
 
     result = {}
-    selected = selected_objectives if selected_objectives else all_objectives.keys()
+    selected = selected_objectives if selected_objectives else computed.keys()
 
     for key in selected:
-        value = all_objectives.get(key)
+        if key not in computed:
+            continue
+        value = computed[key]
         if directions and directions.get(key) == "minimize":
             value = -value
-        result[key] = value
+        result[key] = float(value)
 
     return result

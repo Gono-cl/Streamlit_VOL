@@ -233,17 +233,17 @@ class ExperimentRunner:
     def calculate_rsd(self, measurements):
         return (np.std(measurements) / np.mean(measurements)) * 100 if np.mean(measurements) != 0 else float("inf")
 
-    def _read_measurement(self, res_time=None, ratio=1.0):
+    def _read_measurement(self):
         if self.simulation_mode == "full":
             return np.random.uniform(70, 100)
         elif self.simulation_mode == "hybrid":
-            return self.synthetic_raw_area(res_time, ratio)
+            return np.random.uniform(70, 100)
         else:
-            product_area = float(self.opc.read_value("OpusOPCSvr.HP-CZC3484P17-%3ETFDM+-+Area")) # 
-            water_area = float(self.opc.read_value("OpusOPCSvr.HP-CZC3484P17-%3EWater+-+Area")) # This is OK
+            product_area = float(self.opc.read_value("OpusOPCSvr.HP-CZC3484P17-%3EPDA+-+mM"))
+            #water_area = float(self.opc.read_value("OpusOPCSvr.HP-CZC3484P17-%3EWater+-+Area")) # This is OK
 
-            if water_area > 0.1:
-                product_area = product_area + (0.0913 * water_area) # Corrected area foir analyte using water
+            #if water_area > 0.1:
+                #product_area = product_area + (0.0913 * water_area) # Corrected area foir analyte using water
             #normalized = corrected * ratio
         
         return product_area
@@ -252,24 +252,24 @@ class ExperimentRunner:
         measurements = [] 
         all_measurements = []
 
-        res_time = parameters.get("residence_time", 20)
+        #res_time = parameters.get("residence_time", 20)
         #ratio = parameters.get("ratio_org_aq", 1.0)
 
         while len(measurements) < 3:
-            val = self._read_measurement(res_time=res_time)
+            val = self._read_measurement()
             print(f"📏 Measurement {len(measurements)+1} = {val:.2f}")
             measurements.append(val)
             all_measurements.append(val)
             if len(measurements) < 3:
-                time.sleep(28)
+                time.sleep(20)
 
         rsd = self.calculate_rsd(measurements)
         print(f"\n📊 Initial RSD = {rsd:.2f}%")
 
         while rsd >= rsd_threshold and len(measurements) < max_measurements:
             print("⚠️ RSD too high. Taking another measurement...")
-            time.sleep(28)  # Wait before next measurement
-            new_val = self._read_measurement(res_time=res_time)
+            time.sleep(20)  # Wait before next measurement
+            new_val = self._read_measurement()
             print(f"📏 New Measurement = {new_val:.2f}")
             measurements = measurements[-2:] + [new_val]
             all_measurements.append(new_val)
@@ -292,7 +292,7 @@ class ExperimentRunner:
     def stop_pumps(self):
         if self.simulation_mode in ["off", "hybrid"]:
             for pump in ["PUMP2.W1", "PUMP1.W1", "PUMP3.W1", "PUMP5.W1", "PC_OUT"]:
-                self.opc.write_value(f"Hitec_OPC_DA20_Server-%3EDIAZOAN%3A{pump}", 0)
+                self.opc.write_value(f"Hitec_OPC_DA20_Server->E_CHEM:{pump}", 0) 
             print("🛑 All pumps stopped.")
         else:
             print("🛑 Simulation mode: skipping pump shutdown.")
@@ -344,9 +344,9 @@ class ExperimentRunner:
         
         reactor_volume = 1.4  # mL
         # Extract required parameters
-        res_time = parameters.get("residence_time", 20)
+        res_time = parameters.get("Voltage", 20)
         #ratio = parameters.get("ratio_org_aq", 1.0)
-        if self.simulation_mode in ["off", "hybrid"]: 
+        if self.simulation_mode in ["off"]: 
             raw_area = self.collect_measurements(parameters=parameters)
         else:
             raw_area = self.synthetic_raw_area(res_time)
@@ -360,15 +360,15 @@ class ExperimentRunner:
             })
 
         # Calculate flow values
-        flow_aq, flow_org, total_flow = self.calculate_flows(parameters["residence_time"], parameters.get("ratio_org_aq", 1.0))
+        # flow_aq, flow_org, total_flow = self.calculate_flows(parameters["residence_time"], parameters.get("ratio_org_aq", 1.0))
         #total_flow = reactor_volume / (res_time / 60)
         #flow_aq = total_flow / 2
         #flow_org = total_flow - flow_aq
 
-        simulated_result = simulate_objectives(raw_area, flow_aq, flow_org, res_time, selected_objectives=objectives, directions=directions)
+        #simulated_result = simulate_objectives(raw_area, flow_aq, flow_org, res_time, selected_objectives=objectives, directions=directions)
 
-        print(f"🧪 Simulated result: {simulated_result}")
-        return simulated_result
+        print(f"🧪 Simulated result: {raw_area}")
+        return raw_area
     
     #--------------------------------------------------------------------------------------------------------------------------------------------
     #--------------------------------------------------------------------------------------------------------------------------------------------
@@ -378,28 +378,21 @@ class ExperimentRunner:
     def flow_electrochemical_cell(self, flow_rate):
         """Set flow rate for electrochemical reaction, using a single pump."""
 
-        # Extract flow rate from parameters
-        flow_rate = parameters.get("flow_rate", 1.0)
-
         #set the value of pump 1 , containing the reaction mixture
-        self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3APUMP1.W1", round(flow_rate, 2))
+        self.opc.write_value("Hitec_OPC_DA20_Server->E_CHEM:PUMP1.W1", round(flow_rate, 2)) # ul/min
 
     def flow_electrochemical_cell_dual(self, flow_rate, base_concentration):
         """Set the flow rates from 2 variables like in the case of different amount of Base or Acid."""
-        
-        # Extract values from parameters
-        flow_rate = parameters.get("flow_rate", 1.0)
-        base_concentration = parameters.get("base_concentration", 0.1)
 
         # There are 2 solutions containing the same starting material concentration but different base concentration
-        pump1_base = 0.0  # M
-        pump2_base = 2.0  # M
+        pump1_base = 260  # mM
+        pump2_base = 1900  # mM
 
         flow_rate1, flow_rate2 = self.calculate_base_flows(base_concentration, flow_rate, pump1_base, pump2_base)
 
         # Set the flow rates for both pumps
-        self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3APUMP1.W1", round(flow_rate1, 2))  # Pump 1 Low Base concentration
-        self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3APUMP3.W1", round(flow_rate2, 2))  # Pump 2 High Base concentration
+        self.opc.write_value("Hitec_OPC_DA20_Server->E_CHEM:PUMP1.W1", round(flow_rate1 * 1000, 0))  # Pump 1 Low Base concentration
+        self.opc.write_value("Hitec_OPC_DA20_Server->E_CHEM:PUMP3.W1", round(flow_rate2 * 1000, 0))  # Pump 2 High Base concentration
 
     def calculate_base_flows(self, target_base_conc, total_flow, pump1_base, pump2_base):
         """
@@ -413,7 +406,6 @@ class ExperimentRunner:
         f = (target_base_conc - pump1_base) / (pump2_base - pump1_base). The remainder comes from Stock A. Values are clamped to bounds.
         """
         # Clamp target to supported range
-        target_base_conc = parameters.get("base_concentration", 0.1)
         target = max(min(float(target_base_conc), pump2_base), pump1_base)
         # Fraction of the higher concentration stock required
         frac_strong = (target - pump1_base) / (pump2_base - pump1_base) if (pump2_base - pump1_base) != 0 else 0.0
@@ -425,65 +417,127 @@ class ExperimentRunner:
 
     def set_voltage (self, voltage): 
         """Set the voltage for the electrochemical cell."""
-        
-        voltage = parameters.get("Voltage", 1.0)
-        self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3AELECTROCHEMICAL_CELL.VOLTAGE", round(voltage, 2)) # change for the correct tag name
-        self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3AELECTROCHEMICAL_CELL.OFF", 0) # turn off the electrochemical cell
-        self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3AELECTROCHEMICAL_CELL.ON", 1) # turn on the electrochemical cell
     
+        self.opc.write_value("Hitec_OPC_DA20_Server-%3EE_CHEM%3ABKK_P.SETVOLT", round(voltage, 2)) # Set the voltage value in the power supply
+
     def set_current (self, current):
         """Set the current for the electrochemical cell."""
-        
-        current = parameters.get("Current", 1.0)
-        self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3AELECTROCHEMICAL_CELL.CURRENT", round(current, 2)) # change for the correct tag name
-        self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3AELECTROCHEMICAL_CELL.OFF", 0) # turn off the electrochemical cell
-        self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3AELECTROCHEMICAL_CELL.ON", 1) # turn on the electrochemical cell
+
+        self.opc.write_value("Hitec_OPC_DA20_Server-%3EE_CHEM%3ABKK_P.CURR", round(current, 2)) # Set the current value in the power supply
+    
+    def turn_on_power_supply(self):
+        """Turn on the power supply for the electrochemical cell."""
+
+        self.opc.write_value("Hitec_OPC_DA20_Server-%3EE_CHEM%3ABKK_P.OUTOFF", 0) # turn off the electrochemical cell
+        self.opc.write_value("Hitec_OPC_DA20_Server-%3EE_CHEM%3ABKK_P.OUTON", 1) # turn on the electrochemical cell
     
     def turn_off_power_supply(self):
         """Turn off the power supply for the electrochemical cell."""
-        self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3AELECTROCHEMICAL_CELL.ON", 0) # turn off the electrochemical cell
-        sefl.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3AELECTROCHEMICAL_CELL.OFF", 1) # turn off the electrochemical cell
+
+        self.opc.write_value("Hitec_OPC_DA20_Server-%3EE_CHEM%3ABKK_P.OUTON", 0) # turn off the electrochemical cell
+        self.opc.write_value("Hitec_OPC_DA20_Server-%3EE_CHEM%3ABKK_P.OUTOFF", 1) # turn off the electrochemical cell
     
-    def filling_electrochemical_cell(self, duration=60):
+    def filling_electrochemical_cell(self,flow_rate, base_concentration, volume = 1):
         """Fill the electrochemical cell for a specified duration."""
-        self.flow_electrochemical_cell(1.0)  # Set a default flow rate for filling
+
+        self.opc.write_value("Hitec_OPC_DA20_Server-%3EE_CHEM%3AV_01_CLOSE", 0)
+        self.opc.write_value("Hitec_OPC_DA20_Server-%3EE_CHEM%3AV_01_OPEN", 0)
+        print("Valve switched to waste position.")
+
+        # There are 2 solutions containing the same starting material concentration but different base concentration
+        pump1_base = 260  # mM
+        pump2_base = 1900  # mM
+
+        flow_rate1, flow_rate2 = self.calculate_base_flows(base_concentration, flow_rate, pump1_base, pump2_base)
+        total_flow = flow_rate1+flow_rate2
+        duration = round(volume/total_flow * 60,2)
+
+        # Set the flow rates for both pumps
+        self.opc.write_value("Hitec_OPC_DA20_Server->E_CHEM:PUMP1.W1", round(flow_rate1 * 1000, 2))  # Pump 1 Low Base concentration
+        self.opc.write_value("Hitec_OPC_DA20_Server->E_CHEM:PUMP3.W1", round(flow_rate2 * 1000, 2))  # Pump 2 High Base concentration
         print(f"Filling electrochemical cell for {duration} seconds...")
-        time.sleep(duration)
+        time.sleep(duration) # change for duration
+    
+    def calculate_residence_time(self, flow_rate, reaction_volume = 0.8):
+        """ Calculate the residence time based in the flow_rate and the reaction and measure volume
+            Measure volume include all the death volumes downstream"""
+        
+        residence_time = reaction_volume/flow_rate *60 # calculate the residence time in seconds
+        
+        return residence_time * 2
+    
+    def countdown_echem(self, flow_rate):
+
+        residence_time = self.calculate_residence_time(flow_rate)
+        residence_time = int(residence_time)
+        for secs in range( residence_time, 0, -1): # change for residence time
+            mm, ss = secs // 60, secs % 60
+            countdown_html = f"""
+            <div style='background-color:#fff3cd; padding: 15px; border-left: 5px solid #ffca28; border-radius: 5px;'>
+                <h4 style='margin:0;'>⏳ Countdown to Reach Steady State</h4>
+                <p style='font-size: 24px; font-weight: bold; color: #856404; margin: 5px 0 0 0;'>{mm:02d}:{ss:02d}</p>
+            </div>
+            """
+            self.countdown_placeholder.markdown(countdown_html, unsafe_allow_html=True)
+            time.sleep(1)
+
+    def time_for_measurements(self, flow_rate):
+
+        self.opc.write_value("Hitec_OPC_DA20_Server-%3EE_CHEM%3AV_01_CLOSE", 1)
+        self.opc.write_value("Hitec_OPC_DA20_Server-%3EE_CHEM%3AV_01_OPEN", 1)
+        print("Valve switched to measurement position.")
+        
+        downstream_vol = 1.0 # separator + measurement cell
+        time_until_collection = (downstream_vol/flow_rate) * 60
+        time_until_collection = int(time_until_collection * 2)
+
+        for secs in range( time_until_collection, 0, -1): # change for residence time
+            mm, ss = secs // 60, secs % 60
+            countdown_html = f"""
+            <div style='background-color:#fff3cd; padding: 15px; border-left: 5px solid #ffca28; border-radius: 5px;'>
+                <h4 style='margin:0;'>⏳ Countdown to collect measurements </h4>
+                <p style='font-size: 24px; font-weight: bold; color: #856404; margin: 5px 0 0 0;'>{mm:02d}:{ss:02d}</p>
+            </div>
+            """
+            self.countdown_placeholder.markdown(countdown_html, unsafe_allow_html=True)
+            time.sleep(1)
     
     def cleaning_electrochemical_cell(self):
         """Clean the electrochemical cell by flushing with different solvent."""
+
         print("Starting cleaning of electrochemical cell...")
         time.sleep(1)
 
+        
         #set the automatic valves to cleaning position
-        self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3AV_01_CLOSE", 1)
-        self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3AV_01_OPEN", 1)
+        self.opc.write_value("Hitec_OPC_DA20_Server-%3EE_CHEM%3AV_02_CLOSE", 0)
+        self.opc.write_value("Hitec_OPC_DA20_Server-%3EE_CHEM%3AV_02_OPEN", 0)
         print("Valves switched to cleaning position.")
                 
         # rotary valve position for first cleaning solvent
-        self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3AROTARY_VALVE_POS", 1) # change for the correct tag name and position
+        self.opc.write_value("Hitec_OPC_DA20_Server-%3EE_CHEM%3AROT_VALVE.POS", 4) 
 
         # start the cleaning pump 
-        self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3ACLEANING_PUMP.W6", 2) # peristaltic pump with a flow of 2 ml/min
+        self.opc.write_value("Hitec_OPC_DA20_Server-%3EE_CHEM%3APUMP_6.W1", 3) # peristaltic pump with a flow of 3 ml/min
         print("Cleaning electrochemical cell with solvent 1...")    
-        time.sleep(60)  # cleaning time 1 minute
-        self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3ACLEANING_PUMP.W6", 0) # stop the cleaning pump
+        time.sleep(120)  # cleaning time 1.5 minutes
+        self.opc.write_value("Hitec_OPC_DA20_Server-%3EE_CHEM%3APUMP_6.W1", 0) # stop the cleaning pump
         print("First cleaning step complete.")
 
         # rotary valve position for second cleaning solvent
-        self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3AROTARY_VALVE_POS", 2) # change for the correct tag name and position
+        self.opc.write_value("Hitec_OPC_DA20_Server-%3EE_CHEM%3AROT_VALVE.POS", 3) # change for the correct tag name and position
         # start the cleaning pump
-        self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3ACLEANING_PUMP.W6", 2) # peristaltic pump with a flow of 2 ml/min
+        self.opc.write_value("Hitec_OPC_DA20_Server-%3EE_CHEM%3APUMP_6.W1", 3) # peristaltic pump with a flow of 3 ml/min
         print("Cleaning electrochemical cell with solvent 2...")    
         time.sleep(60)  # cleaning time 1 minute
-        self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3ACLEANING_PUMP.W6", 0) # stop the cleaning pump
+        self.opc.write_value("Hitec_OPC_DA20_Server-%3EE_CHEM%3APUMP_6.W1", 0) # stop the cleaning pump
         print("Second cleaning step complete.")
 
-        time.sleep(3) # delay to ensure pump is fully stopped
+        time.sleep(5) # delay to ensure pump is fully stopped
 
         #set the automatic valves to reaction position
-        self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3AV_01_CLOSE", 0)
-        self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3AV_01_OPEN", 0) 
+        self.opc.write_value("Hitec_OPC_DA20_Server-%3EE_CHEM%3AV_02_CLOSE", 1)
+        self.opc.write_value("Hitec_OPC_DA20_Server-%3EE_CHEM%3AV_02_OPEN", 1) 
         print("Valves switched back to reaction position.")
         time.sleep(1)
         print("✅ Cleaning of electrochemical cell complete.")
@@ -502,13 +556,21 @@ class ExperimentRunner:
             self.display_experiment_info(experiment_number, total_iterations, parameters)
             
         if self.simulation_mode in ["off", "hybrid"]:
-            self.check_water_and_clean_probe()
-            self.monitor_temperature(parameters["temperature"])
-            self.set_pressure(parameters["pressure"])
+            #self.check_water_and_clean_probe()
+            #self.monitor_temperature(parameters["temperature"])
+            #self.set_pressure(parameters["pressure"])
             #self.set_pump_flows(parameters["residence_time"])
-            self.set_pump_flows_acid( parameters["acid"], parameters["residence_time"])
+            #self.set_pump_flows_acid( parameters["acid"], parameters["residence_time"])
             #self.set_pump_flows_from_ratio_and_time(parameters["ratio_org_aq"], parameters["residence_time"])
-            self.countdown(int(parameters["residence_time"]))
+            #self.countdown(int(parameters["residence_time"]))
+
+            self.filling_electrochemical_cell(parameters["flow_rate"], parameters["base_concentration"])
+            self.flow_electrochemical_cell_dual(parameters["flow_rate"], parameters["base_concentration"])
+            self.set_voltage(parameters["Voltage"])
+            self.turn_on_power_supply()
+            self.countdown_echem(parameters["flow_rate"])
+            self.time_for_measurements(parameters["flow_rate"])
+           
 
         else:
             print("🔁 Full simulation mode enabled: skipping temperature and pump setup.")
@@ -516,21 +578,19 @@ class ExperimentRunner:
         if self.simulation_mode in ["full", "hybrid"]:
             result = self.simulate_experiment(parameters, objectives)
             if len(objectives) == 1:
-                result = {objectives[0]: result[objectives[0]]}  # Only return the selected objective
+                result = {objectives[0]: result}  # Only return the selected objective
 
         else:
             mean_measurement = self.collect_measurements(parameters = parameters)
-            flow_aq, flow_org, total_flow = self.calculate_flows(parameters["residence_time"], parameters.get("ratio_org_aq", 1.0))
+            #flow_aq, flow_org, total_flow = self.calculate_flows(parameters["residence_time"], parameters.get("ratio_org_aq", 1.0))
             #reactor_volume = 1.4
-            res_time = parameters.get("residence_time", 20)
+            #res_time = parameters.get("residence_time", 20)
             #ratio = parameters.get("ratio_org_aq", 1.0)
             #total_flow = reactor_volume /(res_time/60)
             #flow_aq = total_flow / 2
             #flow_org = total_flow - flow_aq
             # collect sample into vial placed in autosampler
-            result = simulate_objectives(
-                mean_measurement, flow_aq, flow_org, res_time, selected_objectives=objectives, directions=directions
-            )
+            result = simulate_objectives(mean_measurement, selected_objectives=objectives, directions=directions)
 
         if self.use_autosampler:
             self.autosampler.clean_before_collect(self.tray_pos_waste)
@@ -542,7 +602,9 @@ class ExperimentRunner:
         else:
             print("ℹ️ Autosampler disabled: skipping sample collection.")
 
+        self.turn_off_power_supply()
         self.stop_pumps()
+        self.cleaning_electrochemical_cell()
         return result
     
 

@@ -107,11 +107,7 @@ VARIABLE_OPTIONS = {
     "Pressure": "pressure",
     "Ratio oraganic/aqueous": "ratio_org_aq",
     "Acid": "acid",
-    "Residence Time": "residence_time",
-    "Flow Rate": "flow_rate",
-    "Base Concentration": "base_concentration",
-    "Voltage": "Voltage",
-    "Current": "Current",
+    "Residence Time": "residence_time"
 }
 
 if "variables" not in st.session_state:
@@ -789,7 +785,7 @@ if st.session_state.get("optimization_running", False):
         st.write(best_row)
 
         export_to_csv(df_results, f"{run_name}_final_results.csv")
-        export_to_excel(df_results, f"{run_name}_final_results.xlsx")
+
 
         optimization_settings = {
             "initial_experiments": initial_experiments,
