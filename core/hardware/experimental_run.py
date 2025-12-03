@@ -440,10 +440,6 @@ class ExperimentRunner:
     def filling_electrochemical_cell(self,flow_rate, base_concentration, volume = 1):
         """Fill the electrochemical cell for a specified duration."""
 
-        self.opc.write_value("Hitec_OPC_DA20_Server-%3EE_CHEM%3AV_01_CLOSE", 0)
-        self.opc.write_value("Hitec_OPC_DA20_Server-%3EE_CHEM%3AV_01_OPEN", 0)
-        print("Valve switched to waste position.")
-
         # There are 2 solutions containing the same starting material concentration but different base concentration
         pump1_base = 260  # mM
         pump2_base = 1900  # mM
@@ -464,7 +460,7 @@ class ExperimentRunner:
         
         residence_time = reaction_volume/flow_rate *60 # calculate the residence time in seconds
         
-        return residence_time * 2
+        return residence_time * 3 # 3 residence times
     
     def countdown_echem(self, flow_rate):
 
@@ -489,7 +485,7 @@ class ExperimentRunner:
         
         downstream_vol = 1.0 # separator + measurement cell
         time_until_collection = (downstream_vol/flow_rate) * 60
-        time_until_collection = int(time_until_collection * 2)
+        time_until_collection = int(time_until_collection)
 
         for secs in range( time_until_collection, 0, -1): # change for residence time
             mm, ss = secs // 60, secs % 60
