@@ -3,24 +3,24 @@
         [
             "flow_rate",
             0.25,
-            1.0,
+            1.25,
             "ml/min"
         ],
         [
             "base_concentration",
-            560.0,
-            1600.0,
+            200.0,
+            650.0,
             "mM"
         ],
         [
             "Voltage",
-            1.5,
-            3.5,
+            2.0,
+            3.0,
             "V"
         ]
     ],
     "response": "Yield",
-    "total_iterations": 20,
+    "total_iterations": 15,
     "opc_url": "http://em-nun:57080",
     "simulation_mode": "off",
     "acq_func": "EI",

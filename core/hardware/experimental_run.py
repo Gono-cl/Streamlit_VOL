@@ -385,8 +385,8 @@ class ExperimentRunner:
         """Set the flow rates from 2 variables like in the case of different amount of Base or Acid."""
 
         # There are 2 solutions containing the same starting material concentration but different base concentration
-        pump1_base = 260  # mM
-        pump2_base = 1900  # mM
+        pump1_base = 0 # mM
+        pump2_base = 850  # mM
 
         flow_rate1, flow_rate2 = self.calculate_base_flows(base_concentration, flow_rate, pump1_base, pump2_base)
 
@@ -437,12 +437,18 @@ class ExperimentRunner:
         self.opc.write_value("Hitec_OPC_DA20_Server-%3EE_CHEM%3ABKK_P.OUTON", 0) # turn off the electrochemical cell
         self.opc.write_value("Hitec_OPC_DA20_Server-%3EE_CHEM%3ABKK_P.OUTOFF", 1) # turn off the electrochemical cell
     
-    def filling_electrochemical_cell(self,flow_rate, base_concentration, volume = 1):
+    def filling_electrochemical_cell(self,flow_rate, base_concentration, volume = 1.8):
         """Fill the electrochemical cell for a specified duration."""
 
+        #set the automatic valves to reaction position
+        self.opc.write_value("Hitec_OPC_DA20_Server-%3EE_CHEM%3AV_02_CLOSE", 1)
+        self.opc.write_value("Hitec_OPC_DA20_Server-%3EE_CHEM%3AV_02_OPEN", 1) 
+        self.opc.write_value("Hitec_OPC_DA20_Server-%3EE_CHEM%3AV_01_CLOSE", 0)
+        self.opc.write_value("Hitec_OPC_DA20_Server-%3EE_CHEM%3AV_01_OPEN", 0)
+
         # There are 2 solutions containing the same starting material concentration but different base concentration
-        pump1_base = 260  # mM
-        pump2_base = 1900  # mM
+        pump1_base = 0 # mM
+        pump2_base = 850  # mM
 
         flow_rate1, flow_rate2 = self.calculate_base_flows(base_concentration, flow_rate, pump1_base, pump2_base)
         total_flow = flow_rate1+flow_rate2
@@ -454,13 +460,13 @@ class ExperimentRunner:
         print(f"Filling electrochemical cell for {duration} seconds...")
         time.sleep(duration) # change for duration
     
-    def calculate_residence_time(self, flow_rate, reaction_volume = 0.8):
+    def calculate_residence_time(self, flow_rate, reaction_volume = 1.8):
         """ Calculate the residence time based in the flow_rate and the reaction and measure volume
             Measure volume include all the death volumes downstream"""
         
         residence_time = reaction_volume/flow_rate *60 # calculate the residence time in seconds
         
-        return residence_time * 3 # 3 residence times
+        return residence_time * 1.5 # 1.5 residence times
     
     def countdown_echem(self, flow_rate):
 
@@ -504,36 +510,81 @@ class ExperimentRunner:
         print("Starting cleaning of electrochemical cell...")
         time.sleep(1)
 
-        
+        # ACN Cell Cleaning 
         #set the automatic valves to cleaning position
         self.opc.write_value("Hitec_OPC_DA20_Server-%3EE_CHEM%3AV_02_CLOSE", 0)
         self.opc.write_value("Hitec_OPC_DA20_Server-%3EE_CHEM%3AV_02_OPEN", 0)
         print("Valves switched to cleaning position.")
                 
         # rotary valve position for first cleaning solvent
-        self.opc.write_value("Hitec_OPC_DA20_Server-%3EE_CHEM%3AROT_VALVE.POS", 4) 
+        self.opc.write_value("Hitec_OPC_DA20_Server-%3EE_CHEM%3AROT_VALVE.POS", 3) 
 
         # start the cleaning pump 
-        self.opc.write_value("Hitec_OPC_DA20_Server-%3EE_CHEM%3APUMP_6.W1", 3) # peristaltic pump with a flow of 3 ml/min
+        self.opc.write_value("Hitec_OPC_DA20_Server-%3EE_CHEM%3APUMP_6.W1", 2) # peristaltic pump with a flow of 3 ml/min
         print("Cleaning electrochemical cell with solvent 1...")    
-        time.sleep(120)  # cleaning time 1.5 minutes
+        time.sleep(60)  # cleaning time 1 minute
         self.opc.write_value("Hitec_OPC_DA20_Server-%3EE_CHEM%3APUMP_6.W1", 0) # stop the cleaning pump
         print("First cleaning step complete.")
 
+        time.sleep(5)
+
+        # Water Probe Cleaning 
+
+        self.opc.write_value("Hitec_OPC_DA20_Server-%3EE_CHEM%3AV_02_CLOSE", 1)
+        self.opc.write_value("Hitec_OPC_DA20_Server-%3EE_CHEM%3AV_02_OPEN", 1)
+        self.opc.write_value("Hitec_OPC_DA20_Server-%3EE_CHEM%3AV_01_CLOSE", 1)
+        self.opc.write_value("Hitec_OPC_DA20_Server-%3EE_CHEM%3AV_01_OPEN", 1)
+
         # rotary valve position for second cleaning solvent
-        self.opc.write_value("Hitec_OPC_DA20_Server-%3EE_CHEM%3AROT_VALVE.POS", 3) # change for the correct tag name and position
+        self.opc.write_value("Hitec_OPC_DA20_Server-%3EE_CHEM%3AROT_VALVE.POS", 1) # Water position
         # start the cleaning pump
-        self.opc.write_value("Hitec_OPC_DA20_Server-%3EE_CHEM%3APUMP_6.W1", 3) # peristaltic pump with a flow of 3 ml/min
-        print("Cleaning electrochemical cell with solvent 2...")    
+        self.opc.write_value("Hitec_OPC_DA20_Server-%3EE_CHEM%3APUMP_6.W1", 2) # peristaltic pump with a flow of 2 ml/min
+        print("Cleaning optical probe with water...")    
         time.sleep(60)  # cleaning time 1 minute
         self.opc.write_value("Hitec_OPC_DA20_Server-%3EE_CHEM%3APUMP_6.W1", 0) # stop the cleaning pump
         print("Second cleaning step complete.")
 
         time.sleep(5) # delay to ensure pump is fully stopped
 
+        
+        # Isopropanol Probe Cleaning 
+
+        self.opc.write_value("Hitec_OPC_DA20_Server-%3EE_CHEM%3AROT_VALVE.POS", 5) # Isopropanol position
+        # start the cleaning pump
+        self.opc.write_value("Hitec_OPC_DA20_Server-%3EE_CHEM%3APUMP_6.W1", 2) # peristaltic pump with a flow of 2 ml/min
+        print("Cleaning optical probe with Isopropanol...")    
+        time.sleep(60)  # cleaning time 1 minute
+        self.opc.write_value("Hitec_OPC_DA20_Server-%3EE_CHEM%3APUMP_6.W1", 0) # stop the cleaning pump
+        print("Third cleaning step complete.")
+
+        time.sleep(5) # delay to ensure pump is fully stopped
+
+
+        # TFA Probe Cleaning 
+
+        self.opc.write_value("Hitec_OPC_DA20_Server-%3EE_CHEM%3AV_02_CLOSE", 0)
+        self.opc.write_value("Hitec_OPC_DA20_Server-%3EE_CHEM%3AV_02_OPEN", 0)
+        self.opc.write_value("Hitec_OPC_DA20_Server-%3EE_CHEM%3AV_01_CLOSE", 0)
+        self.opc.write_value("Hitec_OPC_DA20_Server-%3EE_CHEM%3AV_01_OPEN", 0)
+
+        # rotary valve position for second cleaning solvent
+        self.opc.write_value("Hitec_OPC_DA20_Server-%3EE_CHEM%3AROT_VALVE.POS", 4) # TFA position
+        # start the cleaning pump
+        self.opc.write_value("Hitec_OPC_DA20_Server-%3EE_CHEM%3APUMP_6.W1", 2) # peristaltic pump with a flow of 2 ml/min
+        print("Cleaning electrochemical cell with TFA 10%...")    
+        time.sleep(60)  # cleaning time 1 minute
+        self.opc.write_value("Hitec_OPC_DA20_Server-%3EE_CHEM%3APUMP_6.W1", 0) # stop the cleaning pump
+        print("Last cleaning step complete.")
+
+        time.sleep(5) # delay to ensure pump is fully stopped
+
+
         #set the automatic valves to reaction position
         self.opc.write_value("Hitec_OPC_DA20_Server-%3EE_CHEM%3AV_02_CLOSE", 1)
         self.opc.write_value("Hitec_OPC_DA20_Server-%3EE_CHEM%3AV_02_OPEN", 1) 
+        self.opc.write_value("Hitec_OPC_DA20_Server-%3EE_CHEM%3AV_01_CLOSE", 0)
+        self.opc.write_value("Hitec_OPC_DA20_Server-%3EE_CHEM%3AV_01_OPEN", 0)
+
         print("Valves switched back to reaction position.")
         time.sleep(1)
         print("✅ Cleaning of electrochemical cell complete.")
@@ -565,7 +616,7 @@ class ExperimentRunner:
             self.set_voltage(parameters["Voltage"])
             self.turn_on_power_supply()
             self.countdown_echem(parameters["flow_rate"])
-            self.time_for_measurements(parameters["flow_rate"])
+            
            
 
         else:
