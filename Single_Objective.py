@@ -109,7 +109,7 @@ VARIABLE_OPTIONS = {
     "Acid": "acid",
     "Residence Time": "residence_time",
     "Flow Rate": "flow_rate",
-    "Base Concentration": "base_concentration",
+    "Acid Concentration": "base_concentration",
     "Voltage": "Voltage",
     "Current": "Current",
 }

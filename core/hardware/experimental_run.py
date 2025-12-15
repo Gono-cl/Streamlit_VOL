@@ -386,7 +386,7 @@ class ExperimentRunner:
 
         # There are 2 solutions containing the same starting material concentration but different base concentration
         pump1_base = 0 # mM
-        pump2_base = 850  # mM
+        pump2_base = 700  # mM
 
         flow_rate1, flow_rate2 = self.calculate_base_flows(base_concentration, flow_rate, pump1_base, pump2_base)
 
@@ -448,7 +448,7 @@ class ExperimentRunner:
 
         # There are 2 solutions containing the same starting material concentration but different base concentration
         pump1_base = 0 # mM
-        pump2_base = 850  # mM
+        pump2_base = 700  # mM
 
         flow_rate1, flow_rate2 = self.calculate_base_flows(base_concentration, flow_rate, pump1_base, pump2_base)
         total_flow = flow_rate1+flow_rate2
