@@ -392,6 +392,30 @@ class ExperimentRunner:
         # Set the flow rates for both pumps
         self.opc.write_value("Hitec_OPC_DA20_Server->E_CHEM:PUMP1.W1", round(flow_rate1 * 1000, 0))  # Pump 1 Low Base concentration
         self.opc.write_value("Hitec_OPC_DA20_Server->E_CHEM:PUMP3.W1", round(flow_rate2 * 1000, 0))  # Pump 2 High Base concentration
+    
+    def flow_galvanostatic_mode(self, current, concentration, charge, base_concentration, acid_concentration):
+        """Set the flow of pumps for the electrochemical cell in galvanostatic mode."""
+        
+        # There are 4 syringes pumps containing 1- Starting material , 2a- base, 2b- acid , 3- solvent
+        
+        stock_substrate = 2000 # mM
+        stock_base = 2000 # mM
+        stock_acid = 2000 # mM
+        Faraday_constant = 96485.33212 # C/mol
+
+
+        total_flow = (current * 60000 / (concentration * charge *Faraday_constant)) # flow rate in ul/min
+        flow_substrate = total_flow * (concentration / stock_substrate)
+        flow_base = total_flow * (base_concentration / stock_base)
+        flow_acid = total_flow * (acid_concentration / stock_acid)
+        flow_solvent = total_flow - (flow_substrate + flow_base + flow_acid)
+
+        # Set the flow rates for all pumps
+        self.opc.write_value("Hitec_OPC_DA20_Server->E_CHEM:PUMP1.W1", round(flow_substrate, 2))  # Pump 1 Starting material
+        self.opc.write_value("Hitec_OPC_DA20_Server->E_CHEM:PUMP2.W1", round(flow_base, 2))  # Pump 2 Base
+        self.opc.write_value("Hitec_OPC_DA20_Server->E_CHEM:PUMP4.W1", round(flow_acid, 2))  # Pump 4 Acid
+        self.opc.write_value("Hitec_OPC_DA20_Server->E_CHEM:PUMP3.W1", round(flow_solvent, 2))  # Pump 3 Solvent
+
 
     def calculate_base_flows(self, target_base_conc, total_flow, pump1_base, pump2_base):
         """

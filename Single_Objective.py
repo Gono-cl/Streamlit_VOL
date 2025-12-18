@@ -109,9 +109,13 @@ VARIABLE_OPTIONS = {
     "Acid": "acid",
     "Residence Time": "residence_time",
     "Flow Rate": "flow_rate",
-    "Acid Concentration": "base_concentration",
+    "base Concentration": "base_concentration",
     "Voltage": "Voltage",
-    "Current": "Current",
+    "Total Current": "total_current",
+    "Current Density": "current_density",
+    "Applied Charge": "applied_charge",
+    "Substrate Concentration": "substrate_concentration",
+    "Acid Concentration": "acid_concentration",
 }
 
 if "variables" not in st.session_state:
