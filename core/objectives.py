@@ -55,16 +55,22 @@ def space_time_yield(raw_area, flow_org, flow_aq, residence_time, reactor_volume
     return yield_value / (reactor_volume * residence_time)
 
 
-def simulate_objectives(raw_area, flow_aq=1.0, flow_org=1.0, residence_time=1.0, selected_objectives=None, directions=None):
+def simulate_objectives(raw_area, flow_aq, flow_org, residence_time, selected_objectives=None, directions=None):
     """
     Compute selected objectives
     """
 
     # Precompute shared values
+    substrate_concentration = 1.0 # M
+    concentration = raw_area/4.7666 # single point calibration (reference value)
+    molar_flow_in = flow_aq / 2 * substrate_concentration
+    molar_flow_out = flow_org * concentration 
+
     normalized_area = norm_area(raw_area, flow_aq, flow_org)
     computed = {
-        "Yield": area(raw_area),
+        "Yield": molar_flow_out/molar_flow_in * 100,
         "Area": normalized_area,
+        "Concentration": concentration, 
         "Throughput": throughput(raw_area, flow_org),
         "Used Organic": used_organic(flow_org, residence_time),
         "Solvent Penalty": solvent_penalty(normalized_area, flow_org, residence_time),

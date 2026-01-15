@@ -152,6 +152,7 @@ total_iterations = col6.number_input("Total Iterations", min_value=1, max_value=
 OBJECTIVE_OPTIONS = [
     "Yield",
     "Area",
+    "Concentration",
     "Throughput",
     "Used Organic",
     "Solvent Penalty",

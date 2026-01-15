@@ -177,6 +177,7 @@ st.session_state.acq_func = acq_func
 OBJECTIVE_OPTIONS = [
     "Yield",
     "Normalized Area",
+    "Concentration",
     "Throughput",
     "Used Organic",
     "Solvent Penalty",
