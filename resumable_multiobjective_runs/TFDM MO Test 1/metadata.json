@@ -1,0 +1,41 @@
+{
+    "variables": [
+        [
+            "temperature",
+            20.0,
+            50.0,
+            "\u00b0C"
+        ],
+        [
+            "ratio_org_aq",
+            0.25,
+            2.0,
+            ""
+        ],
+        [
+            "residence_time",
+            60.0,
+            180.0,
+            "s"
+        ]
+    ],
+    "objectives": [
+        "Yield",
+        "Concentration"
+    ],
+    "objective_directions": {
+        "Yield": "maximize",
+        "Concentration": "maximize"
+    },
+    "total_iterations": 15,
+    "experiment_name": "TFDM MO Test 1",
+    "experiment_notes": "",
+    "experiment_date": "2026-01-16",
+    "simulation_mode": "off",
+    "opc_url": "http://em-nun:57080",
+    "init_strategy": "LHS",
+    "random_seed": 42,
+    "acq_func": "EI",
+    "reused_runs": [],
+    "reused_count": 0
+}
