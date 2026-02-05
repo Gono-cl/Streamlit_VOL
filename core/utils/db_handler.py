@@ -25,7 +25,7 @@ def init_db():
     conn.commit()
     conn.close()
 
-def save_experiment(user_email, name, notes, variables, df_results, best_result, settings):
+def save_experiment(name, notes, variables, df_results, best_result, settings):
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -38,11 +38,10 @@ def save_experiment(user_email, name, notes, variables, df_results, best_result,
 
     cursor.execute("""
         INSERT INTO experiments (
-            user_email, name, timestamp, notes, variables_json, results_json, best_result_json, settings_json
+            name, timestamp, notes, variables_json, results_json, best_result_json, settings_json
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
     """, (
-        user_email,
         name,
         timestamp,
         notes,
@@ -55,10 +54,10 @@ def save_experiment(user_email, name, notes, variables, df_results, best_result,
     conn.commit()
     conn.close()
 
-def list_experiments(user_email):
+def list_experiments():
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
-    cursor.execute("SELECT id, name, timestamp FROM experiments WHERE user_email = ? ORDER BY id DESC", (user_email,))
+    cursor.execute("SELECT id, name, timestamp FROM experiments ORDER BY id DESC")
     rows = cursor.fetchall()
     conn.close()
     return rows

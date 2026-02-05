@@ -51,7 +51,7 @@ opc_url = st.sidebar.text_input("🔌 OPC Server URL", value="http://em-nun:5708
 st.session_state.opc_url = opc_url
 
 # --- Sidebar: Use Autosampler ---
-use_autosampler = st.sidebar.checkbox("Use Autosampler", value=True)
+use_autosampler = st.sidebar.checkbox("Use Autosampler", value=False)
 st.session_state.use_autosampler = use_autosampler
 
 volume_to_collect = st.sidebar.number_input(
@@ -85,6 +85,15 @@ if resume_file != "None" and st.sidebar.button("Load Previous Run"):
     st.session_state.runner = ExperimentRunner(OPCClient(metadata["opc_url"]), "experiment_log.csv", simulation_mode=metadata["simulation_mode"],use_autosampler=st.session_state.use_autosampler, volume_to_collect=volume_to_collect)
     st.session_state.optimization_running = True
     st.session_state.run_name = resume_file
+    
+    # Load pending next parameters if they exist
+    pending_params_file = os.path.join(run_path, "pending_next_params.json")
+    if os.path.exists(pending_params_file):
+        with open(pending_params_file, "r") as f:
+            st.session_state.pending_next_params = json.load(f)
+        st.info(f"📋 Loaded pending parameters for experiment {len(df) + 1}")
+    else:
+        st.session_state.pending_next_params = None
 
 # --- Experiment Metadata ---
 st.subheader("🧪 Experiment Metadata")
@@ -712,11 +721,16 @@ if st.session_state.get("optimization_running", False):
     scatter_placeholders = [col.empty() for row in scatter_rows for col in row][:len(st.session_state.variables)]
 
     while iteration < total_iterations and st.session_state.optimization_running:
-        # Use any queued initial points first
-        if st.session_state.get("initial_queue"):
+        # Check if we have pending parameters from a previous resume
+        if st.session_state.get("pending_next_params") is not None:
+            x = st.session_state.pending_next_params
+            st.session_state.pending_next_params = None  # Clear after use
+        # Use any queued initial points next
+        elif st.session_state.get("initial_queue"):
             x = st.session_state.initial_queue.pop(0)
         else:
             x = optimizer.suggest()
+        
         params = {name: val for (name, *_), val in zip(st.session_state.variables, x)}
         result = runner.run_experiment(params, experiment_number=iteration + 1, total_iterations=total_iterations, objectives=[response_to_optimize])
         y = -result[response_to_optimize]
@@ -751,6 +765,20 @@ if st.session_state.get("optimization_running", False):
         }
         with open(os.path.join(run_path, "metadata.json"), "w") as f:
             json.dump(metadata, f, indent=4)
+        
+        # Pre-generate and save next parameters for potential resume
+        if iteration + 1 < total_iterations:
+            if st.session_state.get("initial_queue"):
+                next_x = st.session_state.initial_queue[0]  # Peek at next queued point
+            else:
+                next_x = optimizer.suggest()  # Generate next suggestion
+            with open(os.path.join(run_path, "pending_next_params.json"), "w") as f:
+                json.dump(next_x, f)
+        else:
+            # Remove pending params file if this is the last iteration
+            pending_file = os.path.join(run_path, "pending_next_params.json")
+            if os.path.exists(pending_file):
+                os.remove(pending_file)
 
         # Progress line chart with non-zero baseline for better contrast
         y_vals = df_results[response_to_optimize]
