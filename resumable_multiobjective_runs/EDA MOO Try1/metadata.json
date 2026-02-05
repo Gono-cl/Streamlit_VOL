@@ -1,0 +1,41 @@
+{
+    "variables": [
+        [
+            "temperature",
+            20.0,
+            70.0,
+            "\u00b0C"
+        ],
+        [
+            "ratio_org_aq",
+            0.25,
+            1.5,
+            ""
+        ],
+        [
+            "residence_time",
+            20.0,
+            80.0,
+            "s"
+        ]
+    ],
+    "objectives": [
+        "Yield",
+        "Concentration"
+    ],
+    "objective_directions": {
+        "Yield": "maximize",
+        "Concentration": "maximize"
+    },
+    "total_iterations": 20,
+    "experiment_name": "EDA MOO Try1",
+    "experiment_notes": "",
+    "experiment_date": "2026-01-22",
+    "simulation_mode": "off",
+    "opc_url": "http://em-nun:57080",
+    "init_strategy": "LHS",
+    "random_seed": 42,
+    "acq_func": "EI",
+    "reused_runs": [],
+    "reused_count": 0
+}

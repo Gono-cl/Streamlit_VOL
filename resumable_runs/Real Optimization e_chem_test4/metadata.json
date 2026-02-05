@@ -1,0 +1,43 @@
+{
+    "variables": [
+        [
+            "flow_rate",
+            0.5,
+            1.0,
+            "ml/min"
+        ],
+        [
+            "base_concentration",
+            50.0,
+            500.0,
+            "mM"
+        ],
+        [
+            "Voltage",
+            2.0,
+            3.0,
+            "V"
+        ],
+        [
+            "substrate_concentration",
+            50.0,
+            200.0,
+            "mM"
+        ],
+        [
+            "acid_concentration",
+            50.0,
+            500.0,
+            "mM"
+        ]
+    ],
+    "response": "Yield",
+    "total_iterations": 20,
+    "opc_url": "http://em-nun:57080",
+    "simulation_mode": "off",
+    "acq_func": "EI",
+    "init_strategy": "LHS",
+    "random_seed": 42,
+    "reused_runs": [],
+    "reused_count": 0
+}

@@ -3,7 +3,7 @@ import numpy as np
 import csv
 from core.hardware.opc_communication import OPCClient
 from core.hardware.autosampler import AutoSampler
-from core.objectives import simulate_objectives
+from core.objectives import calculate_objectives
 import streamlit as st
 import matplotlib.pyplot as plt
 import os
@@ -45,7 +45,7 @@ class ExperimentRunner:
                 return
         self.init_csv()
 
-    def check_water_and_clean_probe(self, threshold=2.0):
+    def check_water_and_clean_probe(self, threshold=1.0):
         if self.simulation_mode != "off":
             return  print("Cleaning is only run in real hardware mode")
             
@@ -83,7 +83,7 @@ class ExperimentRunner:
         except Exception as e:
             print(f"❌ Failed to check water area or perform cleaning: {e}")
 
-    def calculate_flows(self, residence_time, ratio_org_aq,reactor_volume=6.4):
+    def calculate_flows(self, residence_time, ratio_org_aq,reactor_volume=1.4):
         total_flow = reactor_volume / (residence_time / 60)
         flow_aq = total_flow / (1 + ratio_org_aq)
         flow_org = total_flow - flow_aq
@@ -163,7 +163,7 @@ class ExperimentRunner:
             time.sleep(30) # wait 30 seconds to reach the desired pressure, this could be improved using the pressure reading to make it more dynamic. 
 
 
-    def set_pump_flows_from_ratio_and_time(self, ratio_org_aq, residence_time, reactor_volume=6.4):
+    def set_pump_flows_from_ratio_and_time(self, ratio_org_aq, residence_time, reactor_volume=1.4):
         """
         Control pumps based on ratio_org_aq and residence_time.
         This allows both values to be true variables.
@@ -239,14 +239,15 @@ class ExperimentRunner:
         elif self.simulation_mode == "hybrid":
             return np.random.uniform(70, 100)
         else:
-            product_area = float(self.opc.read_value("OpusOPCSvr.HP-CZC3484P17-%3ETFDM"))
-            water_area = float(self.opc.read_value("OpusOPCSvr.HP-CZC3484P17-%3EWater+-+Area")) # This is OK
+            product_area = float(self.opc.read_value("OpusOPCSvr.HP-CZC3484P17->PDA - mM"))
+            # water_area = float(self.opc.read_value("OpusOPCSvr.HP-CZC3484P17-%3EWater+-+Area")) # This is OK
 
-            if water_area > 1.0:
-                product_area = product_area + (0.0913 * water_area) # Corrected area for analyte using water
+            #if water_area > 1.0:
+                #product_area = product_area + (0.0913 * water_area) # Corrected area for analyte using water
             
         return product_area
 
+        
     def collect_measurements(self, rsd_threshold=3, max_measurements=15, iteration=0, parameters=None):
         measurements = [] 
         all_measurements = []
@@ -260,14 +261,14 @@ class ExperimentRunner:
             measurements.append(val)
             all_measurements.append(val)
             if len(measurements) < 3:
-                time.sleep(28)
+                time.sleep(20)
 
         rsd = self.calculate_rsd(measurements)
         print(f"\n📊 Initial RSD = {rsd:.2f}%")
 
         while rsd >= rsd_threshold and len(measurements) < max_measurements:
             print("⚠️ RSD too high. Taking another measurement...")
-            time.sleep(28)  # Wait before next measurement
+            time.sleep(20)  # Wait before next measurement
             new_val = self._read_measurement()
             print(f"📏 New Measurement = {new_val:.2f}")
             measurements = measurements[-2:] + [new_val]
@@ -290,14 +291,14 @@ class ExperimentRunner:
 
     def stop_pumps(self):
         if self.simulation_mode in ["off", "hybrid"]:
-            for pump in ["PUMP2.W1", "PUMP1.W1", "PUMP3.W1", "PUMP5.W1", "PC_OUT"]:
-                self.opc.write_value(f"Hitec_OPC_DA20_Server->DIAZOAN:{pump}", 0) 
+            for pump in ["PUMP2.W1", "PUMP1.W1", "PUMP3.W1", "PUMP4.W1", "PC_OUT"]:
+                self.opc.write_value(f"Hitec_OPC_DA20_Server->E_CHEM:{pump}", 0) 
             print("🛑 All pumps stopped.")
         else:
             print("🛑 Simulation mode: skipping pump shutdown.")
 
     def countdown(self, residence_time):
-        for secs in range( residence_time * 3, 0, -1):
+        for secs in range( residence_time * 9, 0, -1):
             mm, ss = secs // 60, secs % 60
             countdown_html = f"""
             <div style='background-color:#fff3cd; padding: 15px; border-left: 5px solid #ffca28; border-radius: 5px;'>
@@ -392,6 +393,45 @@ class ExperimentRunner:
         # Set the flow rates for both pumps
         self.opc.write_value("Hitec_OPC_DA20_Server->E_CHEM:PUMP1.W1", round(flow_rate1 * 1000, 0))  # Pump 1 Low Base concentration
         self.opc.write_value("Hitec_OPC_DA20_Server->E_CHEM:PUMP3.W1", round(flow_rate2 * 1000, 0))  # Pump 2 High Base concentration
+
+    def flow_electrochemical_cell_from_four_variables(self, flow_rate, sub_conc, acid_conc, base_conc):
+        """ Set the flow of 4 pumps based in the values of 4 variables
+        
+        Variables :
+                    flow_rate = total flow rate combined from the 4 pumps
+                    sub_conc = concentratiom of substrate in mM
+                    acid_conc = concentration of acid in mM
+                    base_conc = concentration of base in mM """
+        
+        # Define the stock concentrations 
+
+        stock_substrate_concentration = 716 # mM
+        stock_acid_concentration = 1500 # mM
+        stock_base_concentration = 1500 # mM
+
+         #set the automatic valves to reaction position
+        self.opc.write_value("Hitec_OPC_DA20_Server-%3EE_CHEM%3AV_02_CLOSE", 1)
+        self.opc.write_value("Hitec_OPC_DA20_Server-%3EE_CHEM%3AV_02_OPEN", 1) 
+        self.opc.write_value("Hitec_OPC_DA20_Server-%3EE_CHEM%3AV_01_CLOSE", 0)
+        self.opc.write_value("Hitec_OPC_DA20_Server-%3EE_CHEM%3AV_01_OPEN", 0)
+
+        # substrate pump 
+
+        flow_sub = sub_conc * flow_rate / stock_substrate_concentration # ml/min
+
+        flow_acid = acid_conc * flow_rate / stock_acid_concentration # ml/min
+
+        flow_base = base_conc * flow_rate / stock_base_concentration # ml/min
+
+        flow_solvent = flow_rate - (flow_sub + flow_acid + flow_base) # ml/min
+
+        # Set the flow rates for both pumps
+        self.opc.write_value("Hitec_OPC_DA20_Server->E_CHEM:PUMP1.W1", round(flow_base * 1000, 0))  # Pump 1 Base flow
+        self.opc.write_value("Hitec_OPC_DA20_Server->E_CHEM:PUMP2.W1", round(flow_acid * 1000, 0))  # Pump 2 Acid flow
+        self.opc.write_value("Hitec_OPC_DA20_Server->E_CHEM:PUMP3.W1", round(flow_solvent * 1000, 0))  # Pump 3 ACN
+        self.opc.write_value("Hitec_OPC_DA20_Server->E_CHEM:PUMP4.W1", round(flow_sub * 1000, 0))  # Pump 4 flow substrate
+
+
     
     def flow_galvanostatic_mode(self, current, concentration, charge, base_concentration, acid_concentration):
         """Set the flow of pumps for the electrochemical cell in galvanostatic mode."""
@@ -483,7 +523,7 @@ class ExperimentRunner:
         print(f"Filling electrochemical cell for {duration} seconds...")
         time.sleep(duration) # change for duration
     
-    def calculate_residence_time(self, flow_rate, reaction_volume = 1.8):
+    def calculate_residence_time(self, flow_rate, reaction_volume = 2):
         """ Calculate the residence time based in the flow_rate and the reaction and measure volume
             Measure volume include all the death volumes downstream"""
         
@@ -629,20 +669,21 @@ class ExperimentRunner:
 
             # Diazo in continuous flow set_up
 
-            self.check_water_and_clean_probe()
-            self.monitor_temperature(parameters["temperature"])
+            #self.check_water_and_clean_probe()
+            #self.monitor_temperature(parameters["temperature"])
             #self.set_pressure(parameters["pressure"])
             #self.set_pump_flows(parameters["residence_time"])
             #self.set_pump_flows_acid( parameters["acid"], parameters["residence_time"])
-            self.set_pump_flows_from_ratio_and_time(parameters["ratio_org_aq"], parameters["residence_time"])
-            self.countdown(int(parameters["residence_time"]))
+            #self.countdown(int(parameters["residence_time"]))
 
             # Electrochemical continuous flow set_up
-            #self.filling_electrochemical_cell(parameters["flow_rate"], parameters["base_concentration"])
-            #self.flow_electrochemical_cell_dual(parameters["flow_rate"], parameters["base_concentration"])
-            #self.set_voltage(parameters["Voltage"])
-            #self.turn_on_power_supply()
-            #self.countdown_echem(parameters["flow_rate"])
+            self.flow_electrochemical_cell_from_four_variables(parameters["flow_rate"], parameters["substrate_concentration"], parameters["acid_concentration"], parameters["base_concentration"])
+            filling_time = round(0.8/ parameters["flow_rate"] * 1.5 * 60, 2) # time in seconds
+            print(f"filling the electrochemical cell for {filling_time} seconds ")
+            time.sleep(filling_time) # time required to fill de electrochemical cell (0.8 ml of internal volume), 1.5 is to be sure the cell is filled
+            self.set_voltage(parameters["Voltage"])
+            self.turn_on_power_supply()
+            self.countdown_echem(parameters["flow_rate"])
             
            
 
@@ -652,24 +693,24 @@ class ExperimentRunner:
         if self.simulation_mode in ["full", "hybrid"]:
             result = self.simulate_experiment(parameters, objectives)
             flow_aq, flow_org, total_flow = self.calculate_flows(parameters["residence_time"], parameters.get("ratio_org_aq", 1.0))
-            reactor_volume = 6.4
+            reactor_volume = 1.4
             res_time = parameters.get("residence_time", 20)
             total_flow = reactor_volume /(res_time/60)
             flow_aq = total_flow / 2
             flow_org = total_flow - flow_aq
-            result = simulate_objectives(result, flow_aq, flow_org, res_time, selected_objectives=objectives, directions=directions)
+            result = calculate_objectives(result, flow_aq, flow_org, res_time, selected_objectives=objectives, directions=directions)
             if len(objectives) == 1:
                 result = {objectives[0]: result}  # Only return the selected objective
 
         else:
             mean_measurement = self.collect_measurements(parameters = parameters)
-            flow_aq, flow_org, total_flow = self.calculate_flows(parameters["residence_time"], parameters.get("ratio_org_aq", 1.0))
-            res_time = parameters.get("residence_time", 20)
-            print(f'mean_measurement : {mean_measurement}')
-            print(f'flow_aq:{flow_aq}')
-            print(f'flow_org : {flow_org}')
-            print(f'residence_time : {res_time}')
-            result = simulate_objectives(mean_measurement, flow_aq, flow_org, res_time, selected_objectives=objectives, directions=directions)
+            #flow_aq, flow_org, total_flow = self.calculate_flows(parameters["residence_time"], parameters.get("ratio_org_aq", 1.0))
+            #res_time = parameters.get("residence_time", 20)
+            #print(f'mean_measurement : {mean_measurement}')
+            #print(f'flow_aq:{flow_aq}')
+            #print(f'flow_org : {flow_org}')
+            #print(f'residence_time : {res_time}')
+            result = calculate_objectives(mean_measurement, parameters["substrate_concentration"], selected_objectives=objectives, directions=directions)
 
         if self.use_autosampler:
             self.autosampler.clean_before_collect(self.tray_pos_waste)
@@ -681,9 +722,9 @@ class ExperimentRunner:
         else:
             print("ℹ️ Autosampler disabled: skipping sample collection.")
 
-        #self.turn_off_power_supply()
+        self.turn_off_power_supply()
         self.stop_pumps()
-        #self.cleaning_electrochemical_cell()
+        self.cleaning_electrochemical_cell()
         return result
     
 
