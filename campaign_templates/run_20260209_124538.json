@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "mode": "single",
+  "name": "run_20260209_124538",
+  "variables": [],
+  "optimization": {
+    "initial_experiments": 5,
+    "total_iterations": 20,
+    "response": "Yield",
+    "acq_func": "EI",
+    "init_strategy": "Random",
+    "random_seed": 42
+  },
+  "hardware": {
+    "simulation_mode": "off",
+    "opc_url": "http://em-nun:57080",
+    "use_autosampler": false,
+    "volume_to_collect": 3.0
+  }
+}

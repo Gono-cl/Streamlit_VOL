@@ -19,6 +19,10 @@ from core.hardware.mixins.echem_mixin import EchemMixin
 from core.hardware.mixins.flow_calculations_mixin import FlowCalculationsMixin
 from core.hardware.mixins.measurement_mixin import MeasurementMixin
 from core.hardware.mixins.maintenance_mixin import MaintenanceMixin
+from core.hardware.process_adapters import (
+    DEFAULT_PROCESS_ADAPTER,
+    create_process_adapter,
+)
 from core.hardware.mixins.ui_mixin import UIMixin
 from core.hardware.opc_communication import OPCClient
 from core.objectives import calculate_objectives
@@ -38,12 +42,17 @@ class ExperimentRunner(
         simulation_mode: str = "off",
         use_autosampler: bool = False,
         volume_to_collect: float = 3.0,
+        process_adapter: str | None = None,
+        adapter_config: dict | None = None,
     ):
         self.opc = opc_client
         self.use_autosampler = use_autosampler
         self.autosampler = AutoSampler(opc_client, vial_volume_ml=2.0) if use_autosampler else None
         self.csv_filename = csv_filename
         self.simulation_mode = simulation_mode  # Options: "off", "full", "hybrid"
+        self.process_adapter_name = process_adapter or DEFAULT_PROCESS_ADAPTER
+        self.adapter_config = dict(adapter_config or {})
+        self.process_adapter = create_process_adapter(self.process_adapter_name, config=self.adapter_config)
         self.experiment_status_placeholder = st.sidebar.empty()
         self.countdown_placeholder = st.empty()
         self.timer_placeholder = st.sidebar.empty()
@@ -132,18 +141,7 @@ class ExperimentRunner(
             self.display_experiment_info(experiment_number, total_iterations, parameters)
 
         if self.simulation_mode in ["off", "hybrid"]:
-            self.flow_electrochemical_cell_from_four_variables(
-                parameters["flow_rate"],
-                parameters["substrate_concentration"],
-                parameters["acid_concentration"],
-                parameters["base_concentration"],
-            )
-            filling_time = round(0.8 / parameters["flow_rate"] * 1.5 * 60, 2)
-            print(f"filling the electrochemical cell for {filling_time} seconds ")
-            time.sleep(filling_time)
-            self.set_voltage(parameters["Voltage"])
-            self.turn_on_power_supply()
-            self.countdown_echem(parameters["flow_rate"])
+            self.process_adapter.prepare_hardware(self, parameters)
         else:
             print("Full simulation mode enabled: skipping temperature and pump setup.")
 
@@ -151,26 +149,25 @@ class ExperimentRunner(
             result = self.simulate_experiment(parameters, objectives, directions)
         else:
             mean_measurement = self.collect_measurements(parameters=parameters)
-            result = calculate_objectives(
+            result = self.process_adapter.calculate_real_result(
+                self,
                 mean_measurement,
-                parameters["substrate_concentration"],
-                selected_objectives=objectives,
-                directions=directions,
+                parameters,
+                objectives,
+                directions,
             )
 
         if self.use_autosampler:
             self.autosampler.clean_before_collect(self.tray_pos_waste)
             self.autosampler.move_prepare_needle(self.tray_pos_collect)
-            flow_org = self.calculate_flows1(parameters["residence_time"])
+            flow_org = self.process_adapter.autosampler_flow_rate(self, parameters)
             self.autosampler.start_collection(flow_rate=flow_org, volume=self.volume_to_collect)
             self.tray_pos_waste = (self.tray_pos_waste + 2) % 32
             self.tray_pos_collect = (self.tray_pos_collect + 2) % 32
         else:
             print("Autosampler disabled: skipping sample collection.")
 
-        self.turn_off_power_supply()
-        self.stop_pumps()
-        self.cleaning_electrochemical_cell()
+        self.process_adapter.cleanup(self, parameters)
         return result
 
     # ---------------------------------------------------------------------------

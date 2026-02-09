@@ -14,11 +14,25 @@ from core.campaigns import (
     MULTI_OBJECTIVE_OPTIONS,
     OPTIMIZER_ACQ_OPTIONS,
     VARIABLE_OPTIONS,
+    build_multi_campaign_template,
+    list_campaign_templates,
+    load_campaign_template,
+    save_campaign_template,
+    variables_as_tuples,
 )
 from core.utils.export_tools import export_to_csv, export_to_excel
 from core.utils import db_handler
 from core.hardware.opc_communication import OPCClient
 from core.hardware.experimental_run import ExperimentRunner
+from core.hardware.process_adapters import (
+    DEFAULT_PROCESS_ADAPTER,
+    PROCESS_ADAPTER_LABELS,
+    available_process_adapters,
+)
+from core.hardware.process_profiles import (
+    list_process_profiles,
+    load_process_profile,
+)
 from core.utils.logger import StreamlitLogger
 import sys
 import os
@@ -32,39 +46,104 @@ os.makedirs(SAVE_DIR, exist_ok=True)
 # --- Page Title ---
 st.title("Multi-Objective Optimization")
 
+# --- Session defaults ---
+if "simulation_mode" not in st.session_state:
+    st.session_state.simulation_mode = "off"
+if "opc_url" not in st.session_state:
+    st.session_state.opc_url = "http://em-nun:57080"
+if "use_autosampler" not in st.session_state:
+    st.session_state.use_autosampler = False
+if "volume_to_collect" not in st.session_state:
+    st.session_state.volume_to_collect = 3.0
+if "initial_experiments" not in st.session_state:
+    st.session_state.initial_experiments = 5
+if "total_iterations" not in st.session_state:
+    st.session_state.total_iterations = 20
+if "init_strategy" not in st.session_state:
+    st.session_state.init_strategy = INIT_STRATEGY_OPTIONS[0]
+if "random_seed" not in st.session_state:
+    st.session_state.random_seed = 42
+if "acq_func" not in st.session_state:
+    st.session_state.acq_func = OPTIMIZER_ACQ_OPTIONS[0]
+if "objectives" not in st.session_state:
+    st.session_state.objectives = []
+if "process_adapter" not in st.session_state:
+    st.session_state.process_adapter = DEFAULT_PROCESS_ADAPTER
+if "process_adapter_config" not in st.session_state:
+    st.session_state.process_adapter_config = {}
+
 # --- Sidebar Simulation Toggle and OPC URL ---
 sim_mode_label = {
     "off": " Real Hardware (Full)",
     "hybrid": "Hybrid (Simulated Measurement)",
     "full": "Full Simulation (No Hardware)"
 }
-simulation_mode = st.sidebar.selectbox("Experiment Mode", options=["off", "hybrid", "full"], format_func=lambda x: sim_mode_label[x])
-opc_url = st.sidebar.text_input("🔌 OPC Server URL", value="http://em-nun:57080")
+sim_modes = ["off", "hybrid", "full"]
+sim_default = st.session_state.get("simulation_mode", "off")
+if sim_default not in sim_modes:
+    sim_default = "off"
+simulation_mode = st.sidebar.selectbox(
+    "Experiment Mode",
+    options=sim_modes,
+    index=sim_modes.index(sim_default),
+    format_func=lambda x: sim_mode_label[x],
+)
+opc_url = st.sidebar.text_input("🔌 OPC Server URL", value=st.session_state.get("opc_url", "http://em-nun:57080"))
+st.session_state.simulation_mode = simulation_mode
+st.session_state.opc_url = opc_url
 
 # --- Sidebar: Use Autosampler ---
-use_autosampler = st.sidebar.checkbox("Use Autosampler", value=False)
+use_autosampler = st.sidebar.checkbox("Use Autosampler", value=bool(st.session_state.get("use_autosampler", False)))
 st.session_state.use_autosampler = use_autosampler
 
 volume_to_collect = st.sidebar.number_input(
     "Desired volume (ml):",
     min_value=0.0,
     max_value=6.0,
-    value=3.0,
+    value=float(st.session_state.get("volume_to_collect", 3.0)),
     step=0.5
 )
+st.session_state.volume_to_collect = volume_to_collect
 
- 
-# --- Always initialize session state keys ---
-if "simulation_mode" not in st.session_state:
-    st.session_state.simulation_mode = simulation_mode
-if "opc_url" not in st.session_state:
-    st.session_state.opc_url = opc_url
-if "init_strategy" not in st.session_state:
-    st.session_state.init_strategy = "Random"
-if "random_seed" not in st.session_state:
-    st.session_state.random_seed = 42
-if "acq_func" not in st.session_state:
-    st.session_state.acq_func = "EI"
+adapter_options = available_process_adapters()
+adapter_default = st.session_state.get("process_adapter", DEFAULT_PROCESS_ADAPTER)
+if adapter_default not in adapter_options:
+    adapter_default = DEFAULT_PROCESS_ADAPTER if DEFAULT_PROCESS_ADAPTER in adapter_options else adapter_options[0]
+process_adapter = st.sidebar.selectbox(
+    "Process Adapter",
+    options=adapter_options,
+    index=adapter_options.index(adapter_default),
+    format_func=lambda x: PROCESS_ADAPTER_LABELS.get(x, x),
+)
+st.session_state.process_adapter = process_adapter
+
+profile_options = ["None"] + list_process_profiles()
+profile_default = st.session_state.get("process_profile_name", "None")
+if profile_default not in profile_options:
+    profile_default = "None"
+selected_profile = st.sidebar.selectbox(
+    "Process Profile",
+    options=profile_options,
+    index=profile_options.index(profile_default),
+    key="multi_process_profile_select",
+)
+st.session_state.process_profile_name = selected_profile
+if st.sidebar.button("Load Process Profile", key="multi_load_process_profile"):
+    if selected_profile == "None":
+        st.warning("Select a process profile first.")
+    else:
+        payload = load_process_profile(selected_profile)
+        if not payload:
+            st.error("Could not load selected process profile.")
+        else:
+            st.session_state.process_adapter = payload.get("adapter", DEFAULT_PROCESS_ADAPTER)
+            st.session_state.process_adapter_config = payload.get("adapter_config", {})
+            st.success(f"Loaded process profile: {selected_profile}")
+            st.rerun()
+
+if st.sidebar.button("Open Process Builder", key="multi_open_process_builder"):
+    st.session_state.selected_page = "🧩 Process Builder"
+    st.rerun()
 
 # --- Simulation Mode Banner ---
 if st.session_state.simulation_mode != "off":
@@ -89,10 +168,13 @@ if resume_file != "None" and st.sidebar.button("Load Previous Run"):
     st.session_state.iteration = len(df)
     st.session_state.variables = metadata["variables"]
     st.session_state.objectives = metadata["objectives"]
+    st.session_state.initial_experiments = int(metadata.get("initial_experiments", st.session_state.get("initial_experiments", 5)))
     st.session_state.total_iterations = metadata["total_iterations"]
     st.session_state.init_strategy = metadata.get("init_strategy", st.session_state.get("init_strategy", "Random"))
     st.session_state.random_seed = metadata.get("random_seed", st.session_state.get("random_seed", 42))
     st.session_state.acq_func = metadata.get("acq_func", st.session_state.get("acq_func", "EI"))
+    st.session_state.process_adapter = metadata.get("process_adapter", st.session_state.get("process_adapter", DEFAULT_PROCESS_ADAPTER))
+    st.session_state.process_adapter_config = metadata.get("process_adapter_config", st.session_state.get("process_adapter_config", {}))
     st.session_state.optimization_running = True
     st.session_state.run_name = resume_file
 
@@ -107,7 +189,9 @@ if resume_file != "None" and st.sidebar.button("Load Previous Run"):
         "multi_objective_log.csv",
         simulation_mode=st.session_state.simulation_mode,
         use_autosampler=st.session_state.use_autosampler,
-        volume_to_collect=volume_to_collect
+        volume_to_collect=volume_to_collect,
+        process_adapter=st.session_state.process_adapter,
+        adapter_config=st.session_state.process_adapter_config,
     )
 
     st.success(f"Loaded run: {resume_file}")
@@ -127,8 +211,12 @@ if "variables" not in st.session_state:
 with st.form(key="variable_form"):
     col1, col2, col3, col4 = st.columns(4)
     with col1:
-        display_name = st.selectbox("Variable Name", list(VARIABLE_OPTIONS.keys()))
-        var_name = VARIABLE_OPTIONS[display_name]  # Use internal variable name
+        variable_choices = list(VARIABLE_OPTIONS.keys()) + ["Custom..."]
+        display_name = st.selectbox("Variable Name", variable_choices)
+        if display_name == "Custom...":
+            var_name = st.text_input("Custom Variable ID", value="", help="Use lowercase snake_case, e.g. cofeed_concentration")
+        else:
+            var_name = VARIABLE_OPTIONS[display_name]  # Use internal variable name
     with col2:
         lower_bound = st.number_input("Lower Bound", value=0.0, format="%.4f")
     with col3:
@@ -154,8 +242,12 @@ else:
 # --- Optimization Settings ---
 st.subheader("⚙️ Optimization Settings")
 col5, col6 = st.columns(2)
-initial_experiments = col5.number_input("Initialization Experiments", min_value=1, max_value=100, value=5)
-total_iterations = col6.number_input("Total Iterations", min_value=1, max_value=100, value=20)
+init_exp_default = int(st.session_state.get("initial_experiments", 5))
+total_default = int(st.session_state.get("total_iterations", 20))
+initial_experiments = col5.number_input("Initialization Experiments", min_value=1, max_value=100, value=init_exp_default)
+total_iterations = col6.number_input("Total Iterations", min_value=1, max_value=100, value=total_default)
+st.session_state.initial_experiments = int(initial_experiments)
+st.session_state.total_iterations = int(total_iterations)
 init_options = INIT_STRATEGY_OPTIONS
 init_default = st.session_state.get("init_strategy", init_options[0])
 if init_default not in init_options:
@@ -172,11 +264,9 @@ random_seed = int(col8.number_input("Random Seed", min_value=0, max_value=214748
 st.session_state.random_seed = random_seed
 acq_func = col9.selectbox("Acquisition Function", acq_options, index=acq_options.index(acq_default))
 st.session_state.acq_func = acq_func
-objectives = st.multiselect("🎯 Select Objectives to Optimize", MULTI_OBJECTIVE_OPTIONS)
-
-# --- Always keep objectives in session state ---
-if "objectives" not in st.session_state or not st.session_state.objectives:
-    st.session_state.objectives = objectives
+objective_defaults = [obj for obj in st.session_state.get("objectives", []) if obj in MULTI_OBJECTIVE_OPTIONS]
+objectives = st.multiselect("🎯 Select Objectives to Optimize", MULTI_OBJECTIVE_OPTIONS, default=objective_defaults)
+st.session_state.objectives = objectives
 
 st.markdown("### Select Maximize or Minimize Objective")
 
@@ -188,6 +278,86 @@ for obj in objectives:
         key=f"{obj}_direction"
     )
     objective_directions[obj] = direction
+
+# Campaign templates
+st.markdown("### Campaign Templates")
+multi_templates = list_campaign_templates(mode="multi")
+selected_template = st.selectbox("Template", options=["None"] + multi_templates, key="multi_template_select")
+col_tpl_load, col_tpl_save = st.columns([1, 1])
+with col_tpl_load:
+    if st.button("Load Template"):
+        if selected_template == "None":
+            st.warning("Please choose a template to load.")
+        else:
+            payload = load_campaign_template(selected_template)
+            if not payload:
+                st.error("Failed to load template.")
+            elif payload.get("mode") != "multi":
+                st.error("Selected template is not a multi-objective campaign.")
+            else:
+                loaded_vars = variables_as_tuples(payload.get("variables", []))
+                if loaded_vars:
+                    st.session_state.variables = loaded_vars
+                optimization = payload.get("optimization", {})
+                st.session_state.initial_experiments = int(optimization.get("initial_experiments", st.session_state.get("initial_experiments", 5)))
+                st.session_state.total_iterations = int(optimization.get("total_iterations", st.session_state.get("total_iterations", 20)))
+                loaded_objectives = optimization.get("objectives", [])
+                st.session_state.objectives = [o for o in loaded_objectives if o in MULTI_OBJECTIVE_OPTIONS]
+                loaded_acq = optimization.get("acq_func")
+                if loaded_acq in OPTIMIZER_ACQ_OPTIONS:
+                    st.session_state.acq_func = loaded_acq
+                loaded_init = optimization.get("init_strategy")
+                if loaded_init in INIT_STRATEGY_OPTIONS:
+                    st.session_state.init_strategy = loaded_init
+                st.session_state.random_seed = int(optimization.get("random_seed", st.session_state.get("random_seed", 42)))
+                loaded_dirs = optimization.get("objective_directions", {})
+                for obj_name, direction in loaded_dirs.items():
+                    if direction in ("maximize", "minimize"):
+                        st.session_state[f"{obj_name}_direction"] = direction
+                hardware = payload.get("hardware", {})
+                if hardware:
+                    st.session_state.simulation_mode = hardware.get("simulation_mode", st.session_state.get("simulation_mode", "off"))
+                    st.session_state.opc_url = hardware.get("opc_url", st.session_state.get("opc_url", "http://em-nun:57080"))
+                    st.session_state.use_autosampler = bool(hardware.get("use_autosampler", st.session_state.get("use_autosampler", False)))
+                    st.session_state.volume_to_collect = float(hardware.get("volume_to_collect", st.session_state.get("volume_to_collect", 3.0)))
+                    st.session_state.process_adapter = hardware.get("process_adapter", st.session_state.get("process_adapter", DEFAULT_PROCESS_ADAPTER))
+                    st.session_state.process_adapter_config = hardware.get("process_adapter_config", st.session_state.get("process_adapter_config", {}))
+                st.success(f"Loaded template: {selected_template}")
+                st.rerun()
+
+with col_tpl_save:
+    save_template_name = st.text_input(
+        "Template name",
+        value=st.session_state.get("multi_template_name", experiment_name or "multi_campaign"),
+        key="multi_template_name",
+    )
+    if st.button("Save Current Template"):
+        template_payload = build_multi_campaign_template(
+            template_name=save_template_name,
+            variables=st.session_state.get("variables", []),
+            optimization={
+                "initial_experiments": int(initial_experiments),
+                "total_iterations": int(total_iterations),
+                "objectives": list(objectives),
+                "objective_directions": {
+                    obj_name: st.session_state.get(f"{obj_name}_direction", "maximize")
+                    for obj_name in objectives
+                },
+                "acq_func": acq_func,
+                "init_strategy": init_strategy,
+                "random_seed": int(random_seed),
+            },
+            hardware={
+                "simulation_mode": simulation_mode,
+                "opc_url": opc_url,
+                "use_autosampler": bool(st.session_state.get("use_autosampler", False)),
+                "volume_to_collect": float(st.session_state.get("volume_to_collect", 3.0)),
+                "process_adapter": st.session_state.get("process_adapter", DEFAULT_PROCESS_ADAPTER),
+                "process_adapter_config": st.session_state.get("process_adapter_config", {}),
+            },
+        )
+        path = save_campaign_template(save_template_name, template_payload)
+        st.success(f"Template saved: {path}")
 
 # Reuse previous multi-objective campaigns
 st.markdown("### Reuse Previous Multi-Objective Campaigns (as init)")
@@ -393,7 +563,15 @@ if start_clicked:
         st.session_state.simulation_mode = simulation_mode
         st.session_state.opc_url = opc_url
         st.session_state.opc_client = OPCClient(st.session_state.opc_url)
-        st.session_state.runner = ExperimentRunner(st.session_state.opc_client, "multi_objective_log.csv", simulation_mode=st.session_state.simulation_mode, use_autosampler=st.session_state.use_autosampler, volume_to_collect=volume_to_collect)
+        st.session_state.runner = ExperimentRunner(
+            st.session_state.opc_client,
+            "multi_objective_log.csv",
+            simulation_mode=st.session_state.simulation_mode,
+            use_autosampler=st.session_state.use_autosampler,
+            volume_to_collect=volume_to_collect,
+            process_adapter=st.session_state.get("process_adapter", DEFAULT_PROCESS_ADAPTER),
+            adapter_config=st.session_state.get("process_adapter_config", {}),
+        )
         campaign_bounds = [(low, high) for _, low, high, _ in st.session_state.variables]
         # Expand model bounds to include selected reuse rows
         model_bounds = campaign_bounds.copy()
@@ -608,12 +786,15 @@ if st.session_state.get("optimization_running", False):
             "variables": st.session_state.variables,
             "objectives": objectives,
             "objective_directions": {obj: st.session_state.get(f"{obj}_direction", "maximize") for obj in objectives},
+            "initial_experiments": int(initial_experiments),
             "total_iterations": total_iterations,
             "experiment_name": experiment_name,
             "experiment_notes": experiment_notes,
             "experiment_date": str(experiment_date),
             "simulation_mode": st.session_state.simulation_mode,
             "opc_url": st.session_state.opc_url,
+            "process_adapter": st.session_state.get("process_adapter", DEFAULT_PROCESS_ADAPTER),
+            "process_adapter_config": st.session_state.get("process_adapter_config", {}),
             "init_strategy": init_strategy,
             "random_seed": random_seed,
             "acq_func": acq_func,
@@ -655,6 +836,7 @@ if st.session_state.get("optimization_running", False):
             "method": "Bayesian Multi-Objective",
             "simulation_mode": st.session_state.simulation_mode,
             "opc_url": st.session_state.opc_url,
+            "process_adapter": st.session_state.get("process_adapter", DEFAULT_PROCESS_ADAPTER),
             "init_strategy": init_strategy,
             "random_seed": random_seed,
             "acq_func": acq_func

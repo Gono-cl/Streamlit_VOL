@@ -5,6 +5,14 @@ from .catalog import (
     SINGLE_OBJECTIVE_OPTIONS,
     VARIABLE_OPTIONS,
 )
+from .templates import (
+    build_multi_campaign_template,
+    build_single_campaign_template,
+    list_campaign_templates,
+    load_campaign_template,
+    save_campaign_template,
+    variables_as_tuples,
+)
 
 __all__ = [
     "VARIABLE_OPTIONS",
@@ -12,4 +20,10 @@ __all__ = [
     "MULTI_OBJECTIVE_OPTIONS",
     "INIT_STRATEGY_OPTIONS",
     "OPTIMIZER_ACQ_OPTIONS",
+    "list_campaign_templates",
+    "load_campaign_template",
+    "save_campaign_template",
+    "build_single_campaign_template",
+    "build_multi_campaign_template",
+    "variables_as_tuples",
 ]

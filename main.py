@@ -64,6 +64,7 @@ PAGES = {
     "🏠 Home": "Home.py",
     "🎯 Autonomous Single Objective Optimization": "Single_Objective.py",
     "📊 Autonomous Multi-Objective Optimization": "Multi_Objective.py",
+    "🧩 Process Builder": "Process_Builder.py",
     "📊 Data Analysis & Visualization": "data_analysis.py",
     "🔍 Preview Saved Run": "preview_run.py",
     "📚 Experiment DataBase": "experiment_database.py"
