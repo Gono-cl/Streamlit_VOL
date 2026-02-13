@@ -64,6 +64,7 @@ PAGES = {
     "🏠 Home": "Home.py",
     "🎯 Autonomous Single Objective Optimization": "Single_Objective.py",
     "📊 Autonomous Multi-Objective Optimization": "Multi_Objective.py",
+    "🧪 DOE Executor (External Matrix)": "DoE_Executor.py",
     "🧩 Process Builder": "Process_Builder.py",
     "📊 Data Analysis & Visualization": "data_analysis.py",
     "🔍 Preview Saved Run": "preview_run.py",
@@ -88,5 +89,4 @@ def load_page(page_path):
     spec.loader.exec_module(module)
 
 load_page(PAGES[selection])
-
 
