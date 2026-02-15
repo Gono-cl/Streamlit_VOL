@@ -8,6 +8,8 @@ import dill as pickle
 import os
 import json
 from skopt.space import Real, Categorical  # <-- Add this import
+from src.repro.planner import build_initialization_points
+from src.repro.repro_engine import DecisionLabel, ReplicatePattern, ReproducibilityEngine
 from core.optimization.bayesian_optimization import StepBayesianOptimizer
 from core.optimization.initial_design import (
     augmented_lhs_with_reuse,
@@ -59,8 +61,66 @@ def sanitize_filename(name: str) -> str:
     # Fallback if empty
     return cleaned or "run"
 
+
+def _json_compatible(value):
+    if isinstance(value, dict):
+        return {str(k): _json_compatible(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_json_compatible(v) for v in value]
+    if hasattr(value, "value"):
+        return getattr(value, "value")
+    if isinstance(value, np.generic):
+        return value.item()
+    return value
+
+
+def section_header(title: str, accent: str, background: str = "#f8fafc") -> None:
+    st.markdown(
+        f"""
+        <div style="
+            margin: 0.35rem 0 0.75rem 0;
+            padding: 0.55rem 0.8rem;
+            border-radius: 10px;
+            border-left: 6px solid {accent};
+            background: linear-gradient(90deg, {background}, #ffffff);
+        ">
+            <div style="font-weight: 700; color: #111827; letter-spacing: 0.2px;">{title}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+SINGLE_SECTION_COLORS: dict[str, tuple[str, str]] = {
+    "metadata": ("#0ea5e9", "#eff6ff"),
+    "variables": ("#14b8a6", "#f0fdfa"),
+    "settings": ("#f59e0b", "#fffbeb"),
+    "repro": ("#ef4444", "#fef2f2"),
+    "templates": ("#10b981", "#ecfdf5"),
+    "reuse": ("#f97316", "#fff7ed"),
+    "preview": ("#06b6d4", "#ecfeff"),
+    "run": ("#22c55e", "#f0fdf4"),
+}
+
+
+def themed_section_header(section_key: str, title: str) -> None:
+    accent, bg = SINGLE_SECTION_COLORS.get(section_key, ("#64748b", "#f8fafc"))
+    section_header(title, accent, bg)
+
 # --- Page Title ---
 st.title("🌟 Single Objective Optimization")
+ui_mode_single = st.radio(
+    "UI Mode",
+    options=["Quick", "Advanced"],
+    horizontal=True,
+    index=0 if st.session_state.get("single_ui_mode", "Quick") == "Quick" else 1,
+    key="single_ui_mode_selector",
+)
+st.session_state.single_ui_mode = ui_mode_single
+is_advanced_single = ui_mode_single == "Advanced"
+if not is_advanced_single:
+    st.caption("Quick mode: core setup + run controls only. Switch to Advanced for templates, reproducibility, and design tooling.")
+    st.session_state.single_repro_enabled = False
 
 # --- Session defaults ---
 if "simulation_mode" not in st.session_state:
@@ -87,6 +147,28 @@ if "process_adapter" not in st.session_state:
     st.session_state.process_adapter = DEFAULT_PROCESS_ADAPTER
 if "process_adapter_config" not in st.session_state:
     st.session_state.process_adapter_config = {}
+if "single_ui_mode" not in st.session_state:
+    st.session_state.single_ui_mode = "Quick"
+if "single_repro_enabled" not in st.session_state:
+    st.session_state.single_repro_enabled = False
+if "single_repro_method" not in st.session_state:
+    st.session_state.single_repro_method = "LHS"
+if "single_repro_n_points" not in st.session_state:
+    st.session_state.single_repro_n_points = 8
+if "single_repro_patterns" not in st.session_state:
+    st.session_state.single_repro_patterns = ["Immediate (A->A)", "Bracketed (A->B->A)"]
+if "single_repro_use_sentinel" not in st.session_state:
+    st.session_state.single_repro_use_sentinel = True
+if "single_repro_sentinel_every" not in st.session_state:
+    st.session_state.single_repro_sentinel_every = 5
+if "single_repro_escalate_cleaning" not in st.session_state:
+    st.session_state.single_repro_escalate_cleaning = True
+if "single_repro_max_cleaning" not in st.session_state:
+    st.session_state.single_repro_max_cleaning = 2
+if "single_repro_block_on_fail" not in st.session_state:
+    st.session_state.single_repro_block_on_fail = True
+if "single_repro_report" not in st.session_state:
+    st.session_state.single_repro_report = None
 
 # --- Sidebar Simulation Mode Selector ---
 sim_mode_label = {
@@ -188,6 +270,7 @@ if resume_file != "None" and st.sidebar.button("Load Previous Run"):
     st.session_state.random_seed = int(metadata.get("random_seed", st.session_state.get("random_seed", 42)))
     st.session_state.process_adapter = metadata.get("process_adapter", st.session_state.get("process_adapter", DEFAULT_PROCESS_ADAPTER))
     st.session_state.process_adapter_config = metadata.get("process_adapter_config", st.session_state.get("process_adapter_config", {}))
+    st.session_state.single_repro_report = metadata.get("reproducibility")
     st.session_state.runner = ExperimentRunner(
         OPCClient(metadata["opc_url"]),
         "experiment_log.csv",
@@ -210,7 +293,7 @@ if resume_file != "None" and st.sidebar.button("Load Previous Run"):
         st.session_state.pending_next_params = None
 
 # --- Experiment Metadata ---
-st.subheader("🧪 Experiment Metadata")
+themed_section_header("metadata", "Experiment Metadata")
 experiment_name = st.text_input("Experiment Name", value=st.session_state.get("run_name", datetime.now().strftime("run_%Y%m%d_%H%M%S")))
 st.session_state.run_name = experiment_name
 # Sanitize for filesystem safety and keep it consistent throughout the session
@@ -223,7 +306,7 @@ experiment_date = st.date_input("Experiment Date", datetime.today())
 experiment_notes = st.text_area("Additional Notes")
 
 # --- Define Variables ---
-st.subheader("⚙️ Optimization Variables")
+themed_section_header("variables", "Optimization Variables")
 
 if "variables" not in st.session_state:
     st.session_state.variables = []
@@ -260,7 +343,7 @@ else:
     st.info("No variables added yet.")
 
 # --- Optimization Settings ---
-st.subheader("⚙️ Optimization Settings")
+themed_section_header("settings", "Optimization Settings")
 col5, col6, col7 = st.columns(3)
 init_exp_default = int(st.session_state.get("initial_experiments", 5))
 total_default = int(st.session_state.get("total_iterations", 20))
@@ -275,7 +358,6 @@ st.session_state.total_iterations = total_iterations
 st.session_state.response_to_optimize = response_to_optimize
 
 # Additional BO settings
-col_a, col_b, col_c = st.columns(3)
 acq_default = st.session_state.get("acq_func", OPTIMIZER_ACQ_OPTIONS[0])
 if acq_default not in OPTIMIZER_ACQ_OPTIONS:
     acq_default = OPTIMIZER_ACQ_OPTIONS[0]
@@ -283,282 +365,412 @@ init_default = st.session_state.get("init_strategy", INIT_STRATEGY_OPTIONS[0])
 if init_default not in INIT_STRATEGY_OPTIONS:
     init_default = INIT_STRATEGY_OPTIONS[0]
 seed_default = int(st.session_state.get("random_seed", 42))
-acq_func = col_a.selectbox("Acquisition Function", OPTIMIZER_ACQ_OPTIONS, index=OPTIMIZER_ACQ_OPTIONS.index(acq_default))
-init_strategy = col_b.selectbox("Init Strategy", INIT_STRATEGY_OPTIONS, index=INIT_STRATEGY_OPTIONS.index(init_default))
-random_seed = int(col_c.number_input("Random Seed", min_value=0, max_value=2147483647, value=seed_default, step=1))
+if is_advanced_single:
+    col_a, col_b, col_c = st.columns(3)
+    acq_func = col_a.selectbox("Acquisition Function", OPTIMIZER_ACQ_OPTIONS, index=OPTIMIZER_ACQ_OPTIONS.index(acq_default))
+    init_strategy = col_b.selectbox("Init Strategy", INIT_STRATEGY_OPTIONS, index=INIT_STRATEGY_OPTIONS.index(init_default))
+    random_seed = int(col_c.number_input("Random Seed", min_value=0, max_value=2147483647, value=seed_default, step=1))
+else:
+    acq_func = acq_default
+    init_strategy = init_default
+    random_seed = seed_default
 st.session_state.acq_func = acq_func
 st.session_state.init_strategy = init_strategy
 st.session_state.random_seed = random_seed
 
-# Campaign templates
-st.markdown("### Campaign Templates")
-single_templates = list_campaign_templates(mode="single")
-selected_template = st.selectbox("Template", options=["None"] + single_templates, key="single_template_select")
-col_tpl_load, col_tpl_save = st.columns([1, 1])
-with col_tpl_load:
-    if st.button("Load Template"):
-        if selected_template == "None":
-            st.warning("Please choose a template to load.")
-        else:
-            payload = load_campaign_template(selected_template)
-            if not payload:
-                st.error("Failed to load template.")
-            elif payload.get("mode") != "single":
-                st.error("Selected template is not a single-objective campaign.")
-            else:
-                loaded_vars = variables_as_tuples(payload.get("variables", []))
-                if loaded_vars:
-                    st.session_state.variables = loaded_vars
-                optimization = payload.get("optimization", {})
-                st.session_state.initial_experiments = int(optimization.get("initial_experiments", st.session_state.get("initial_experiments", 5)))
-                st.session_state.total_iterations = int(optimization.get("total_iterations", st.session_state.get("total_iterations", 20)))
-                loaded_response = optimization.get("response")
-                if loaded_response in SINGLE_OBJECTIVE_OPTIONS:
-                    st.session_state.response_to_optimize = loaded_response
-                loaded_acq = optimization.get("acq_func")
-                if loaded_acq in OPTIMIZER_ACQ_OPTIONS:
-                    st.session_state.acq_func = loaded_acq
-                loaded_init = optimization.get("init_strategy")
-                if loaded_init in INIT_STRATEGY_OPTIONS:
-                    st.session_state.init_strategy = loaded_init
-                st.session_state.random_seed = int(optimization.get("random_seed", st.session_state.get("random_seed", 42)))
-                hardware = payload.get("hardware", {})
-                if hardware:
-                    st.session_state.simulation_mode = hardware.get("simulation_mode", st.session_state.get("simulation_mode", "off"))
-                    st.session_state.opc_url = hardware.get("opc_url", st.session_state.get("opc_url", "http://em-nun:57080"))
-                    st.session_state.use_autosampler = bool(hardware.get("use_autosampler", st.session_state.get("use_autosampler", False)))
-                    st.session_state.volume_to_collect = float(hardware.get("volume_to_collect", st.session_state.get("volume_to_collect", 3.0)))
-                    st.session_state.process_adapter = hardware.get("process_adapter", st.session_state.get("process_adapter", DEFAULT_PROCESS_ADAPTER))
-                    st.session_state.process_adapter_config = hardware.get("process_adapter_config", st.session_state.get("process_adapter_config", {}))
-                st.success(f"Loaded template: {selected_template}")
-                st.rerun()
-
-with col_tpl_save:
-    save_template_name = st.text_input(
-        "Template name",
-        value=st.session_state.get("single_template_name", experiment_name),
-        key="single_template_name",
+# Optional reproducibility gate
+if is_advanced_single:
+    themed_section_header("repro", "Reproducibility Study (Optional)")
+    single_repro_enabled = st.checkbox(
+        "Enable reproducibility gate before optimization start",
+        value=bool(st.session_state.get("single_repro_enabled", False)),
+        key="single_repro_enabled_widget",
     )
-    if st.button("Save Current Template"):
-        template_payload = build_single_campaign_template(
-            template_name=save_template_name,
-            variables=st.session_state.get("variables", []),
-            optimization={
-                "initial_experiments": int(initial_experiments),
-                "total_iterations": int(total_iterations),
-                "response": response_to_optimize,
-                "acq_func": acq_func,
-                "init_strategy": init_strategy,
-                "random_seed": int(random_seed),
-            },
-            hardware={
-                "simulation_mode": simulation_mode,
-                "opc_url": opc_url,
-                "use_autosampler": bool(st.session_state.get("use_autosampler", False)),
-                "volume_to_collect": float(st.session_state.get("volume_to_collect", 3.0)),
-                "process_adapter": st.session_state.get("process_adapter", DEFAULT_PROCESS_ADAPTER),
-                "process_adapter_config": st.session_state.get("process_adapter_config", {}),
-            },
+    st.session_state.single_repro_enabled = single_repro_enabled
+    if single_repro_enabled:
+        repro_col1, repro_col2, repro_col3 = st.columns(3)
+        single_repro_method = repro_col1.selectbox(
+            "Test-point strategy",
+            options=["LHS", "Corners + Center"],
+            index=0 if st.session_state.get("single_repro_method", "LHS") == "LHS" else 1,
+            key="single_repro_method_select",
         )
-        path = save_campaign_template(save_template_name, template_payload)
-        st.success(f"Template saved: {path}")
+        st.session_state.single_repro_method = single_repro_method
+        single_repro_n_points = int(
+            repro_col2.number_input(
+                "Test points",
+                min_value=2,
+                max_value=64,
+                value=int(st.session_state.get("single_repro_n_points", 8)),
+                step=1,
+                key="single_repro_n_points_input",
+            )
+        )
+        st.session_state.single_repro_n_points = single_repro_n_points
+        single_repro_sentinel_every = int(
+            repro_col3.number_input(
+                "Sentinel every N runs",
+                min_value=1,
+                max_value=100,
+                value=int(st.session_state.get("single_repro_sentinel_every", 5)),
+                step=1,
+                key="single_repro_sentinel_every_input",
+            )
+        )
+        st.session_state.single_repro_sentinel_every = single_repro_sentinel_every
 
-# Reuse previous campaigns as initial data
-st.markdown("### Reuse Previous Campaigns (as init)")
-available_runs = [d for d in os.listdir(SAVE_DIR) if os.path.isdir(os.path.join(SAVE_DIR, d))]
-reuse_runs = st.multiselect("Select previous runs to reuse", options=available_runs)
+        single_repro_patterns = st.multiselect(
+            "Replication patterns",
+            options=["Immediate (A->A)", "Bracketed (A->B->A)"],
+            default=st.session_state.get("single_repro_patterns", ["Immediate (A->A)", "Bracketed (A->B->A)"]),
+            key="single_repro_patterns_select",
+        )
+        st.session_state.single_repro_patterns = single_repro_patterns
 
-# Build and preview reusable data from selected runs
-if reuse_runs:
-    if st.button("Load Previous Data"):
-        curr_names = [n for n, *_ in st.session_state.variables]
-        rows = []
-        for run in reuse_runs:
-            rpath = os.path.join(SAVE_DIR, run)
-            meta_path = os.path.join(rpath, "metadata.json")
-            data_path = os.path.join(rpath, "experiment_data.csv")
-            if not (os.path.exists(meta_path) and os.path.exists(data_path)):
-                continue
-            try:
-                with open(meta_path, "r") as f:
-                    meta = json.load(f)
-                prev_vars = meta.get("variables", [])
-                prev_resp = meta.get("response")
-                prev_names = [n for n, *_ in prev_vars]
-                if prev_names != curr_names or prev_resp != response_to_optimize:
+        single_repro_use_sentinel = st.checkbox(
+            "Enable sentinel point checks",
+            value=bool(st.session_state.get("single_repro_use_sentinel", True)),
+            key="single_repro_use_sentinel_widget",
+        )
+        st.session_state.single_repro_use_sentinel = single_repro_use_sentinel
+
+        repro_flag_col1, repro_flag_col2, repro_flag_col3 = st.columns(3)
+        single_repro_escalate_cleaning = repro_flag_col1.checkbox(
+            "Escalate cleaning and retest on FAIL/drift",
+            value=bool(st.session_state.get("single_repro_escalate_cleaning", True)),
+            key="single_repro_escalate_cleaning_widget",
+        )
+        st.session_state.single_repro_escalate_cleaning = single_repro_escalate_cleaning
+        single_repro_max_cleaning = int(
+            repro_flag_col2.number_input(
+                "Max cleaning level",
+                min_value=1,
+                max_value=10,
+                value=int(st.session_state.get("single_repro_max_cleaning", 2)),
+                step=1,
+                key="single_repro_max_cleaning_input",
+            )
+        )
+        st.session_state.single_repro_max_cleaning = single_repro_max_cleaning
+        single_repro_block_on_fail = repro_flag_col3.checkbox(
+            "Block optimization when decision is FAIL",
+            value=bool(st.session_state.get("single_repro_block_on_fail", True)),
+            key="single_repro_block_on_fail_widget",
+        )
+        st.session_state.single_repro_block_on_fail = single_repro_block_on_fail
+
+        st.caption("Runs reproducibility sequences before BO starts. Logs are stored under the run folder.")
+
+else:
+    st.caption("Reproducibility controls are hidden in Quick mode. Switch to Advanced to configure them.")
+if is_advanced_single:
+    # Campaign templates
+    themed_section_header("templates", "Campaign Templates")
+    single_templates = list_campaign_templates(mode="single")
+    selected_template = st.selectbox("Template", options=["None"] + single_templates, key="single_template_select")
+    col_tpl_load, col_tpl_save = st.columns([1, 1])
+    with col_tpl_load:
+        if st.button("Load Template"):
+            if selected_template == "None":
+                st.warning("Please choose a template to load.")
+            else:
+                payload = load_campaign_template(selected_template)
+                if not payload:
+                    st.error("Failed to load template.")
+                elif payload.get("mode") != "single":
+                    st.error("Selected template is not a single-objective campaign.")
+                else:
+                    loaded_vars = variables_as_tuples(payload.get("variables", []))
+                    if loaded_vars:
+                        st.session_state.variables = loaded_vars
+                    optimization = payload.get("optimization", {})
+                    st.session_state.initial_experiments = int(optimization.get("initial_experiments", st.session_state.get("initial_experiments", 5)))
+                    st.session_state.total_iterations = int(optimization.get("total_iterations", st.session_state.get("total_iterations", 20)))
+                    loaded_response = optimization.get("response")
+                    if loaded_response in SINGLE_OBJECTIVE_OPTIONS:
+                        st.session_state.response_to_optimize = loaded_response
+                    loaded_acq = optimization.get("acq_func")
+                    if loaded_acq in OPTIMIZER_ACQ_OPTIONS:
+                        st.session_state.acq_func = loaded_acq
+                    loaded_init = optimization.get("init_strategy")
+                    if loaded_init in INIT_STRATEGY_OPTIONS:
+                        st.session_state.init_strategy = loaded_init
+                    st.session_state.random_seed = int(optimization.get("random_seed", st.session_state.get("random_seed", 42)))
+                    repro_cfg = optimization.get("reproducibility", {})
+                    if isinstance(repro_cfg, dict):
+                        st.session_state.single_repro_enabled = bool(repro_cfg.get("enabled", st.session_state.get("single_repro_enabled", False)))
+                        st.session_state.single_repro_method = str(repro_cfg.get("method", st.session_state.get("single_repro_method", "LHS")))
+                        st.session_state.single_repro_n_points = int(repro_cfg.get("n_points", st.session_state.get("single_repro_n_points", 8)))
+                        st.session_state.single_repro_patterns = list(repro_cfg.get("patterns", st.session_state.get("single_repro_patterns", ["Immediate (A->A)", "Bracketed (A->B->A)"])))
+                        st.session_state.single_repro_use_sentinel = bool(repro_cfg.get("use_sentinel", st.session_state.get("single_repro_use_sentinel", True)))
+                        st.session_state.single_repro_sentinel_every = int(repro_cfg.get("sentinel_every_n_runs", st.session_state.get("single_repro_sentinel_every", 5)))
+                        st.session_state.single_repro_escalate_cleaning = bool(repro_cfg.get("escalate_cleaning", st.session_state.get("single_repro_escalate_cleaning", True)))
+                        st.session_state.single_repro_max_cleaning = int(repro_cfg.get("max_cleaning_level", st.session_state.get("single_repro_max_cleaning", 2)))
+                        st.session_state.single_repro_block_on_fail = bool(repro_cfg.get("block_on_fail", st.session_state.get("single_repro_block_on_fail", True)))
+                        for _widget_key in [
+                            "single_repro_enabled_widget",
+                            "single_repro_method_select",
+                            "single_repro_n_points_input",
+                            "single_repro_patterns_select",
+                            "single_repro_use_sentinel_widget",
+                            "single_repro_sentinel_every_input",
+                            "single_repro_escalate_cleaning_widget",
+                            "single_repro_max_cleaning_input",
+                            "single_repro_block_on_fail_widget",
+                        ]:
+                            st.session_state.pop(_widget_key, None)
+                    hardware = payload.get("hardware", {})
+                    if hardware:
+                        st.session_state.simulation_mode = hardware.get("simulation_mode", st.session_state.get("simulation_mode", "off"))
+                        st.session_state.opc_url = hardware.get("opc_url", st.session_state.get("opc_url", "http://em-nun:57080"))
+                        st.session_state.use_autosampler = bool(hardware.get("use_autosampler", st.session_state.get("use_autosampler", False)))
+                        st.session_state.volume_to_collect = float(hardware.get("volume_to_collect", st.session_state.get("volume_to_collect", 3.0)))
+                        st.session_state.process_adapter = hardware.get("process_adapter", st.session_state.get("process_adapter", DEFAULT_PROCESS_ADAPTER))
+                        st.session_state.process_adapter_config = hardware.get("process_adapter_config", st.session_state.get("process_adapter_config", {}))
+                    st.success(f"Loaded template: {selected_template}")
+                    st.rerun()
+
+    with col_tpl_save:
+        save_template_name = st.text_input(
+            "Template name",
+            value=st.session_state.get("single_template_name", experiment_name),
+            key="single_template_name",
+        )
+        if st.button("Save Current Template"):
+            template_payload = build_single_campaign_template(
+                template_name=save_template_name,
+                variables=st.session_state.get("variables", []),
+                optimization={
+                    "initial_experiments": int(initial_experiments),
+                    "total_iterations": int(total_iterations),
+                    "response": response_to_optimize,
+                    "acq_func": acq_func,
+                    "init_strategy": init_strategy,
+                    "random_seed": int(random_seed),
+                    "reproducibility": {
+                        "enabled": bool(st.session_state.get("single_repro_enabled", False)),
+                        "method": st.session_state.get("single_repro_method", "LHS"),
+                        "n_points": int(st.session_state.get("single_repro_n_points", 8)),
+                        "patterns": list(st.session_state.get("single_repro_patterns", ["Immediate (A->A)", "Bracketed (A->B->A)"])),
+                        "use_sentinel": bool(st.session_state.get("single_repro_use_sentinel", True)),
+                        "sentinel_every_n_runs": int(st.session_state.get("single_repro_sentinel_every", 5)),
+                        "escalate_cleaning": bool(st.session_state.get("single_repro_escalate_cleaning", True)),
+                        "max_cleaning_level": int(st.session_state.get("single_repro_max_cleaning", 2)),
+                        "block_on_fail": bool(st.session_state.get("single_repro_block_on_fail", True)),
+                    },
+                },
+                hardware={
+                    "simulation_mode": simulation_mode,
+                    "opc_url": opc_url,
+                    "use_autosampler": bool(st.session_state.get("use_autosampler", False)),
+                    "volume_to_collect": float(st.session_state.get("volume_to_collect", 3.0)),
+                    "process_adapter": st.session_state.get("process_adapter", DEFAULT_PROCESS_ADAPTER),
+                    "process_adapter_config": st.session_state.get("process_adapter_config", {}),
+                },
+            )
+            path = save_campaign_template(save_template_name, template_payload)
+            st.success(f"Template saved: {path}")
+
+    # Reuse previous campaigns as initial data
+    themed_section_header("reuse", "Reuse Previous Campaigns (Init)")
+    available_runs = [d for d in os.listdir(SAVE_DIR) if os.path.isdir(os.path.join(SAVE_DIR, d))]
+    reuse_runs = st.multiselect("Select previous runs to reuse", options=available_runs)
+
+    # Build and preview reusable data from selected runs
+    if reuse_runs:
+        if st.button("Load Previous Data"):
+            curr_names = [n for n, *_ in st.session_state.variables]
+            rows = []
+            for run in reuse_runs:
+                rpath = os.path.join(SAVE_DIR, run)
+                meta_path = os.path.join(rpath, "metadata.json")
+                data_path = os.path.join(rpath, "experiment_data.csv")
+                if not (os.path.exists(meta_path) and os.path.exists(data_path)):
                     continue
-                df_prev = pd.read_csv(data_path)
-                for idx, row in df_prev.iterrows():
+                try:
+                    with open(meta_path, "r") as f:
+                        meta = json.load(f)
+                    prev_vars = meta.get("variables", [])
+                    prev_resp = meta.get("response")
+                    prev_names = [n for n, *_ in prev_vars]
+                    if prev_names != curr_names or prev_resp != response_to_optimize:
+                        continue
+                    df_prev = pd.read_csv(data_path)
+                    for idx, row in df_prev.iterrows():
+                        try:
+                            xvals = [float(row[name]) for name in curr_names]
+                            yval = float(row.get(response_to_optimize, row.get("Measurement")))
+                        except Exception:
+                            continue
+                        rec = {"Run": run, "Row": int(idx), "Select": True}
+                        for name, val in zip(curr_names, xvals):
+                            rec[name] = val
+                        rec[response_to_optimize] = yval
+                        rows.append(rec)
+                except Exception:
+                    continue
+            if rows:
+                st.session_state.reuse_candidates = pd.DataFrame(rows)
+            else:
+                st.session_state.reuse_candidates = pd.DataFrame([])
+
+    if st.session_state.get("reuse_candidates") is not None:
+        df_show = st.session_state.reuse_candidates.copy()
+        if not df_show.empty:
+            st.markdown("#### Select specific data points to reuse")
+            edited = st.data_editor(df_show, num_rows="fixed")
+            st.session_state.reuse_candidates = edited
+            # Apply selection into a preload buffer for the campaign
+            if st.button("Apply Selected As Initial Data"):
+                curr_names = [n for n, *_ in st.session_state.variables]
+                preloaded = []
+                for _, r in edited.iterrows():
+                    if not bool(r.get("Select", False)):
+                        continue
                     try:
-                        xvals = [float(row[name]) for name in curr_names]
-                        yval = float(row.get(response_to_optimize, row.get("Measurement")))
+                        params = {name: float(r[name]) for name in curr_names}
+                        resp_val = float(r.get(response_to_optimize))
                     except Exception:
                         continue
-                    rec = {"Run": run, "Row": int(idx), "Select": True}
-                    for name, val in zip(curr_names, xvals):
-                        rec[name] = val
-                    rec[response_to_optimize] = yval
-                    rows.append(rec)
-            except Exception:
-                continue
-        if rows:
-            st.session_state.reuse_candidates = pd.DataFrame(rows)
+                    preloaded.append({
+                        "params": params,
+                        "response": resp_val,
+                        "source": f"Reused:{r.get('Run','')}#{int(r.get('Row',-1))}"
+                    })
+                st.session_state.preloaded_rows_so = preloaded
+                st.success(f"Prepared {len(preloaded)} initial data points. They will be attached on start.")
+
         else:
-            st.session_state.reuse_candidates = pd.DataFrame([])
+            st.info("No matching previous data found for current variables/response.")
 
-if st.session_state.get("reuse_candidates") is not None:
-    df_show = st.session_state.reuse_candidates.copy()
-    if not df_show.empty:
-        st.markdown("#### Select specific data points to reuse")
-        edited = st.data_editor(df_show, num_rows="fixed")
-        st.session_state.reuse_candidates = edited
-        # Apply selection into a preload buffer for the campaign
-        if st.button("Apply Selected As Initial Data"):
-            curr_names = [n for n, *_ in st.session_state.variables]
-            preloaded = []
-            for _, r in edited.iterrows():
-                if not bool(r.get("Select", False)):
-                    continue
-                try:
-                    params = {name: float(r[name]) for name in curr_names}
-                    resp_val = float(r.get(response_to_optimize))
-                except Exception:
-                    continue
-                preloaded.append({
-                    "params": params,
-                    "response": resp_val,
-                    "source": f"Reused:{r.get('Run','')}#{int(r.get('Row',-1))}"
-                })
-            st.session_state.preloaded_rows_so = preloaded
-            st.success(f"Prepared {len(preloaded)} initial data points. They will be attached on start.")
-
-    else:
-        st.info("No matching previous data found for current variables/response.")
-
-# --- Preview Initial Design (reused + generated) before starting ---
-st.markdown("#### Preview Initial Design")
-sort_options = ["Do not sort"]
-if st.session_state.variables:
-    sort_options += [name for name, *_ in st.session_state.variables]
-col_sort, col_dir = st.columns([2, 1])
-with col_sort:
-    st.selectbox(
-        "Sort by variable",
-        options=sort_options,
-        key="initial_sort_by",
-        index=0
-    )
-with col_dir:
-    st.radio(
-        "Direction",
-        options=["Ascending", "Descending"],
-        key="initial_sort_direction",
-        index=0
-    )
-if st.button("Preview Initial Design (Before Start)"):
-    try:
-        curr_names = [n for n, *_ in st.session_state.variables]
-        campaign_bounds = [(low, high) for _, low, high, _ in st.session_state.variables]
-        rng = np.random.default_rng(random_seed)
-
-        # Collect selected reused points if available (no need to press Apply)
-        preview_reused = []
-        reuse_df_preview = st.session_state.get("reuse_candidates")
-        if reuse_df_preview is not None and not reuse_df_preview.empty:
-            for _, r in reuse_df_preview.iterrows():
-                if not bool(r.get("Select", False)):
-                    continue
-                try:
-                    x = [float(r[name]) for name in curr_names]
-                except Exception:
-                    continue
-                preview_reused.append(x)
-
-        reused_count = len(preview_reused)
-        init_needed = max(0, int(initial_experiments) - reused_count)
-
-        # Generate additional initial points (within campaign bounds)
-        if init_strategy == "LHS":
-            gen_points = augmented_lhs_with_reuse(
-                campaign_bounds,
-                total_points=int(initial_experiments),
-                rng=rng,
-                reused_points=preview_reused,
-                trials=30,
-            )
-        else:
-            gen_points = gap_aware_initial_points(
-                campaign_bounds,
-                init_needed,
-                rng,
-                existing_points=preview_reused,
-                method="Random",
-                pool_factor=30
-            )
-
-        # Build a preview dataframe
-        rows_reused = []
-        rows_generated = []
-        for x in preview_reused:
-            rows_reused.append({**{n: v for n, v in zip(curr_names, x)}, "Source": "Reused"})
-        for x in gen_points:
-            rows_generated.append({**{n: v for n, v in zip(curr_names, x)}, "Source": ("LHS" if init_strategy == "LHS" else "Random")})
-
-        df_reused = pd.DataFrame(rows_reused)
-        df_generated = pd.DataFrame(rows_generated)
-
-        sort_choice = st.session_state.get("initial_sort_by", "Do not sort")
-        sort_direction = st.session_state.get("initial_sort_direction", "Ascending")
-        ascending = (sort_direction != "Descending")
-        if not df_generated.empty and sort_choice and sort_choice != "Do not sort" and sort_choice in df_generated.columns:
-            df_generated = df_generated.sort_values(
-                by=sort_choice,
-                ascending=ascending,
-                kind="mergesort"
-            ).reset_index(drop=True)
-
-        df_preview = pd.concat([df_reused, df_generated], ignore_index=True)
-        if not df_preview.empty:
-            df_preview["Order"] = np.arange(1, len(df_preview) + 1)
-
-        st.session_state.initial_design_preview = df_preview
-        st.session_state.initial_design_preview_bounds = campaign_bounds
-    except Exception as e:
-        st.error(f"Failed to build preview: {e}")
-
-# Render preview if available
-df_preview = st.session_state.get("initial_design_preview")
-if df_preview is not None and not df_preview.empty:
-    st.info(f"Initial design preview: {len(df_preview)} points (Reused: {(df_preview['Source']=='Reused').sum()}, New: {(df_preview['Source']!='Reused').sum()})")
-    st.dataframe(df_preview)
-
-    # Per-variable spread plots
-    bounds = st.session_state.get("initial_design_preview_bounds") or [(low, high) for _, low, high, _ in st.session_state.variables]
-    var_cols = [n for n, *_ in st.session_state.variables]
-    # Create a grid of small charts for each variable
-    chart_rows = [st.columns(1) for _ in range((len(var_cols) + 1) // 1)]
-    chart_placeholders = [col.empty() for row in chart_rows for col in row][:len(var_cols)]
-    for idx, ((name, low, high, _), placeholder) in enumerate(zip(st.session_state.variables, chart_placeholders)):
+    # --- Preview Initial Design (reused + generated) before starting ---
+    themed_section_header("preview", "Preview Initial Design")
+    sort_options = ["Do not sort"]
+    if st.session_state.variables:
+        sort_options += [name for name, *_ in st.session_state.variables]
+    col_sort, col_dir = st.columns([2, 1])
+    with col_sort:
+        st.selectbox(
+            "Sort by variable",
+            options=sort_options,
+            key="initial_sort_by",
+            index=0
+        )
+    with col_dir:
+        st.radio(
+            "Direction",
+            options=["Ascending", "Descending"],
+            key="initial_sort_direction",
+            index=0
+        )
+    if st.button("Preview Initial Design (Before Start)"):
         try:
-            chart = alt.Chart(df_preview).mark_tick(size=50, thickness=2).encode(
-                x=alt.X(
-                    f"{name}:Q",
-                    scale=alt.Scale(domain=[low, high], nice=False),
-                    axis=alt.Axis(title=name, tickCount=6, ticks=True, labels=True, grid=True, format=".3g")
-                ),
-                color=alt.Color("Source:N", legend=alt.Legend(orient='top')),
-                tooltip=["Order:Q", "Source:N"] + [name]
-            ).properties(
-                height=300,
-                width=400,
-                title=alt.TitleParams(text=f"{name} initial spread", anchor="middle")
-            )
-            placeholder.altair_chart(chart, use_container_width=True)
-        except Exception:
-            # Best-effort plotting; skip if something goes wrong for a variable
-            pass
+            curr_names = [n for n, *_ in st.session_state.variables]
+            campaign_bounds = [(low, high) for _, low, high, _ in st.session_state.variables]
+            rng = np.random.default_rng(random_seed)
 
+            # Collect selected reused points if available (no need to press Apply)
+            preview_reused = []
+            reuse_df_preview = st.session_state.get("reuse_candidates")
+            if reuse_df_preview is not None and not reuse_df_preview.empty:
+                for _, r in reuse_df_preview.iterrows():
+                    if not bool(r.get("Select", False)):
+                        continue
+                    try:
+                        x = [float(r[name]) for name in curr_names]
+                    except Exception:
+                        continue
+                    preview_reused.append(x)
+
+            reused_count = len(preview_reused)
+            init_needed = max(0, int(initial_experiments) - reused_count)
+
+            # Generate additional initial points (within campaign bounds)
+            if init_strategy == "LHS":
+                gen_points = augmented_lhs_with_reuse(
+                    campaign_bounds,
+                    total_points=int(initial_experiments),
+                    rng=rng,
+                    reused_points=preview_reused,
+                    trials=30,
+                )
+            else:
+                gen_points = gap_aware_initial_points(
+                    campaign_bounds,
+                    init_needed,
+                    rng,
+                    existing_points=preview_reused,
+                    method="Random",
+                    pool_factor=30
+                )
+
+            # Build a preview dataframe
+            rows_reused = []
+            rows_generated = []
+            for x in preview_reused:
+                rows_reused.append({**{n: v for n, v in zip(curr_names, x)}, "Source": "Reused"})
+            for x in gen_points:
+                rows_generated.append({**{n: v for n, v in zip(curr_names, x)}, "Source": ("LHS" if init_strategy == "LHS" else "Random")})
+
+            df_reused = pd.DataFrame(rows_reused)
+            df_generated = pd.DataFrame(rows_generated)
+
+            sort_choice = st.session_state.get("initial_sort_by", "Do not sort")
+            sort_direction = st.session_state.get("initial_sort_direction", "Ascending")
+            ascending = (sort_direction != "Descending")
+            if not df_generated.empty and sort_choice and sort_choice != "Do not sort" and sort_choice in df_generated.columns:
+                df_generated = df_generated.sort_values(
+                    by=sort_choice,
+                    ascending=ascending,
+                    kind="mergesort"
+                ).reset_index(drop=True)
+
+            df_preview = pd.concat([df_reused, df_generated], ignore_index=True)
+            if not df_preview.empty:
+                df_preview["Order"] = np.arange(1, len(df_preview) + 1)
+
+            st.session_state.initial_design_preview = df_preview
+            st.session_state.initial_design_preview_bounds = campaign_bounds
+        except Exception as e:
+            st.error(f"Failed to build preview: {e}")
+
+    # Render preview if available
+    df_preview = st.session_state.get("initial_design_preview")
+    if df_preview is not None and not df_preview.empty:
+        st.info(f"Initial design preview: {len(df_preview)} points (Reused: {(df_preview['Source']=='Reused').sum()}, New: {(df_preview['Source']!='Reused').sum()})")
+        st.dataframe(df_preview)
+
+        # Per-variable spread plots
+        bounds = st.session_state.get("initial_design_preview_bounds") or [(low, high) for _, low, high, _ in st.session_state.variables]
+        var_cols = [n for n, *_ in st.session_state.variables]
+        # Create a grid of small charts for each variable
+        chart_rows = [st.columns(1) for _ in range((len(var_cols) + 1) // 1)]
+        chart_placeholders = [col.empty() for row in chart_rows for col in row][:len(var_cols)]
+        for idx, ((name, low, high, _), placeholder) in enumerate(zip(st.session_state.variables, chart_placeholders)):
+            try:
+                chart = alt.Chart(df_preview).mark_tick(size=50, thickness=2).encode(
+                    x=alt.X(
+                        f"{name}:Q",
+                        scale=alt.Scale(domain=[low, high], nice=False),
+                        axis=alt.Axis(title=name, tickCount=6, ticks=True, labels=True, grid=True, format=".3g")
+                    ),
+                    color=alt.Color("Source:N", legend=alt.Legend(orient='top')),
+                    tooltip=["Order:Q", "Source:N"] + [name]
+                ).properties(
+                    height=300,
+                    width=400,
+                    title=alt.TitleParams(text=f"{name} initial spread", anchor="middle")
+                )
+                placeholder.altair_chart(chart, use_container_width=True)
+            except Exception:
+                # Best-effort plotting; skip if something goes wrong for a variable
+                pass
+
+else:
+    reuse_runs = []
+    st.caption("Templates, reuse, and initial-design preview are hidden in Quick mode.")
 # --- Run & Stop Buttons ---
+themed_section_header("run", "Run Control")
 col_start, col_stop = st.columns(2)
 if col_start.button("▶ Start Optimization"):
     run_path = os.path.join(SAVE_DIR, experiment_name)
@@ -595,6 +807,95 @@ if col_start.button("▶ Start Optimization"):
         adapter_config=st.session_state.get("process_adapter_config", {}),
     )
     st.session_state.optimization_running = True
+    st.session_state.single_repro_report = None
+
+    if st.session_state.get("single_repro_enabled", False):
+        bounds_by_name = {name: (float(low), float(high)) for name, low, high, _ in st.session_state.variables}
+        method_name = "lhs" if st.session_state.get("single_repro_method", "LHS") == "LHS" else "corners_center"
+        test_points = build_initialization_points(
+            bounds=bounds_by_name,
+            n_points=int(st.session_state.get("single_repro_n_points", 8)),
+            method=method_name,
+            seed=int(random_seed),
+        )
+        sentinel_point = None
+        if st.session_state.get("single_repro_use_sentinel", True):
+            sentinel_point = {k: (low + high) / 2.0 for k, (low, high) in bounds_by_name.items()}
+
+        selected_patterns: list[ReplicatePattern] = []
+        selected_pattern_labels = set(st.session_state.get("single_repro_patterns", []))
+        if "Immediate (A->A)" in selected_pattern_labels:
+            selected_patterns.append(ReplicatePattern.IMMEDIATE)
+        if "Bracketed (A->B->A)" in selected_pattern_labels:
+            selected_patterns.append(ReplicatePattern.BRACKETED)
+
+        if selected_patterns or sentinel_point is not None:
+            def _repro_single_runner(point: dict, metadata: dict) -> dict:
+                return st.session_state.runner.run_experiment(
+                    point,
+                    objectives=[response_to_optimize],
+                )
+
+            repro_engine = ReproducibilityEngine(_repro_single_runner, objective_key=response_to_optimize)
+            repro_engine.schedule_with_reproducibility(
+                test_points=test_points,
+                patterns=selected_patterns or [ReplicatePattern.IMMEDIATE],
+                sentinel_point=sentinel_point,
+                sentinel_every_n_runs=int(st.session_state.get("single_repro_sentinel_every", 5)) if sentinel_point else None,
+                base_metadata={
+                    "workflow": "single_objective",
+                    "experiment_name": experiment_name,
+                },
+                phase="startup",
+            )
+            repro_report = repro_engine.analyze()
+
+            if st.session_state.get("single_repro_escalate_cleaning", True):
+                needs_escalation = (
+                    repro_report.get("decision") == DecisionLabel.FAIL or bool(repro_report.get("drift_detected"))
+                )
+                if needs_escalation:
+                    def _cleaning_callback(_cleaning_level: int) -> None:
+                        cleaner = getattr(st.session_state.runner, "cleaning_electrochemical_cell", None)
+                        if callable(cleaner):
+                            cleaner()
+
+                    escalation = repro_engine.escalate_cleaning_and_retest(
+                        selected_points=test_points[: min(3, len(test_points))],
+                        sentinel_point=sentinel_point,
+                        sentinel_every_n_runs=int(st.session_state.get("single_repro_sentinel_every", 5)) if sentinel_point else None,
+                        patterns=selected_patterns or [ReplicatePattern.IMMEDIATE],
+                        max_cleaning_level=int(st.session_state.get("single_repro_max_cleaning", 2)),
+                        base_metadata={
+                            "workflow": "single_objective",
+                            "experiment_name": experiment_name,
+                        },
+                        cleaning_callback=_cleaning_callback,
+                    )
+                    repro_report = escalation.get("final_analysis", repro_report)
+                    repro_report["escalation"] = escalation
+
+            repro_log_path = os.path.join(run_path, "reproducibility_log.csv")
+            repro_report_path = os.path.join(run_path, "reproducibility_report.json")
+            repro_engine.save_csv_logs(repro_log_path)
+            repro_report_safe = _json_compatible(repro_report)
+            with open(repro_report_path, "w") as f:
+                json.dump(repro_report_safe, f, indent=2)
+            st.session_state.single_repro_report = repro_report_safe
+
+            decision_value = str(repro_report_safe.get("decision", "UNKNOWN"))
+            if decision_value == DecisionLabel.PASS.value:
+                st.success("Reproducibility gate: PASS")
+            elif decision_value == DecisionLabel.CONDITIONAL.value:
+                st.warning("Reproducibility gate: CONDITIONAL")
+            else:
+                st.error("Reproducibility gate: FAIL")
+                if st.session_state.get("single_repro_block_on_fail", True):
+                    st.session_state.optimization_running = False
+                    st.error("Optimization start blocked by reproducibility gate.")
+                    st.stop()
+        else:
+            st.warning("Reproducibility gate enabled, but no replicate patterns or sentinel are configured. Gate skipped.")
 
     # Prepare reuse data and initial queue
     rng = np.random.default_rng(random_seed)
@@ -792,7 +1093,8 @@ if st.session_state.get("optimization_running", False):
             "init_strategy": init_strategy,
             "random_seed": random_seed,
             "reused_runs": reuse_runs,
-            "reused_count": st.session_state.get("reused_count", 0)
+            "reused_count": st.session_state.get("reused_count", 0),
+            "reproducibility": st.session_state.get("single_repro_report"),
         }
         with open(os.path.join(run_path, "metadata.json"), "w") as f:
             json.dump(metadata, f, indent=4)
@@ -863,6 +1165,7 @@ if st.session_state.get("optimization_running", False):
             "simulation_mode": simulation_mode,
             "opc_url": opc_url,
             "process_adapter": st.session_state.get("process_adapter", DEFAULT_PROCESS_ADAPTER),
+            "reproducibility": st.session_state.get("single_repro_report"),
         }
 
         db_handler.save_experiment(

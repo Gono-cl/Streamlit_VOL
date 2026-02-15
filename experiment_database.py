@@ -2,7 +2,6 @@ import streamlit as st
 import pandas as pd
 import altair as alt
 from core.utils import db_handler
-from core.utils.generate_report import generate_report
 import plotly.express as px
 from sklearn.preprocessing import LabelEncoder
 
