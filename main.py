@@ -65,6 +65,7 @@ PAGES = {
     "🎯 Autonomous Single Objective Optimization": "Single_Objective.py",
     "🧭 Autonomous Multi-Objective Optimization": "Multi_Objective.py",
     "🧪 DOE Executor (External Matrix)": "DoE_Executor.py",
+    "🧬 Reproducibility Studio": "Reproducibility.py",
     "🗂️ Running Protocol Library": "Running_Protocols.py",
     "📈 Data Analysis & Visualization": "Data_Analysis.py",
     "🔍 Preview Saved Run": "preview_run.py",
