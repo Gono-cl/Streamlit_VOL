@@ -1,36 +1,33 @@
-import streamlit as st
+﻿import streamlit as st
 
-# App Title
-st.markdown("<h1 style='color:#4CAF50; font-size: 42px;'>🧪 VOL - Virtual Optimization Lab</h1>", unsafe_allow_html=True)
-st.subheader("A Modular Platform for Automated and Intelligent Experimentation")
+st.markdown(
+    "<h1 style='color:#4CAF50; font-size: 42px;'>VOL - Virtual Optimization Lab</h1>",
+    unsafe_allow_html=True,
+)
+st.subheader("A modular platform for autonomous experimentation and optimization")
 
-# Horizontal line
 st.markdown("---")
 
-# Description
 st.markdown("""
-Welcome to **VOL (Virtual Optimization Lab)** — your intelligent assistant for chemical and process experimentation.
-VOL integrates automation, machine learning, and interactive design to help you explore experimental space faster and smarter.
+Welcome to **VOL (Virtual Optimization Lab)**.
+VOL combines optimization, hardware execution, and experiment tracking in one Streamlit app.
 
 #### With VOL, you can:
-- 🚀 Run **Single-Objective Bayesian Optimization** (Real, Hybrid, or Simulated)
-- ⚖️ Perform **Multi-Objective Bayesian Optimization**
-- 🎯 Use **Design of Experiments (DoE)** to structure offline campaigns
-- 🔌 Connect to **real hardware systems via OPC** for live control and data acquisition
-- 🧠 Perform both **automated** and **manual optimization campaigns** 
-- 🔁 **Stop/Resume** any campaign — and even recover from hardware failures
-- 💾 **Save and Reload** optimization runs (pick up where you left off!)
-- 🗂️ Store experiment results in a **structured database** following the **FAIR principles**
-- 🧠 Soon: Use **Previous Campaigns as Starting Points** (Active Learning)
+- Run **Single-Objective Bayesian Optimization** (real, hybrid, or full simulation)
+- Run **Multi-Objective Optimization** with objective direction control
+- Execute external DOE matrices with **DOE Executor**
+- Select a **Running Protocol File** per reaction from the GUI
+- Browse protocol files and preview protocol schemes in **Running Protocol Library**
+- Connect to hardware through **OPC** for live control and data acquisition
+- Stop, resume, save, and reload optimization runs
+- Analyze results in **Data Analysis & Visualization**
+- Persist experiment records in the **Experiment Database**
 """)
 
-# Info box
-st.info("“Empowering researchers to rapidly explore and optimize experimental space through automation and intelligent design.”")
+st.info("Create and version reaction protocols as `.py` files in `running_protocols/` without changing core execution logic.")
 
-# Spacer
 st.markdown("")
 
-# Layout: Two columns
 col1, col2 = st.columns([1, 2])
 
 with col1:
@@ -39,14 +36,12 @@ with col1:
 with col2:
     st.markdown("### How to Get Started:")
     st.markdown("""
-    1. Select a module from the **sidebar** (left).
-    2. Define your experiment variables and objectives.
-    3. Start an optimization or DoE campaign.
-    4. Monitor live results — all data is automatically saved and visualized.
-    
+    1. Open **Running Protocol Library** and select the protocol file for your reaction.
+    2. Go to **Single Objective**, **Multi-Objective**, or **DOE Executor**.
+    3. Set variables/objectives and run configuration.
+    4. Start execution and monitor results.
+    5. Review outcomes in **Data Analysis** and **Experiment Database**.
+
     ---
     """)
-    st.success("🎯 Ready to experiment? Choose a module from the sidebar!")
-
-
-
+    st.success("Ready to experiment? Choose a module from the sidebar.")

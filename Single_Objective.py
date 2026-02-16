@@ -30,14 +30,10 @@ from core.utils.export_tools import export_to_csv, export_to_excel
 from core.utils import db_handler
 from core.hardware.opc_communication import OPCClient
 from core.hardware.experimental_run import ExperimentRunner
-from core.hardware.process_adapters import (
-    DEFAULT_PROCESS_ADAPTER,
-    PROCESS_ADAPTER_LABELS,
-    available_process_adapters,
-)
-from core.hardware.process_profiles import (
-    list_process_profiles,
-    load_process_profile,
+from core.hardware.process_adapters import DEFAULT_PROCESS_ADAPTER
+from core.hardware.protocol_scripts import (
+    list_protocol_scripts,
+    load_protocol_module,
 )
 from core.utils.logger import StreamlitLogger
 import sys
@@ -147,6 +143,8 @@ if "process_adapter" not in st.session_state:
     st.session_state.process_adapter = DEFAULT_PROCESS_ADAPTER
 if "process_adapter_config" not in st.session_state:
     st.session_state.process_adapter_config = {}
+if "running_protocol_script" not in st.session_state:
+    st.session_state.running_protocol_script = None
 if "single_ui_mode" not in st.session_state:
     st.session_state.single_ui_mode = "Quick"
 if "single_repro_enabled" not in st.session_state:
@@ -204,46 +202,23 @@ volume_to_collect = st.sidebar.number_input(
 )
 st.session_state.volume_to_collect = volume_to_collect
 
-adapter_options = available_process_adapters()
-adapter_default = st.session_state.get("process_adapter", DEFAULT_PROCESS_ADAPTER)
-if adapter_default not in adapter_options:
-    adapter_default = DEFAULT_PROCESS_ADAPTER if DEFAULT_PROCESS_ADAPTER in adapter_options else adapter_options[0]
-process_adapter = st.sidebar.selectbox(
-    "Process Adapter",
-    options=adapter_options,
-    index=adapter_options.index(adapter_default),
-    format_func=lambda x: PROCESS_ADAPTER_LABELS.get(x, x),
+protocol_script_options = ["None"] + list_protocol_scripts()
+protocol_script_default = st.session_state.get("running_protocol_script", "None") or "None"
+if protocol_script_default not in protocol_script_options:
+    protocol_script_default = "None"
+selected_protocol_script = st.sidebar.selectbox(
+    "Running Protocol File",
+    options=protocol_script_options,
+    index=protocol_script_options.index(protocol_script_default),
+    key="single_protocol_script_select",
 )
-st.session_state.process_adapter = process_adapter
-
-profile_options = ["None"] + list_process_profiles()
-profile_default = st.session_state.get("process_profile_name", "None")
-if profile_default not in profile_options:
-    profile_default = "None"
-selected_profile = st.sidebar.selectbox(
-    "Process Profile",
-    options=profile_options,
-    index=profile_options.index(profile_default),
-    key="single_process_profile_select",
-)
-st.session_state.process_profile_name = selected_profile
-if st.sidebar.button("Load Process Profile", key="single_load_process_profile"):
-    if selected_profile == "None":
-        st.warning("Select a process profile first.")
-    else:
-        payload = load_process_profile(selected_profile)
-        if not payload:
-            st.error("Could not load selected process profile.")
-        else:
-            st.session_state.process_adapter = payload.get("adapter", DEFAULT_PROCESS_ADAPTER)
-            st.session_state.process_adapter_config = payload.get("adapter_config", {})
-            st.success(f"Loaded process profile: {selected_profile}")
-            st.rerun()
-
-if st.sidebar.button("Open Process Builder", key="single_open_process_builder"):
-    st.session_state.selected_page = "🧩 Process Builder"
-    st.rerun()
-
+st.session_state.running_protocol_script = None if selected_protocol_script == "None" else selected_protocol_script
+if st.session_state.running_protocol_script:
+    try:
+        load_protocol_module(st.session_state.running_protocol_script)
+        st.sidebar.caption(f"Using protocol: `{st.session_state.running_protocol_script}`")
+    except Exception as exc:
+        st.sidebar.error(f"Protocol load error: {exc}")
 if simulation_mode != "off":
     st.warning("⚠️ Simulation Mode is ON — OPC hardware interaction is partially or fully disabled.")
     
@@ -270,6 +245,7 @@ if resume_file != "None" and st.sidebar.button("Load Previous Run"):
     st.session_state.random_seed = int(metadata.get("random_seed", st.session_state.get("random_seed", 42)))
     st.session_state.process_adapter = metadata.get("process_adapter", st.session_state.get("process_adapter", DEFAULT_PROCESS_ADAPTER))
     st.session_state.process_adapter_config = metadata.get("process_adapter_config", st.session_state.get("process_adapter_config", {}))
+    st.session_state.running_protocol_script = metadata.get("running_protocol_script", st.session_state.get("running_protocol_script"))
     st.session_state.single_repro_report = metadata.get("reproducibility")
     st.session_state.runner = ExperimentRunner(
         OPCClient(metadata["opc_url"]),
@@ -279,6 +255,7 @@ if resume_file != "None" and st.sidebar.button("Load Previous Run"):
         volume_to_collect=volume_to_collect,
         process_adapter=st.session_state.process_adapter,
         adapter_config=st.session_state.process_adapter_config,
+        running_protocol_script=st.session_state.get("running_protocol_script"),
     )
     st.session_state.optimization_running = True
     st.session_state.run_name = resume_file
@@ -527,6 +504,7 @@ if is_advanced_single:
                         st.session_state.volume_to_collect = float(hardware.get("volume_to_collect", st.session_state.get("volume_to_collect", 3.0)))
                         st.session_state.process_adapter = hardware.get("process_adapter", st.session_state.get("process_adapter", DEFAULT_PROCESS_ADAPTER))
                         st.session_state.process_adapter_config = hardware.get("process_adapter_config", st.session_state.get("process_adapter_config", {}))
+                        st.session_state.running_protocol_script = hardware.get("running_protocol_script", st.session_state.get("running_protocol_script"))
                     st.success(f"Loaded template: {selected_template}")
                     st.rerun()
 
@@ -566,6 +544,7 @@ if is_advanced_single:
                     "volume_to_collect": float(st.session_state.get("volume_to_collect", 3.0)),
                     "process_adapter": st.session_state.get("process_adapter", DEFAULT_PROCESS_ADAPTER),
                     "process_adapter_config": st.session_state.get("process_adapter_config", {}),
+                    "running_protocol_script": st.session_state.get("running_protocol_script"),
                 },
             )
             path = save_campaign_template(save_template_name, template_payload)
@@ -805,6 +784,7 @@ if col_start.button("▶ Start Optimization"):
         volume_to_collect=volume_to_collect,
         process_adapter=st.session_state.get("process_adapter", DEFAULT_PROCESS_ADAPTER),
         adapter_config=st.session_state.get("process_adapter_config", {}),
+        running_protocol_script=st.session_state.get("running_protocol_script"),
     )
     st.session_state.optimization_running = True
     st.session_state.single_repro_report = None
@@ -1089,6 +1069,7 @@ if st.session_state.get("optimization_running", False):
             "simulation_mode": simulation_mode,
             "process_adapter": st.session_state.get("process_adapter", DEFAULT_PROCESS_ADAPTER),
             "process_adapter_config": st.session_state.get("process_adapter_config", {}),
+            "running_protocol_script": st.session_state.get("running_protocol_script"),
             "acq_func": acq_func,
             "init_strategy": init_strategy,
             "random_seed": random_seed,
@@ -1165,6 +1146,7 @@ if st.session_state.get("optimization_running", False):
             "simulation_mode": simulation_mode,
             "opc_url": opc_url,
             "process_adapter": st.session_state.get("process_adapter", DEFAULT_PROCESS_ADAPTER),
+            "running_protocol_script": st.session_state.get("running_protocol_script"),
             "reproducibility": st.session_state.get("single_repro_report"),
         }
 
@@ -1178,6 +1160,7 @@ if st.session_state.get("optimization_running", False):
         )
 
         st.session_state.optimization_running = False
+
 
 
 

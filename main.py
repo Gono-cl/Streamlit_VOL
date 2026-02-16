@@ -63,12 +63,12 @@ st.sidebar.write(f"✉️ {st.user.email}")
 PAGES = {
     "🏠 Home": "Home.py",
     "🎯 Autonomous Single Objective Optimization": "Single_Objective.py",
-    "📊 Autonomous Multi-Objective Optimization": "Multi_Objective.py",
+    "🧭 Autonomous Multi-Objective Optimization": "Multi_Objective.py",
     "🧪 DOE Executor (External Matrix)": "DoE_Executor.py",
-    "🧩 Process Builder": "Process_Builder.py",
-    "📊 Data Analysis & Visualization": "Data_Analysis.py",
+    "🗂️ Running Protocol Library": "Running_Protocols.py",
+    "📈 Data Analysis & Visualization": "Data_Analysis.py",
     "🔍 Preview Saved Run": "preview_run.py",
-    "📚 Experiment DataBase": "experiment_database.py"
+    "🗃️ Experiment DataBase": "experiment_database.py"
     
 }
 
@@ -81,6 +81,9 @@ if "selected_page" in st.session_state:
     del st.session_state.selected_page
 else:
     selection = st.sidebar.radio("Go to", list(PAGES.keys()))
+
+if selection not in PAGES:
+    selection = list(PAGES.keys())[0]
 
 # ===== Load selected page =====
 def load_page(page_path):

@@ -11,7 +11,6 @@ flowchart LR
         P2["Single_Objective.py"]
         P3["Multi_Objective.py"]
         P4["DoE_Executor.py"]
-        P5["Process_Builder.py"]
         P6["Data_Analysis.py"]
         P7["preview_run.py"]
         P8["experiment_database.py"]
@@ -21,7 +20,6 @@ flowchart LR
     A --> P2
     A --> P3
     A --> P4
-    A --> P5
     A --> P6
     A --> P7
     A --> P8
@@ -32,7 +30,7 @@ flowchart LR
         C3["src/repro<br/>(reproducibility planner + engine + policies)"]
         C4["core/hardware/experimental_run.py<br/>(ExperimentRunner orchestration)"]
         C5["core/hardware/process_adapters.py<br/>(adapter registry + runtime prep)"]
-        C6["core/hardware/process_profiles.py<br/>(profile CRUD)"]
+        C6["core/hardware/protocol_scripts.py<br/>(protocol file discovery + loading)"]
         C7["core/hardware/opc_communication.py<br/>(OPC REST client)"]
         C8["core/objectives.py<br/>(objective calculations)"]
         C9["core/utils/db_handler.py<br/>(SQLite persistence)"]
@@ -58,14 +56,11 @@ flowchart LR
 
     P4 --> C1
     P4 --> C4
-    P4 --> C5
     P4 --> C6
     P4 --> C9
     P4 --> C10
     P4 --> C11
 
-    P5 --> C5
-    P5 --> C6
     P6 --> C10
     P8 --> C9
 
@@ -82,7 +77,7 @@ flowchart LR
         D5["resumable_manual_runs/"]
         D6["raw_measurements/"]
         D7["campaign_templates/"]
-        D8["process_profiles/"]
+        D8["running_protocols/"]
     end
 
     C9 --> D1
@@ -124,6 +119,6 @@ The following non-runtime/unused files were removed:
 - `core/utils/gui_labels.py`
 - `data/default_variables.py`
 
-## One Portability Risk
+## Current Portability Notes
 
-- `main.py` points to `"data_analysis.py"` while the file is `Data_Analysis.py`. This works on Windows but can fail on case-sensitive filesystems.
+- Data analysis page path already uses the case-correct file name (`Data_Analysis.py`).

@@ -11,15 +11,11 @@ import streamlit as st
 from core.campaigns import MULTI_OBJECTIVE_OPTIONS, SINGLE_OBJECTIVE_OPTIONS
 from core.hardware.experimental_run import ExperimentRunner
 from core.hardware.opc_communication import OPCClient
-from core.hardware.process_adapters import (
-    DEFAULT_PROCESS_ADAPTER,
-    PROCESS_ADAPTER_LABELS,
-    available_process_adapters,
-    create_process_adapter,
-)
-from core.hardware.process_profiles import (
-    list_process_profiles,
-    load_process_profile,
+from core.hardware.process_adapters import DEFAULT_PROCESS_ADAPTER
+from core.hardware.protocol_scripts import (
+    list_protocol_scripts,
+    load_protocol_module,
+    protocol_required_parameter_keys,
 )
 from core.utils import db_handler
 from core.utils.export_tools import export_to_csv, export_to_excel
@@ -54,6 +50,8 @@ def ensure_session_defaults():
         st.session_state.process_adapter = DEFAULT_PROCESS_ADAPTER
     if "process_adapter_config" not in st.session_state:
         st.session_state.process_adapter_config = {}
+    if "running_protocol_script" not in st.session_state:
+        st.session_state.running_protocol_script = None
 
     if "doe_exec_upload_sig" not in st.session_state:
         st.session_state.doe_exec_upload_sig = ""
@@ -267,6 +265,7 @@ def make_metadata(run_name: str, notes: str, run_date, param_cols: list[str], ob
         "volume_to_collect": float(st.session_state.get("volume_to_collect", 3.0)),
         "process_adapter": st.session_state.get("process_adapter", DEFAULT_PROCESS_ADAPTER),
         "process_adapter_config": st.session_state.get("process_adapter_config", {}),
+        "running_protocol_script": st.session_state.get("running_protocol_script"),
         "source_file": st.session_state.get("doe_exec_loaded_file_name", ""),
         "total_rows": int(len(st.session_state.get("doe_exec_plan_df", pd.DataFrame()))),
     }
@@ -312,6 +311,7 @@ def load_saved_run(run_name: str):
     st.session_state.volume_to_collect = float(metadata.get("volume_to_collect", st.session_state.get("volume_to_collect", 3.0)))
     st.session_state.process_adapter = metadata.get("process_adapter", st.session_state.get("process_adapter", DEFAULT_PROCESS_ADAPTER))
     st.session_state.process_adapter_config = metadata.get("process_adapter_config", st.session_state.get("process_adapter_config", {}))
+    st.session_state.running_protocol_script = metadata.get("running_protocol_script", st.session_state.get("running_protocol_script"))
     st.success(f"Loaded run: {run_name}")
 
 
@@ -363,47 +363,23 @@ volume_to_collect = st.sidebar.number_input(
 )
 st.session_state.volume_to_collect = volume_to_collect
 
-adapter_options = available_process_adapters()
-adapter_default = st.session_state.get("process_adapter", DEFAULT_PROCESS_ADAPTER)
-if adapter_default not in adapter_options:
-    adapter_default = DEFAULT_PROCESS_ADAPTER if DEFAULT_PROCESS_ADAPTER in adapter_options else adapter_options[0]
-process_adapter = st.sidebar.selectbox(
-    "Process Adapter",
-    options=adapter_options,
-    index=adapter_options.index(adapter_default),
-    format_func=lambda x: PROCESS_ADAPTER_LABELS.get(x, x),
-    key="doe_exec_process_adapter",
+protocol_script_options = ["None"] + list_protocol_scripts()
+protocol_script_default = st.session_state.get("running_protocol_script", "None") or "None"
+if protocol_script_default not in protocol_script_options:
+    protocol_script_default = "None"
+selected_protocol_script = st.sidebar.selectbox(
+    "Running Protocol File",
+    options=protocol_script_options,
+    index=protocol_script_options.index(protocol_script_default),
+    key="doe_exec_protocol_script",
 )
-st.session_state.process_adapter = process_adapter
-
-profile_options = ["None"] + list_process_profiles()
-profile_default = st.session_state.get("process_profile_name", "None")
-if profile_default not in profile_options:
-    profile_default = "None"
-selected_profile = st.sidebar.selectbox(
-    "Process Profile",
-    options=profile_options,
-    index=profile_options.index(profile_default),
-    key="doe_exec_process_profile",
-)
-st.session_state.process_profile_name = selected_profile
-if st.sidebar.button("Load Process Profile", key="doe_exec_load_process_profile"):
-    if selected_profile == "None":
-        st.warning("Select a process profile first.")
-    else:
-        payload = load_process_profile(selected_profile)
-        if not payload:
-            st.error("Could not load selected process profile.")
-        else:
-            st.session_state.process_adapter = payload.get("adapter", DEFAULT_PROCESS_ADAPTER)
-            st.session_state.process_adapter_config = payload.get("adapter_config", {})
-            st.success(f"Loaded process profile: {selected_profile}")
-            st.rerun()
-
-if st.sidebar.button("Open Process Builder", key="doe_exec_open_process_builder"):
-    st.session_state.selected_page = "🧩 Process Builder"
-    st.rerun()
-
+st.session_state.running_protocol_script = None if selected_protocol_script == "None" else selected_protocol_script
+if st.session_state.running_protocol_script:
+    try:
+        load_protocol_module(st.session_state.running_protocol_script)
+        st.sidebar.caption(f"Using protocol: `{st.session_state.running_protocol_script}`")
+    except Exception as exc:
+        st.sidebar.error(f"Protocol load error: {exc}")
 if simulation_mode != "off":
     st.warning("Simulation mode is enabled. Hardware actions are partially or fully bypassed.")
 
@@ -428,17 +404,19 @@ notes = st.text_area("Notes", value=st.session_state.get("doe_exec_notes", ""))
 st.session_state.doe_exec_notes = notes
 
 # Matrix upload and setup
-adapter = create_process_adapter(
-    st.session_state.get("process_adapter", DEFAULT_PROCESS_ADAPTER),
-    config=st.session_state.get("process_adapter_config", {}),
-)
-required_keys = adapter.required_parameter_keys()
+required_keys = []
+if st.session_state.get("running_protocol_script"):
+    try:
+        required_keys = protocol_required_parameter_keys(st.session_state["running_protocol_script"])
+    except Exception as exc:
+        st.error(f"Could not read required keys from protocol script: {exc}")
+        required_keys = []
 
 with st.expander("How To Use This Page", expanded=False):
     st.markdown(
         "\n".join(
             [
-                "1. Set hardware mode and process adapter in the sidebar.",
+                "1. Set hardware mode and choose a running protocol file in the sidebar.",
                 "2. Download the template and prepare your external DOE matrix.",
                 "3. Upload the matrix (CSV/XLSX).",
                 "4. Confirm `Parameter columns` and `Objectives to measure`.",
@@ -448,11 +426,11 @@ with st.expander("How To Use This Page", expanded=False):
             ]
         )
     )
-    st.write("Required parameter columns for the selected process adapter:")
+    st.write("Required parameter columns from the selected running protocol:")
     if required_keys:
         st.code(", ".join(required_keys), language="text")
     else:
-        st.code("No required keys defined for this adapter.", language="text")
+        st.code("No required keys defined (or no protocol selected).", language="text")
     st.caption(
         "Template columns: `run_id`, required parameter keys, and optional `objectives` "
         "(comma-separated, e.g. `Yield, Throughput`)."
@@ -463,7 +441,7 @@ with st.expander("How To Use This Page", expanded=False):
 
 st.subheader("DOE Matrix Upload")
 template_df = build_doe_template_df(required_keys)
-st.caption("Download a template aligned to the currently selected process adapter.")
+st.caption("Download a template aligned to the currently selected running protocol.")
 tpl_col_csv, tpl_col_xlsx = st.columns(2)
 with tpl_col_csv:
     st.download_button(
@@ -559,7 +537,7 @@ missing_required_cols = [k for k in required_keys if k not in selected_param_col
 
 if missing_required_cols and not st.session_state.doe_exec_plan_df.empty:
     st.error(
-        "The selected parameter columns do not satisfy the process adapter requirements. "
+        "The selected parameter columns do not satisfy the running protocol requirements. "
         f"Missing: {missing_required_cols}"
     )
 
@@ -576,7 +554,7 @@ if col_start.button("Start From Pending", key="doe_exec_start"):
     elif not st.session_state.get("doe_exec_objectives"):
         st.error("Select at least one objective to measure.")
     elif missing_required_cols:
-        st.error("Add all required process-adapter parameter columns before starting.")
+        st.error("Add all required running-protocol parameter columns before starting.")
     else:
         pending_idx = plan_df.index[plan_df["__status"] == "pending"].tolist()
         if not pending_idx:
@@ -590,6 +568,7 @@ if col_start.button("Start From Pending", key="doe_exec_start"):
                 volume_to_collect=st.session_state.volume_to_collect,
                 process_adapter=st.session_state.get("process_adapter", DEFAULT_PROCESS_ADAPTER),
                 adapter_config=st.session_state.get("process_adapter_config", {}),
+                running_protocol_script=st.session_state.get("running_protocol_script"),
             )
             st.session_state.doe_exec_queue = pending_idx
             st.session_state.doe_exec_running = True
@@ -605,7 +584,7 @@ if col_resume.button("Resume All Open", key="doe_exec_resume_open"):
     elif not open_idx:
         st.info("No pending or failed rows found.")
     elif missing_required_cols:
-        st.error("Add all required process-adapter parameter columns before starting.")
+        st.error("Add all required running-protocol parameter columns before starting.")
     else:
         st.session_state.doe_exec_runner = ExperimentRunner(
             OPCClient(st.session_state.opc_url),
@@ -615,6 +594,7 @@ if col_resume.button("Resume All Open", key="doe_exec_resume_open"):
             volume_to_collect=st.session_state.volume_to_collect,
             process_adapter=st.session_state.get("process_adapter", DEFAULT_PROCESS_ADAPTER),
             adapter_config=st.session_state.get("process_adapter_config", {}),
+            running_protocol_script=st.session_state.get("running_protocol_script"),
         )
         st.session_state.doe_exec_queue = open_idx
         st.session_state.doe_exec_running = True
@@ -630,7 +610,7 @@ if col_retry.button("Retry Failed", key="doe_exec_retry_failed"):
     elif not failed_idx:
         st.info("No failed rows to retry.")
     elif missing_required_cols:
-        st.error("Add all required process-adapter parameter columns before starting.")
+        st.error("Add all required running-protocol parameter columns before starting.")
     else:
         st.session_state.doe_exec_runner = ExperimentRunner(
             OPCClient(st.session_state.opc_url),
@@ -640,6 +620,7 @@ if col_retry.button("Retry Failed", key="doe_exec_retry_failed"):
             volume_to_collect=st.session_state.volume_to_collect,
             process_adapter=st.session_state.get("process_adapter", DEFAULT_PROCESS_ADAPTER),
             adapter_config=st.session_state.get("process_adapter_config", {}),
+            running_protocol_script=st.session_state.get("running_protocol_script"),
         )
         st.session_state.doe_exec_queue = failed_idx
         st.session_state.doe_exec_running = True
@@ -789,6 +770,7 @@ if st.session_state.get("doe_exec_results"):
             "simulation_mode": st.session_state.get("simulation_mode", "off"),
             "opc_url": st.session_state.get("opc_url", "http://em-nun:57080"),
             "process_adapter": st.session_state.get("process_adapter", DEFAULT_PROCESS_ADAPTER),
+            "running_protocol_script": st.session_state.get("running_protocol_script"),
             "source_file": st.session_state.get("doe_exec_loaded_file_name", ""),
         }
         db_handler.save_experiment(
@@ -801,3 +783,4 @@ if st.session_state.get("doe_exec_results"):
         )
         st.session_state.doe_exec_db_saved = True
         st.success("Saved to experiment database.")
+

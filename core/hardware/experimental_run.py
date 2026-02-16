@@ -23,6 +23,7 @@ from core.hardware.process_adapters import (
     DEFAULT_PROCESS_ADAPTER,
     create_process_adapter,
 )
+from core.hardware.protocol_scripts import load_protocol_module
 from core.hardware.mixins.ui_mixin import UIMixin
 from core.hardware.opc_communication import OPCClient
 from core.objectives import calculate_objectives
@@ -44,6 +45,7 @@ class ExperimentRunner(
         volume_to_collect: float = 3.0,
         process_adapter: str | None = None,
         adapter_config: dict | None = None,
+        running_protocol_script: str | None = None,
     ):
         self.opc = opc_client
         self.use_autosampler = use_autosampler
@@ -53,6 +55,19 @@ class ExperimentRunner(
         self.process_adapter_name = process_adapter or DEFAULT_PROCESS_ADAPTER
         self.adapter_config = dict(adapter_config or {})
         self.process_adapter = create_process_adapter(self.process_adapter_name, config=self.adapter_config)
+        self.running_protocol_script = running_protocol_script or None
+        self.running_protocol_module = None
+        if self.running_protocol_script:
+            try:
+                self.running_protocol_module = load_protocol_module(self.running_protocol_script)
+            except Exception as exc:
+                raise RuntimeError(
+                    f"Failed to load running protocol script '{self.running_protocol_script}': {exc}"
+                ) from exc
+        self.protocol_prepare_fn = self._protocol_callable("prepare_hardware")
+        self.protocol_calculate_fn = self._protocol_callable("calculate_real_result")
+        self.protocol_autosampler_fn = self._protocol_callable("autosampler_flow_rate")
+        self.protocol_cleanup_fn = self._protocol_callable("cleanup")
         self.experiment_status_placeholder = st.sidebar.empty()
         self.countdown_placeholder = st.empty()
         self.timer_placeholder = st.sidebar.empty()
@@ -62,6 +77,14 @@ class ExperimentRunner(
         self.tray_pos_waste = 0
         self.tray_pos_collect = 1
         self.volume_to_collect = volume_to_collect  # Volume to collect in mL
+
+    def _protocol_callable(self, function_name: str):
+        if self.running_protocol_module is None:
+            return None
+        fn = getattr(self.running_protocol_module, function_name, None)
+        if callable(fn):
+            return fn
+        return None
 
     # ---------------------------------------------------------------------------
     #                          STANDARD PROCESS FUNCTIONS
@@ -141,7 +164,10 @@ class ExperimentRunner(
             self.display_experiment_info(experiment_number, total_iterations, parameters)
 
         if self.simulation_mode in ["off", "hybrid"]:
-            self.process_adapter.prepare_hardware(self, parameters)
+            if self.protocol_prepare_fn:
+                self.protocol_prepare_fn(self, parameters)
+            else:
+                self.process_adapter.prepare_hardware(self, parameters)
         else:
             print("Full simulation mode enabled: skipping temperature and pump setup.")
 
@@ -149,25 +175,40 @@ class ExperimentRunner(
             result = self.simulate_experiment(parameters, objectives, directions)
         else:
             mean_measurement = self.collect_measurements(parameters=parameters)
-            result = self.process_adapter.calculate_real_result(
-                self,
-                mean_measurement,
-                parameters,
-                objectives,
-                directions,
-            )
+            if self.protocol_calculate_fn:
+                result = self.protocol_calculate_fn(
+                    self,
+                    mean_measurement,
+                    parameters,
+                    objectives,
+                    directions,
+                )
+            else:
+                result = self.process_adapter.calculate_real_result(
+                    self,
+                    mean_measurement,
+                    parameters,
+                    objectives,
+                    directions,
+                )
 
         if self.use_autosampler:
             self.autosampler.clean_before_collect(self.tray_pos_waste)
             self.autosampler.move_prepare_needle(self.tray_pos_collect)
-            flow_org = self.process_adapter.autosampler_flow_rate(self, parameters)
+            if self.protocol_autosampler_fn:
+                flow_org = float(self.protocol_autosampler_fn(self, parameters))
+            else:
+                flow_org = self.process_adapter.autosampler_flow_rate(self, parameters)
             self.autosampler.start_collection(flow_rate=flow_org, volume=self.volume_to_collect)
             self.tray_pos_waste = (self.tray_pos_waste + 2) % 32
             self.tray_pos_collect = (self.tray_pos_collect + 2) % 32
         else:
             print("Autosampler disabled: skipping sample collection.")
 
-        self.process_adapter.cleanup(self, parameters)
+        if self.protocol_cleanup_fn:
+            self.protocol_cleanup_fn(self, parameters)
+        else:
+            self.process_adapter.cleanup(self, parameters)
         return result
 
     # ---------------------------------------------------------------------------

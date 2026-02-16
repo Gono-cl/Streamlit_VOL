@@ -1,0 +1,74 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="700" viewBox="0 0 1200 700" role="img" aria-label="Example experimental setup scheme">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#f7fbff"/>
+      <stop offset="100%" stop-color="#eef7f2"/>
+    </linearGradient>
+    <marker id="arrow" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#2f4f4f"/>
+    </marker>
+    <style>
+      .title { font: 700 34px "Segoe UI", Arial, sans-serif; fill: #1e2b2b; }
+      .label { font: 600 18px "Segoe UI", Arial, sans-serif; fill: #243333; }
+      .small { font: 500 14px "Segoe UI", Arial, sans-serif; fill: #3b4f4f; }
+      .box { fill: #ffffff; stroke: #2f4f4f; stroke-width: 2; rx: 14; ry: 14; }
+      .pump { fill: #e8f3ff; stroke: #2f4f4f; stroke-width: 2; rx: 12; ry: 12; }
+      .reactor { fill: #fff3df; stroke: #7a5a2d; stroke-width: 2; rx: 12; ry: 12; }
+      .analysis { fill: #e9f9ec; stroke: #2e6b3f; stroke-width: 2; rx: 12; ry: 12; }
+      .line { stroke: #2f4f4f; stroke-width: 3; fill: none; marker-end: url(#arrow); }
+      .dashed { stroke-dasharray: 8 6; }
+    </style>
+  </defs>
+
+  <rect x="0" y="0" width="1200" height="700" fill="url(#bg)"/>
+
+  <text x="40" y="58" class="title">Example Running Protocol Scheme</text>
+  <text x="40" y="86" class="small">Replace labels/flows/components with your real reaction configuration.</text>
+
+  <rect class="pump" x="40" y="150" width="220" height="90"/>
+  <text x="60" y="185" class="label">Pump A (substrate)</text>
+  <text x="60" y="212" class="small">flow_a_ml_min</text>
+
+  <rect class="pump" x="40" y="270" width="220" height="90"/>
+  <text x="60" y="305" class="label">Pump B (reagent)</text>
+  <text x="60" y="332" class="small">flow_b_ml_min</text>
+
+  <rect class="pump" x="40" y="390" width="220" height="90"/>
+  <text x="60" y="425" class="label">Pump C (additive)</text>
+  <text x="60" y="452" class="small">flow_c_ml_min</text>
+
+  <rect class="pump" x="40" y="510" width="220" height="90"/>
+  <text x="60" y="545" class="label">Pump S (solvent)</text>
+  <text x="60" y="572" class="small">flow_solvent_ml_min</text>
+
+  <path class="line" d="M260 195 H430"/>
+  <path class="line" d="M260 315 H430"/>
+  <path class="line" d="M260 435 H430"/>
+  <path class="line" d="M260 555 H430"/>
+
+  <rect class="box" x="430" y="220" width="240" height="210"/>
+  <text x="455" y="262" class="label">Mixing Junction</text>
+  <text x="455" y="292" class="small">Combined flow = total_flow_ml_min</text>
+  <text x="455" y="320" class="small">Protocol computes split internally</text>
+  <text x="455" y="348" class="small">(custom function in protocol file)</text>
+
+  <path class="line" d="M670 325 H820"/>
+
+  <rect class="reactor" x="820" y="250" width="230" height="150"/>
+  <text x="845" y="292" class="label">Electrochemical Reactor</text>
+  <text x="845" y="320" class="small">Voltage: parameter['Voltage']</text>
+  <text x="845" y="348" class="small">Residence: parameter['residence_time']</text>
+
+  <path class="line" d="M1050 325 H1130"/>
+  <rect class="analysis" x="1130" y="270" width="60" height="110"/>
+  <text x="1136" y="334" class="small">FTIR</text>
+
+  <path class="line dashed" d="M935 250 V180 H500"/>
+  <text x="505" y="172" class="small">Feedback: measured signal -> optimization</text>
+
+  <rect class="box" x="430" y="500" width="390" height="120"/>
+  <text x="455" y="540" class="label">Protocol Hooks</text>
+  <text x="455" y="568" class="small">prepare_hardware() | calculate_real_result() | cleanup()</text>
+  <text x="455" y="594" class="small">Defined in running_protocols/&lt;your_protocol&gt;.py</text>
+</svg>
