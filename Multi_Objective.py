@@ -54,17 +54,92 @@ def _json_compatible(value):
     return value
 
 
+def _multi_repro_seed_rows(repro_engine, param_names, objectives):
+    """Aggregate reproducibility runs into unique multi-objective seed points."""
+    aggregated = {}
+    for record in getattr(repro_engine, "records", []):
+        if bool(getattr(record.context, "is_sentinel", False)):
+            continue
+        if not bool(getattr(record.result, "success", False)):
+            continue
+
+        try:
+            params = {name: float(record.point.values[name]) for name in param_names}
+        except Exception:
+            continue
+
+        output = dict(getattr(record.result, "output", {}) or {})
+        obj_values = {}
+        valid = True
+        for obj in objectives:
+            raw = output.get(obj, None)
+            if raw is None:
+                valid = False
+                break
+            try:
+                val = float(raw)
+            except Exception:
+                valid = False
+                break
+            if not np.isfinite(val):
+                valid = False
+                break
+            obj_values[obj] = val
+        if not valid:
+            continue
+
+        key = tuple(params[name] for name in param_names)
+        bucket = aggregated.setdefault(
+            key,
+            {
+                "params": params,
+                "objective_values": {obj: [] for obj in objectives},
+            },
+        )
+        for obj, val in obj_values.items():
+            bucket["objective_values"][obj].append(val)
+
+    rows = []
+    for bucket in aggregated.values():
+        out_objectives = {}
+        for obj in objectives:
+            values = [v for v in bucket["objective_values"].get(obj, []) if np.isfinite(v)]
+            if not values:
+                out_objectives = {}
+                break
+            out_objectives[obj] = float(np.mean(values))
+        if not out_objectives:
+            continue
+        rows.append(
+            {
+                "params": bucket["params"],
+                "objectives": out_objectives,
+                "source": "Reproducibility",
+            }
+        )
+    return rows
+
+
 def section_header(title: str, accent: str, background: str = "#f8fafc") -> None:
     st.markdown(
         f"""
-        <div style="
-            margin: 0.35rem 0 0.75rem 0;
-            padding: 0.55rem 0.8rem;
-            border-radius: 10px;
-            border-left: 6px solid {accent};
-            background: linear-gradient(90deg, {background}, #ffffff);
-        ">
-            <div style="font-weight: 700; color: #111827; letter-spacing: 0.2px;">{title}</div>
+        <div style="margin: 0.9rem 0 0.85rem 0;">
+            <div style="
+                height: 2px;
+                border-radius: 999px;
+                background: linear-gradient(90deg, {accent}66, transparent);
+                margin-bottom: 0.45rem;
+            "></div>
+            <div style="
+                padding: 0.62rem 0.85rem;
+                border-radius: 12px;
+                border: 1px solid {accent}44;
+                border-left: 7px solid {accent};
+                background: linear-gradient(100deg, {background}, #ffffff);
+                box-shadow: 0 1px 3px rgba(15, 23, 42, 0.08);
+            ">
+                <div style="font-weight: 700; color: #0f172a; letter-spacing: 0.2px;">{title}</div>
+            </div>
         </div>
         """,
         unsafe_allow_html=True,
@@ -93,10 +168,8 @@ ui_mode_multi = st.radio(
     "UI Mode",
     options=["Quick", "Advanced"],
     horizontal=True,
-    index=0 if st.session_state.get("multi_ui_mode", "Quick") == "Quick" else 1,
-    key="multi_ui_mode_selector",
+    key="multi_ui_mode",
 )
-st.session_state.multi_ui_mode = ui_mode_multi
 is_advanced_multi = ui_mode_multi == "Advanced"
 if not is_advanced_multi:
     st.caption("Quick mode: core setup + run controls only. Switch to Advanced for templates, reproducibility, and design tooling.")
@@ -129,6 +202,10 @@ if "process_adapter_config" not in st.session_state:
     st.session_state.process_adapter_config = {}
 if "running_protocol_script" not in st.session_state:
     st.session_state.running_protocol_script = None
+if "measurement_source_prefix" not in st.session_state:
+    st.session_state.measurement_source_prefix = "OpusOPCSvr.HP-CZC3484P17->"
+if "measurement_source_signal" not in st.session_state:
+    st.session_state.measurement_source_signal = "PDA - mM"
 if "multi_ui_mode" not in st.session_state:
     st.session_state.multi_ui_mode = "Quick"
 if "multi_repro_enabled" not in st.session_state:
@@ -173,6 +250,17 @@ simulation_mode = st.sidebar.selectbox(
 opc_url = st.sidebar.text_input("🔌 OPC Server URL", value=st.session_state.get("opc_url", "http://em-nun:57080"))
 st.session_state.simulation_mode = simulation_mode
 st.session_state.opc_url = opc_url
+
+st.sidebar.markdown("Measurement Source")
+measurement_source_prefix = st.sidebar.text_input(
+    "Measurement OPC Prefix",
+    key="measurement_source_prefix",
+)
+measurement_source_signal = st.sidebar.text_input(
+    "Measurement Signal",
+    key="measurement_source_signal",
+)
+st.sidebar.caption(f"Current measurement tag: `{measurement_source_prefix}{measurement_source_signal}`")
 
 # --- Sidebar: Use Autosampler ---
 use_autosampler = st.sidebar.checkbox("Use Autosampler", value=bool(st.session_state.get("use_autosampler", False)))
@@ -235,6 +323,14 @@ if resume_file != "None" and st.sidebar.button("Load Previous Run"):
     st.session_state.process_adapter = metadata.get("process_adapter", st.session_state.get("process_adapter", DEFAULT_PROCESS_ADAPTER))
     st.session_state.process_adapter_config = metadata.get("process_adapter_config", st.session_state.get("process_adapter_config", {}))
     st.session_state.running_protocol_script = metadata.get("running_protocol_script", st.session_state.get("running_protocol_script"))
+    st.session_state.measurement_source_prefix = metadata.get(
+        "measurement_source_prefix",
+        st.session_state.get("measurement_source_prefix", "OpusOPCSvr.HP-CZC3484P17->"),
+    )
+    st.session_state.measurement_source_signal = metadata.get(
+        "measurement_source_signal",
+        st.session_state.get("measurement_source_signal", "PDA - mM"),
+    )
     st.session_state.multi_repro_report = metadata.get("reproducibility")
     st.session_state.optimization_running = True
     st.session_state.run_name = resume_file
@@ -254,6 +350,8 @@ if resume_file != "None" and st.sidebar.button("Load Previous Run"):
         process_adapter=st.session_state.process_adapter,
         adapter_config=st.session_state.process_adapter_config,
         running_protocol_script=st.session_state.get("running_protocol_script"),
+        measurement_source_prefix=st.session_state.get("measurement_source_prefix"),
+        measurement_source_signal=st.session_state.get("measurement_source_signal"),
     )
 
     st.success(f"Loaded run: {resume_file}")
@@ -347,104 +445,25 @@ for obj in objectives:
     objective_directions[obj] = direction
 
 if is_advanced_multi:
-    themed_section_header("repro", "Reproducibility Study (Optional)")
-    multi_repro_enabled = st.checkbox(
-        "Enable reproducibility gate before optimization start",
-        value=bool(st.session_state.get("multi_repro_enabled", False)),
-        key="multi_repro_enabled_widget",
-    )
-    st.session_state.multi_repro_enabled = multi_repro_enabled
-    if multi_repro_enabled:
-        repro_col1, repro_col2, repro_col3 = st.columns(3)
-        multi_repro_method = repro_col1.selectbox(
-            "Test-point strategy",
-            options=["LHS", "Corners + Center"],
-            index=0 if st.session_state.get("multi_repro_method", "LHS") == "LHS" else 1,
-            key="multi_repro_method_select",
+    themed_section_header("repro", "Reproducibility")
+    st.checkbox("Enable reproducibility gate before optimization start", key="multi_repro_enabled")
+    if st.session_state.get("multi_repro_enabled", False):
+        selected_metric = st.session_state.get("multi_repro_objective") or "not set"
+        st.caption(
+            "Configured in Reproducibility Studio: "
+            f"{st.session_state.get('multi_repro_method', 'LHS')}, "
+            f"{int(st.session_state.get('multi_repro_n_points', 8))} points, "
+            f"metric={selected_metric}, "
+            f"patterns={len(st.session_state.get('multi_repro_patterns', []))}, "
+            f"sentinel={'on' if st.session_state.get('multi_repro_use_sentinel', True) else 'off'}."
         )
-        st.session_state.multi_repro_method = multi_repro_method
-        multi_repro_n_points = int(
-            repro_col2.number_input(
-                "Test points",
-                min_value=2,
-                max_value=64,
-                value=int(st.session_state.get("multi_repro_n_points", 8)),
-                step=1,
-                key="multi_repro_n_points_input",
-            )
-        )
-        st.session_state.multi_repro_n_points = multi_repro_n_points
-        multi_repro_sentinel_every = int(
-            repro_col3.number_input(
-                "Sentinel every N runs",
-                min_value=1,
-                max_value=100,
-                value=int(st.session_state.get("multi_repro_sentinel_every", 5)),
-                step=1,
-                key="multi_repro_sentinel_every_input",
-            )
-        )
-        st.session_state.multi_repro_sentinel_every = multi_repro_sentinel_every
-
-        multi_repro_patterns = st.multiselect(
-            "Replication patterns",
-            options=["Immediate (A->A)", "Bracketed (A->B->A)"],
-            default=st.session_state.get("multi_repro_patterns", ["Immediate (A->A)", "Bracketed (A->B->A)"]),
-            key="multi_repro_patterns_select",
-        )
-        st.session_state.multi_repro_patterns = multi_repro_patterns
-
-        multi_repro_use_sentinel = st.checkbox(
-            "Enable sentinel point checks",
-            value=bool(st.session_state.get("multi_repro_use_sentinel", True)),
-            key="multi_repro_use_sentinel_widget",
-        )
-        st.session_state.multi_repro_use_sentinel = multi_repro_use_sentinel
-
-        if objectives:
-            objective_default = st.session_state.get("multi_repro_objective") or objectives[0]
-            if objective_default not in objectives:
-                objective_default = objectives[0]
-            multi_repro_objective = st.selectbox(
-                "Metric objective for reproducibility gate",
-                options=objectives,
-                index=objectives.index(objective_default),
-                key="multi_repro_objective_select",
-            )
-            st.session_state.multi_repro_objective = multi_repro_objective
-        else:
-            st.info("Select objectives first to configure reproducibility gate.")
-            st.session_state.multi_repro_objective = ""
-
-        repro_flag_col1, repro_flag_col2, repro_flag_col3 = st.columns(3)
-        multi_repro_escalate_cleaning = repro_flag_col1.checkbox(
-            "Escalate cleaning and retest on FAIL/drift",
-            value=bool(st.session_state.get("multi_repro_escalate_cleaning", True)),
-            key="multi_repro_escalate_cleaning_widget",
-        )
-        st.session_state.multi_repro_escalate_cleaning = multi_repro_escalate_cleaning
-        multi_repro_max_cleaning = int(
-            repro_flag_col2.number_input(
-                "Max cleaning level",
-                min_value=1,
-                max_value=10,
-                value=int(st.session_state.get("multi_repro_max_cleaning", 2)),
-                step=1,
-                key="multi_repro_max_cleaning_input",
-            )
-        )
-        st.session_state.multi_repro_max_cleaning = multi_repro_max_cleaning
-        multi_repro_block_on_fail = repro_flag_col3.checkbox(
-            "Block optimization when decision is FAIL",
-            value=bool(st.session_state.get("multi_repro_block_on_fail", True)),
-            key="multi_repro_block_on_fail_widget",
-        )
-        st.session_state.multi_repro_block_on_fail = multi_repro_block_on_fail
-
-        st.caption("Runs reproducibility sequences before BO starts. Logs are stored under the run folder.")
-
+    col_repro_1, col_repro_2 = st.columns([1, 1])
+    if col_repro_1.button("Open Reproducibility Studio", key="multi_open_repro_page"):
+        st.session_state.selected_page = "🧬 Reproducibility Studio"
+        st.rerun()
+    col_repro_2.caption("Detailed reproducibility settings moved to a dedicated page.")
 else:
-    st.caption("Reproducibility controls are hidden in Quick mode. Switch to Advanced to configure them.")
+    st.caption("Reproducibility controls are hidden in Quick mode. Switch to Advanced to view status.")
 if is_advanced_multi:
     # Campaign templates
     themed_section_header("templates", "Campaign Templates")
@@ -515,6 +534,14 @@ if is_advanced_multi:
                         st.session_state.process_adapter = hardware.get("process_adapter", st.session_state.get("process_adapter", DEFAULT_PROCESS_ADAPTER))
                         st.session_state.process_adapter_config = hardware.get("process_adapter_config", st.session_state.get("process_adapter_config", {}))
                         st.session_state.running_protocol_script = hardware.get("running_protocol_script", st.session_state.get("running_protocol_script"))
+                        st.session_state.measurement_source_prefix = hardware.get(
+                            "measurement_source_prefix",
+                            st.session_state.get("measurement_source_prefix", "OpusOPCSvr.HP-CZC3484P17->"),
+                        )
+                        st.session_state.measurement_source_signal = hardware.get(
+                            "measurement_source_signal",
+                            st.session_state.get("measurement_source_signal", "PDA - mM"),
+                        )
                     st.success(f"Loaded template: {selected_template}")
                     st.rerun()
 
@@ -560,6 +587,8 @@ if is_advanced_multi:
                     "process_adapter": st.session_state.get("process_adapter", DEFAULT_PROCESS_ADAPTER),
                     "process_adapter_config": st.session_state.get("process_adapter_config", {}),
                     "running_protocol_script": st.session_state.get("running_protocol_script"),
+                    "measurement_source_prefix": st.session_state.get("measurement_source_prefix", "OpusOPCSvr.HP-CZC3484P17->"),
+                    "measurement_source_signal": st.session_state.get("measurement_source_signal", "PDA - mM"),
                 },
             )
             path = save_campaign_template(save_template_name, template_payload)
@@ -782,9 +811,13 @@ if start_clicked:
             process_adapter=st.session_state.get("process_adapter", DEFAULT_PROCESS_ADAPTER),
             adapter_config=st.session_state.get("process_adapter_config", {}),
             running_protocol_script=st.session_state.get("running_protocol_script"),
+            measurement_source_prefix=st.session_state.get("measurement_source_prefix"),
+            measurement_source_signal=st.session_state.get("measurement_source_signal"),
         )
         st.session_state.multi_repro_report = None
+        repro_seed_rows = []
         campaign_bounds = [(low, high) for _, low, high, _ in st.session_state.variables]
+        curr_names = [n for n, *_ in st.session_state.variables]
 
         if st.session_state.get("multi_repro_enabled", False):
             repro_objective = st.session_state.get("multi_repro_objective")
@@ -871,6 +904,7 @@ if start_clicked:
                 with open(repro_report_path, "w") as f:
                     json.dump(repro_report_safe, f, indent=2)
                 st.session_state.multi_repro_report = repro_report_safe
+                repro_seed_rows = _multi_repro_seed_rows(repro_engine, curr_names, objectives)
 
                 decision_value = str(repro_report_safe.get("decision", "UNKNOWN"))
                 if decision_value == DecisionLabel.PASS.value:
@@ -929,28 +963,42 @@ if start_clicked:
         reused_count = 0
         existing_points = []
         preloaded = st.session_state.get("preloaded_rows_mo")
+        seed_rows = []
         if preloaded:
-            for rec in preloaded:
-                params = rec.get("params", {})
-                obj_vals = rec.get("objectives", {})
-                try:
-                    x = [float(params[name]) for name in curr_names]
-                    y_multi = [-float(obj_vals[obj]) for obj in objectives]
-                except Exception:
-                    continue
-                st.session_state.optimizer.tell(x, y_multi)
-                reused_count += 1
-                existing_points.append(x)
-                # Append to current experiment_data as pre-existing rows
-                row = {
-                    "Experiment #": len(st.session_state.experiment_data) + 1,
-                    "Timestamp": "Reused",
-                    **params,
-                    **{obj: obj_vals.get(obj) for obj in objectives},
-                    "Source": rec.get("source", "Reused")
-                }
-                st.session_state.experiment_data.append(row)
-            st.session_state.iteration = len(st.session_state.experiment_data)
+            seed_rows.extend(preloaded)
+        if repro_seed_rows:
+            seed_rows.extend(repro_seed_rows)
+
+        seen_seed_points = set()
+        for rec in seed_rows:
+            params = rec.get("params", {})
+            obj_vals = rec.get("objectives", {})
+            try:
+                x = [float(params[name]) for name in curr_names]
+                y_multi = [-float(obj_vals[obj]) for obj in objectives]
+            except Exception:
+                continue
+            if any(not np.isfinite(v) for v in y_multi):
+                continue
+            key = tuple(x)
+            if key in seen_seed_points:
+                continue
+            seen_seed_points.add(key)
+
+            st.session_state.optimizer.tell(x, y_multi)
+            reused_count += 1
+            existing_points.append(x)
+            row = {
+                "Experiment #": len(st.session_state.experiment_data) + 1,
+                "Timestamp": "Reused",
+                **params,
+                **{obj: obj_vals.get(obj) for obj in objectives},
+                "Source": rec.get("source", "Reused"),
+            }
+            st.session_state.experiment_data.append(row)
+        st.session_state.iteration = len(st.session_state.experiment_data)
+        if repro_seed_rows:
+            st.info(f"Using {len(repro_seed_rows)} reproducibility seed point(s) for initialization.")
 
         init_needed = max(0, int(initial_experiments) - reused_count)
         if init_strategy == "LHS":
@@ -1109,6 +1157,8 @@ if st.session_state.get("optimization_running", False):
             "process_adapter": st.session_state.get("process_adapter", DEFAULT_PROCESS_ADAPTER),
             "process_adapter_config": st.session_state.get("process_adapter_config", {}),
             "running_protocol_script": st.session_state.get("running_protocol_script"),
+            "measurement_source_prefix": st.session_state.get("measurement_source_prefix", "OpusOPCSvr.HP-CZC3484P17->"),
+            "measurement_source_signal": st.session_state.get("measurement_source_signal", "PDA - mM"),
             "init_strategy": init_strategy,
             "random_seed": random_seed,
             "acq_func": acq_func,
@@ -1153,6 +1203,8 @@ if st.session_state.get("optimization_running", False):
             "opc_url": st.session_state.opc_url,
             "process_adapter": st.session_state.get("process_adapter", DEFAULT_PROCESS_ADAPTER),
             "running_protocol_script": st.session_state.get("running_protocol_script"),
+            "measurement_source_prefix": st.session_state.get("measurement_source_prefix", "OpusOPCSvr.HP-CZC3484P17->"),
+            "measurement_source_signal": st.session_state.get("measurement_source_signal", "PDA - mM"),
             "init_strategy": init_strategy,
             "random_seed": random_seed,
             "acq_func": acq_func,

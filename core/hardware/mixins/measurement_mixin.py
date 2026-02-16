@@ -12,13 +12,34 @@ class MeasurementMixin:
     def calculate_rsd(self, measurements: List[float]):
         return (np.std(measurements) / np.mean(measurements)) * 100 if np.mean(measurements) != 0 else float("inf")
 
-    def _read_measurement(self):
+    def _resolve_measurement_tag(self, parameters=None):
+        configured_tag = str(getattr(self, "measurement_source_tag", "") or "").strip()
+        if configured_tag:
+            return configured_tag
+
+        protocol_tag_fn = getattr(self, "protocol_measurement_tag_fn", None)
+        if callable(protocol_tag_fn):
+            custom_tag = protocol_tag_fn(self, parameters)
+            custom_tag = str(custom_tag or "").strip()
+            if custom_tag:
+                return custom_tag
+
+        prefix = str(getattr(self, "measurement_source_prefix", "") or "").strip()
+        signal = str(getattr(self, "measurement_source_signal", "") or "").strip()
+        if not prefix:
+            prefix = "OpusOPCSvr.HP-CZC3484P17->"
+        if not signal:
+            signal = "PDA - mM"
+        return f"{prefix}{signal}"
+
+    def _read_measurement(self, parameters=None):
         if self.simulation_mode == "full":
             return np.random.uniform(70, 100)
         elif self.simulation_mode == "hybrid":
             return np.random.uniform(70, 100)
         else:
-            product_area = float(self.opc.read_value("OpusOPCSvr.HP-CZC3484P17->PDA - mM"))
+            measurement_tag = self._resolve_measurement_tag(parameters)
+            product_area = float(self.opc.read_value(measurement_tag))
         return product_area
 
     def collect_measurements(self, rsd_threshold=3, max_measurements=15, iteration=0, parameters=None, min_mean_threshold=10.0, abs_std_threshold=0.5):
@@ -37,7 +58,7 @@ class MeasurementMixin:
         all_measurements = []
 
         while len(measurements) < 3:
-            val = self._read_measurement()
+            val = self._read_measurement(parameters=parameters)
             print(f"Measurement {len(measurements)+1} = {val:.2f}")
             measurements.append(val)
             all_measurements.append(val)
@@ -65,7 +86,7 @@ class MeasurementMixin:
                 print(f"Warning: Abs StdDev too high ({abs_std:.3f} > {abs_std_threshold}). Taking another measurement...")
 
             time.sleep(20)  # Wait before next measurement
-            new_val = self._read_measurement()
+            new_val = self._read_measurement(parameters=parameters)
             print(f"New Measurement = {new_val:.2f}")
             measurements = measurements[-2:] + [new_val]
             all_measurements.append(new_val)

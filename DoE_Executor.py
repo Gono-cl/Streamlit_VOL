@@ -37,6 +37,32 @@ def sanitize_filename(name: str) -> str:
     return cleaned or "run"
 
 
+def doe_section_header(title: str, accent: str = "#0ea5e9", background: str = "#eff6ff") -> None:
+    st.markdown(
+        f"""
+        <div style="margin: 0.9rem 0 0.85rem 0;">
+            <div style="
+                height: 2px;
+                border-radius: 999px;
+                background: linear-gradient(90deg, {accent}66, transparent);
+                margin-bottom: 0.45rem;
+            "></div>
+            <div style="
+                padding: 0.62rem 0.85rem;
+                border-radius: 12px;
+                border: 1px solid {accent}44;
+                border-left: 7px solid {accent};
+                background: linear-gradient(100deg, {background}, #ffffff);
+                box-shadow: 0 1px 3px rgba(15, 23, 42, 0.08);
+            ">
+                <div style="font-weight: 700; color: #0f172a; letter-spacing: 0.2px;">{title}</div>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def ensure_session_defaults():
     if "simulation_mode" not in st.session_state:
         st.session_state.simulation_mode = "off"
@@ -52,6 +78,10 @@ def ensure_session_defaults():
         st.session_state.process_adapter_config = {}
     if "running_protocol_script" not in st.session_state:
         st.session_state.running_protocol_script = None
+    if "measurement_source_prefix" not in st.session_state:
+        st.session_state.measurement_source_prefix = "OpusOPCSvr.HP-CZC3484P17->"
+    if "measurement_source_signal" not in st.session_state:
+        st.session_state.measurement_source_signal = "PDA - mM"
 
     if "doe_exec_upload_sig" not in st.session_state:
         st.session_state.doe_exec_upload_sig = ""
@@ -266,6 +296,8 @@ def make_metadata(run_name: str, notes: str, run_date, param_cols: list[str], ob
         "process_adapter": st.session_state.get("process_adapter", DEFAULT_PROCESS_ADAPTER),
         "process_adapter_config": st.session_state.get("process_adapter_config", {}),
         "running_protocol_script": st.session_state.get("running_protocol_script"),
+        "measurement_source_prefix": st.session_state.get("measurement_source_prefix", "OpusOPCSvr.HP-CZC3484P17->"),
+        "measurement_source_signal": st.session_state.get("measurement_source_signal", "PDA - mM"),
         "source_file": st.session_state.get("doe_exec_loaded_file_name", ""),
         "total_rows": int(len(st.session_state.get("doe_exec_plan_df", pd.DataFrame()))),
     }
@@ -312,6 +344,14 @@ def load_saved_run(run_name: str):
     st.session_state.process_adapter = metadata.get("process_adapter", st.session_state.get("process_adapter", DEFAULT_PROCESS_ADAPTER))
     st.session_state.process_adapter_config = metadata.get("process_adapter_config", st.session_state.get("process_adapter_config", {}))
     st.session_state.running_protocol_script = metadata.get("running_protocol_script", st.session_state.get("running_protocol_script"))
+    st.session_state.measurement_source_prefix = metadata.get(
+        "measurement_source_prefix",
+        st.session_state.get("measurement_source_prefix", "OpusOPCSvr.HP-CZC3484P17->"),
+    )
+    st.session_state.measurement_source_signal = metadata.get(
+        "measurement_source_signal",
+        st.session_state.get("measurement_source_signal", "PDA - mM"),
+    )
     st.success(f"Loaded run: {run_name}")
 
 
@@ -345,6 +385,17 @@ opc_url = st.sidebar.text_input(
     key="doe_exec_opc_url",
 )
 st.session_state.opc_url = opc_url
+
+st.sidebar.markdown("Measurement Source")
+measurement_source_prefix = st.sidebar.text_input(
+    "Measurement OPC Prefix",
+    key="measurement_source_prefix",
+)
+measurement_source_signal = st.sidebar.text_input(
+    "Measurement Signal",
+    key="measurement_source_signal",
+)
+st.sidebar.caption(f"Current measurement tag: `{measurement_source_prefix}{measurement_source_signal}`")
 
 use_autosampler = st.sidebar.checkbox(
     "Use Autosampler",
@@ -390,7 +441,7 @@ if selected_saved != "None" and st.sidebar.button("Load Saved DOE Run", key="doe
     load_saved_run(selected_saved)
 
 # Metadata
-st.subheader("Run Metadata")
+doe_section_header("Run Metadata", accent="#0ea5e9", background="#eff6ff")
 default_name = st.session_state.get("doe_exec_run_name", datetime.now().strftime("doe_exec_%Y%m%d_%H%M%S"))
 run_name_raw = st.text_input("Run Name", value=default_name)
 run_name = sanitize_filename(run_name_raw)
@@ -439,7 +490,7 @@ with st.expander("How To Use This Page", expanded=False):
         "Internal columns `__status` and `__error` are managed automatically to support stop/resume/retry."
     )
 
-st.subheader("DOE Matrix Upload")
+doe_section_header("DOE Matrix Upload", accent="#14b8a6", background="#f0fdfa")
 template_df = build_doe_template_df(required_keys)
 st.caption("Download a template aligned to the currently selected running protocol.")
 tpl_col_csv, tpl_col_xlsx = st.columns(2)
@@ -541,7 +592,7 @@ if missing_required_cols and not st.session_state.doe_exec_plan_df.empty:
         f"Missing: {missing_required_cols}"
     )
 
-st.subheader("Execution Control")
+doe_section_header("Execution Control", accent="#f59e0b", background="#fffbeb")
 col_start, col_resume, col_retry, col_stop = st.columns(4)
 if col_start.button("Start From Pending", key="doe_exec_start"):
     plan_df = ensure_plan_columns(st.session_state.doe_exec_plan_df)
@@ -569,6 +620,8 @@ if col_start.button("Start From Pending", key="doe_exec_start"):
                 process_adapter=st.session_state.get("process_adapter", DEFAULT_PROCESS_ADAPTER),
                 adapter_config=st.session_state.get("process_adapter_config", {}),
                 running_protocol_script=st.session_state.get("running_protocol_script"),
+                measurement_source_prefix=st.session_state.get("measurement_source_prefix"),
+                measurement_source_signal=st.session_state.get("measurement_source_signal"),
             )
             st.session_state.doe_exec_queue = pending_idx
             st.session_state.doe_exec_running = True
@@ -595,6 +648,8 @@ if col_resume.button("Resume All Open", key="doe_exec_resume_open"):
             process_adapter=st.session_state.get("process_adapter", DEFAULT_PROCESS_ADAPTER),
             adapter_config=st.session_state.get("process_adapter_config", {}),
             running_protocol_script=st.session_state.get("running_protocol_script"),
+            measurement_source_prefix=st.session_state.get("measurement_source_prefix"),
+            measurement_source_signal=st.session_state.get("measurement_source_signal"),
         )
         st.session_state.doe_exec_queue = open_idx
         st.session_state.doe_exec_running = True
@@ -621,6 +676,8 @@ if col_retry.button("Retry Failed", key="doe_exec_retry_failed"):
             process_adapter=st.session_state.get("process_adapter", DEFAULT_PROCESS_ADAPTER),
             adapter_config=st.session_state.get("process_adapter_config", {}),
             running_protocol_script=st.session_state.get("running_protocol_script"),
+            measurement_source_prefix=st.session_state.get("measurement_source_prefix"),
+            measurement_source_signal=st.session_state.get("measurement_source_signal"),
         )
         st.session_state.doe_exec_queue = failed_idx
         st.session_state.doe_exec_running = True
@@ -745,7 +802,7 @@ if st.session_state.get("doe_exec_running", False):
 
 # Results and exports
 if st.session_state.get("doe_exec_results"):
-    st.subheader("Execution Results")
+    doe_section_header("Execution Results", accent="#22c55e", background="#f0fdf4")
     df_results = pd.DataFrame(st.session_state.doe_exec_results)
     st.dataframe(df_results, use_container_width=True)
     export_to_csv(df_results, filename=f"{st.session_state.doe_exec_run_name}_results.csv")
@@ -771,6 +828,8 @@ if st.session_state.get("doe_exec_results"):
             "opc_url": st.session_state.get("opc_url", "http://em-nun:57080"),
             "process_adapter": st.session_state.get("process_adapter", DEFAULT_PROCESS_ADAPTER),
             "running_protocol_script": st.session_state.get("running_protocol_script"),
+            "measurement_source_prefix": st.session_state.get("measurement_source_prefix", "OpusOPCSvr.HP-CZC3484P17->"),
+            "measurement_source_signal": st.session_state.get("measurement_source_signal", "PDA - mM"),
             "source_file": st.session_state.get("doe_exec_loaded_file_name", ""),
         }
         db_handler.save_experiment(

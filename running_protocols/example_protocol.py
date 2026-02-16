@@ -17,6 +17,8 @@ def protocol_info():
         "images": [
             {"path": "assets/example_scheme.svg", "caption": "Example setup scheme"},
         ],
+        "measurement_source_prefix": "OpusOPCSvr.HP-CZC3484P17->",
+        "measurement_source_signal": "PDA - mM",
     }
 
 
@@ -47,6 +49,14 @@ def prepare_hardware(runner, parameters):
     runner.set_voltage(voltage)
     runner.turn_on_power_supply()
     runner.countdown_echem(flow_rate)
+
+
+def measurement_tag(runner, parameters):
+    """
+    Optional hook for measurement source.
+    Return the full OPC tag that should be read for this protocol.
+    """
+    return "OpusOPCSvr.HP-CZC3484P17->PDA - mM"
 
 
 def calculate_real_result(runner, mean_measurement, parameters, objectives, directions):

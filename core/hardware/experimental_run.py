@@ -23,7 +23,7 @@ from core.hardware.process_adapters import (
     DEFAULT_PROCESS_ADAPTER,
     create_process_adapter,
 )
-from core.hardware.protocol_scripts import load_protocol_module
+from core.hardware.protocol_scripts import load_protocol_module, protocol_info
 from core.hardware.mixins.ui_mixin import UIMixin
 from core.hardware.opc_communication import OPCClient
 from core.objectives import calculate_objectives
@@ -46,6 +46,9 @@ class ExperimentRunner(
         process_adapter: str | None = None,
         adapter_config: dict | None = None,
         running_protocol_script: str | None = None,
+        measurement_source_prefix: str | None = None,
+        measurement_source_signal: str | None = None,
+        measurement_source_tag: str | None = None,
     ):
         self.opc = opc_client
         self.use_autosampler = use_autosampler
@@ -57,6 +60,9 @@ class ExperimentRunner(
         self.process_adapter = create_process_adapter(self.process_adapter_name, config=self.adapter_config)
         self.running_protocol_script = running_protocol_script or None
         self.running_protocol_module = None
+        self.measurement_source_prefix = measurement_source_prefix
+        self.measurement_source_signal = measurement_source_signal
+        self.measurement_source_tag = measurement_source_tag
         if self.running_protocol_script:
             try:
                 self.running_protocol_module = load_protocol_module(self.running_protocol_script)
@@ -64,10 +70,25 @@ class ExperimentRunner(
                 raise RuntimeError(
                     f"Failed to load running protocol script '{self.running_protocol_script}': {exc}"
                 ) from exc
+            try:
+                info = protocol_info(self.running_protocol_script)
+            except Exception:
+                info = {}
+            if self.measurement_source_prefix is None:
+                self.measurement_source_prefix = str(info.get("measurement_source_prefix", "")).strip() or None
+            if self.measurement_source_signal is None:
+                self.measurement_source_signal = str(info.get("measurement_source_signal", "")).strip() or None
+            if self.measurement_source_tag is None:
+                self.measurement_source_tag = str(info.get("measurement_source_tag", "")).strip() or None
+        if self.measurement_source_prefix is None:
+            self.measurement_source_prefix = "OpusOPCSvr.HP-CZC3484P17->"
+        if self.measurement_source_signal is None:
+            self.measurement_source_signal = "PDA - mM"
         self.protocol_prepare_fn = self._protocol_callable("prepare_hardware")
         self.protocol_calculate_fn = self._protocol_callable("calculate_real_result")
         self.protocol_autosampler_fn = self._protocol_callable("autosampler_flow_rate")
         self.protocol_cleanup_fn = self._protocol_callable("cleanup")
+        self.protocol_measurement_tag_fn = self._protocol_callable("measurement_tag")
         self.experiment_status_placeholder = st.sidebar.empty()
         self.countdown_placeholder = st.empty()
         self.timer_placeholder = st.sidebar.empty()
