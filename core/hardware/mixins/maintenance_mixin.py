@@ -84,6 +84,9 @@ class MaintenanceMixin:
 
     def cleaning_electrochemical_cell(self):
         """Clean the electrochemical cell by flushing with different solvent."""
+        if self.simulation_mode not in ["off", "hybrid"]:
+            print("Simulation mode: skipping electrochemical-cell cleaning.")
+            return
         print("Starting cleaning of electrochemical cell...")
         time.sleep(1)
 
@@ -153,3 +156,5 @@ class MaintenanceMixin:
             self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3APC_OUT", round(pressure, 2))
             self.opc.write_value("Hitec_OPC_DA20_Server-%3EDIAZOAN%3APUMP3.W1", 2.0)
             time.sleep(30)
+        else:
+            print("Simulation mode: skipping pressure setup.")

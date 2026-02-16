@@ -75,6 +75,9 @@ class BaseProcessAdapter:
 
     def cleanup(self, runner, parameters: dict[str, Any]) -> None:
         """Reset hardware after each experiment."""
+        if getattr(runner, "simulation_mode", "off") not in ["off", "hybrid"]:
+            print("Full simulation mode: skipping hardware cleanup actions.")
+            return
         runner.turn_off_power_supply()
         runner.stop_pumps()
         runner.cleaning_electrochemical_cell()

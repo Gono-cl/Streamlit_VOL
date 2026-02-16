@@ -5,12 +5,21 @@ import time
 
 
 class EchemMixin:
+    def _hardware_enabled(self):
+        return self.simulation_mode in ["off", "hybrid"]
+
     def flow_electrochemical_cell(self, flow_rate):
         """Set flow rate for electrochemical reaction, using a single pump."""
+        if not self._hardware_enabled():
+            print("Simulation mode: skipping electrochemical pump control.")
+            return
         self.opc.write_value("Hitec_OPC_DA20_Server->E_CHEM:PUMP1.W1", round(flow_rate, 2))  # ul/min
 
     def flow_electrochemical_cell_dual(self, flow_rate, base_concentration):
         """Set the flow rates from 2 variables like in the case of different amount of Base or Acid."""
+        if not self._hardware_enabled():
+            print("Simulation mode: skipping dual-pump control.")
+            return
         pump1_base = 0  # mM
         pump2_base = 700  # mM
 
@@ -26,6 +35,9 @@ class EchemMixin:
                     sub_conc = concentratiom of substrate in mM
                     acid_conc = concentration of acid in mM
                     base_conc = concentration of base in mM """
+        if not self._hardware_enabled():
+            print("Simulation mode: skipping 4-pump flow setup.")
+            return
 
         stock_substrate_concentration = 716  # mM
         stock_acid_concentration = 1500  # mM
@@ -49,6 +61,9 @@ class EchemMixin:
 
     def flow_galvanostatic_mode(self, current, concentration, charge, base_concentration, acid_concentration):
         """Set the flow of pumps for the electrochemical cell in galvanostatic mode."""
+        if not self._hardware_enabled():
+            print("Simulation mode: skipping galvanostatic flow setup.")
+            return
         stock_substrate = 2000  # mM
         stock_base = 2000  # mM
         stock_acid = 2000  # mM
@@ -67,24 +82,39 @@ class EchemMixin:
 
     def set_voltage(self, voltage):
         """Set the voltage for the electrochemical cell."""
+        if not self._hardware_enabled():
+            print("Simulation mode: skipping voltage setpoint.")
+            return
         self.opc.write_value("Hitec_OPC_DA20_Server-%3EE_CHEM%3ABKK_P.SETVOLT", round(voltage, 2))
 
     def set_current(self, current):
         """Set the current for the electrochemical cell."""
+        if not self._hardware_enabled():
+            print("Simulation mode: skipping current setpoint.")
+            return
         self.opc.write_value("Hitec_OPC_DA20_Server-%3EE_CHEM%3ABKK_P.CURR", round(current, 2))
 
     def turn_on_power_supply(self):
         """Turn on the power supply for the electrochemical cell."""
+        if not self._hardware_enabled():
+            print("Simulation mode: skipping power-supply enable.")
+            return
         self.opc.write_value("Hitec_OPC_DA20_Server-%3EE_CHEM%3ABKK_P.OUTOFF", 0)
         self.opc.write_value("Hitec_OPC_DA20_Server-%3EE_CHEM%3ABKK_P.OUTON", 1)
 
     def turn_off_power_supply(self):
         """Turn off the power supply for the electrochemical cell."""
+        if not self._hardware_enabled():
+            print("Simulation mode: skipping power-supply shutdown.")
+            return
         self.opc.write_value("Hitec_OPC_DA20_Server-%3EE_CHEM%3ABKK_P.OUTON", 0)
         self.opc.write_value("Hitec_OPC_DA20_Server-%3EE_CHEM%3ABKK_P.OUTOFF", 1)
 
     def filling_electrochemical_cell(self, flow_rate, base_concentration, volume=1.8):
         """Fill the electrochemical cell for a specified duration."""
+        if not self._hardware_enabled():
+            print("Simulation mode: skipping electrochemical-cell filling.")
+            return
         self.opc.write_value("Hitec_OPC_DA20_Server-%3EE_CHEM%3AV_02_CLOSE", 1)
         self.opc.write_value("Hitec_OPC_DA20_Server-%3EE_CHEM%3AV_02_OPEN", 1)
         self.opc.write_value("Hitec_OPC_DA20_Server-%3EE_CHEM%3AV_01_CLOSE", 0)

@@ -11,6 +11,7 @@ from __future__ import annotations
 import csv
 import os
 import time
+from collections.abc import Mapping
 from datetime import datetime
 
 import streamlit as st
@@ -107,6 +108,32 @@ class ExperimentRunner(
             return fn
         return None
 
+    def _normalize_result_payload(self, result, objectives):
+        """
+        Normalize runner outputs to a flat dict {objective_name: float_value}.
+        This avoids nested dict payloads (e.g. {"Yield": {"Yield": 42.0}}).
+        """
+        objective_names = list(objectives or [])
+
+        if isinstance(result, Mapping):
+            normalized = dict(result)
+            if len(objective_names) == 1:
+                key = objective_names[0]
+                val = normalized.get(key)
+                if isinstance(val, Mapping):
+                    if key in val:
+                        normalized[key] = val[key]
+                    elif len(val) == 1:
+                        normalized[key] = next(iter(val.values()))
+                elif key not in normalized and len(normalized) == 1:
+                    # Single-objective fallback: remap single returned value to requested objective key.
+                    normalized[key] = next(iter(normalized.values()))
+            return normalized
+
+        if len(objective_names) == 1:
+            return {objective_names[0]: result}
+        return result
+
     # ---------------------------------------------------------------------------
     #                          STANDARD PROCESS FUNCTIONS
     # ---------------------------------------------------------------------------
@@ -166,15 +193,14 @@ class ExperimentRunner(
 
         result = calculate_objectives(
             raw_area,
+            float(parameters.get("substrate_concentration", 1.0)),
             flow_aq,
             flow_org,
             res_time,
             selected_objectives=objectives,
             directions=directions,
         )
-        if len(objectives) == 1:
-            result = {objectives[0]: result}
-        return result
+        return self._normalize_result_payload(result, objectives)
 
     # ---------------------------------------------------------------------------
     #                          RUNNING EXPERIMENT
@@ -212,6 +238,7 @@ class ExperimentRunner(
                     objectives,
                     directions,
                 )
+            result = self._normalize_result_payload(result, objectives)
 
         if self.use_autosampler:
             self.autosampler.clean_before_collect(self.tray_pos_waste)
@@ -230,7 +257,7 @@ class ExperimentRunner(
             self.protocol_cleanup_fn(self, parameters)
         else:
             self.process_adapter.cleanup(self, parameters)
-        return result
+        return self._normalize_result_payload(result, objectives)
 
     # ---------------------------------------------------------------------------
     #                          SAVING FUNCTIONS

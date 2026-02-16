@@ -2,9 +2,33 @@
 import sqlite3
 import json
 import pandas as pd
+import numpy as np
 from datetime import datetime
 
 DB_NAME = "experiments.db"
+
+
+def _to_jsonable(value):
+    if isinstance(value, pd.Series):
+        return {str(k): _to_jsonable(v) for k, v in value.to_dict().items()}
+    if isinstance(value, pd.DataFrame):
+        return [{str(k): _to_jsonable(v) for k, v in row.items()} for row in value.to_dict(orient="records")]
+    if isinstance(value, pd.Timestamp):
+        return value.isoformat()
+    if isinstance(value, dict):
+        return {str(k): _to_jsonable(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_to_jsonable(v) for v in value]
+    if isinstance(value, np.ndarray):
+        return [_to_jsonable(v) for v in value.tolist()]
+    if isinstance(value, np.generic):
+        return value.item()
+    if hasattr(value, "value"):
+        try:
+            return value.value
+        except Exception:
+            pass
+    return value
 
 def init_db():
     conn = sqlite3.connect(DB_NAME)
@@ -32,7 +56,7 @@ def save_experiment(name, notes, variables, df_results, best_result, settings):
 
     # Serialize best_result as JSON (works for both dict and list)
     if best_result is not None:
-        best_result_json = json.dumps(best_result)
+        best_result_json = json.dumps(_to_jsonable(best_result))
     else:
         best_result_json = None
 
@@ -45,10 +69,10 @@ def save_experiment(name, notes, variables, df_results, best_result, settings):
         name,
         timestamp,
         notes,
-        json.dumps(variables),
+        json.dumps(_to_jsonable(variables)),
         df_results.to_json(orient="records"),
         best_result_json,
-        json.dumps(settings)
+        json.dumps(_to_jsonable(settings))
     ))
 
     conn.commit()

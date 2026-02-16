@@ -1160,8 +1160,9 @@ if st.session_state.get("optimization_running", False):
         df_results = pd.DataFrame(experiment_data)
         st.success("✅ Optimization Complete!")
         best_row = df_results.loc[df_results["Measurement"].idxmax()]
+        best_row_payload = {str(k): _json_compatible(v) for k, v in best_row.to_dict().items()}
         st.markdown("### 🥇 Best Result")
-        st.write(best_row)
+        st.json(best_row_payload)
 
         export_to_csv(df_results, f"{run_name}_final_results.csv")
 
@@ -1185,7 +1186,7 @@ if st.session_state.get("optimization_running", False):
             notes=experiment_notes,
             variables=st.session_state.variables,
             df_results=df_results,
-            best_result=best_row,
+            best_result=best_row_payload,
             settings=optimization_settings
         )
 
