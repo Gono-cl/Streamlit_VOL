@@ -20,6 +20,7 @@ class ReplicatePattern(str, Enum):
 
     IMMEDIATE = "immediate"
     BRACKETED = "bracketed"
+    CYCLIC = "cyclic"
     SENTINEL = "sentinel"
 
 
@@ -153,7 +154,7 @@ class ReproducibilityEngine:
         phase: str = "baseline",
     ) -> list[RunRecord]:
         """
-        Execute reproducibility schedule with immediate, bracketed, and optional sentinel runs.
+        Execute reproducibility schedule with immediate, bracketed, cyclic, and optional sentinel runs.
         """
         points = self._coerce_points(test_points, prefix="test")
         norm_patterns = self._normalize_patterns(patterns)
@@ -207,11 +208,24 @@ class ReproducibilityEngine:
 
         immediate_pairs = self._extract_immediate_pairs(run_records)
         bracketed_groups = self._extract_bracketed_groups(run_records)
+        cyclic_groups = self._extract_cyclic_groups(run_records)
         sentinel_df = self._extract_sentinel(run_records)
 
         immediate_abs_devs = immediate_pairs["abs_deviation"].to_numpy(dtype=float) if not immediate_pairs.empty else np.array([])
         immediate_rsds = immediate_pairs["pair_rsd_pct"].to_numpy(dtype=float) if not immediate_pairs.empty else np.array([])
         immediate_diffs = immediate_pairs["diff"].to_numpy(dtype=float) if not immediate_pairs.empty else np.array([])
+        cyclic_abs_devs = cyclic_groups["abs_deviation_median"].to_numpy(dtype=float) if not cyclic_groups.empty else np.array([])
+        cyclic_rsds = cyclic_groups["group_rsd_pct"].to_numpy(dtype=float) if not cyclic_groups.empty else np.array([])
+        combined_abs_devs = (
+            np.concatenate([immediate_abs_devs, cyclic_abs_devs])
+            if immediate_abs_devs.size and cyclic_abs_devs.size
+            else (immediate_abs_devs if immediate_abs_devs.size else cyclic_abs_devs)
+        )
+        combined_rsds = (
+            np.concatenate([immediate_rsds, cyclic_rsds])
+            if immediate_rsds.size and cyclic_rsds.size
+            else (immediate_rsds if immediate_rsds.size else cyclic_rsds)
+        )
 
         if immediate_diffs.size >= 2:
             noise_sigma = float(np.std(immediate_diffs, ddof=1) / np.sqrt(2.0))
@@ -229,8 +243,8 @@ class ReproducibilityEngine:
         sentinel_slope_abs = abs(sentinel_slope) if np.isfinite(sentinel_slope) else float("nan")
 
         metrics = {
-            "immediate_rsd_pct": _median_or_nan(immediate_rsds),
-            "immediate_abs_deviation_median": _median_or_nan(immediate_abs_devs),
+            "immediate_rsd_pct": _median_or_nan(combined_rsds),
+            "immediate_abs_deviation_median": _median_or_nan(combined_abs_devs),
             "immediate_noise_sigma": noise_sigma,
             "immediate_averaged_sigma": averaged_sigma,
             "memory_abs_shift_median": _median_or_nan(memory_abs),
@@ -257,6 +271,7 @@ class ReproducibilityEngine:
                 "failed_runs": total - successful,
                 "immediate_pairs": int(len(immediate_pairs)),
                 "bracketed_groups": int(len(bracketed_groups)),
+                "cyclic_groups": int(len(cyclic_groups)),
                 "sentinel_runs": int(len(sentinel_df)),
             },
         }
@@ -434,6 +449,12 @@ class ReproducibilityEngine:
                     specs.append((a, ReplicatePattern.BRACKETED, group_id, "A_PRE"))
                     specs.append((b, ReplicatePattern.BRACKETED, group_id, "B"))
                     specs.append((a, ReplicatePattern.BRACKETED, group_id, "A_POST"))
+            elif pattern == ReplicatePattern.CYCLIC:
+                for cycle_idx in range(3):
+                    role = f"C{cycle_idx + 1}"
+                    for i, a in enumerate(points):
+                        group_id = f"{phase}_cyclic_{i:03d}_c{self.cleaning_level}"
+                        specs.append((a, ReplicatePattern.CYCLIC, group_id, role))
             elif pattern == ReplicatePattern.SENTINEL:
                 continue
             else:  # pragma: no cover - safety branch
@@ -562,6 +583,33 @@ class ReproducibilityEngine:
                     "a_post": a_post,
                     "shift": shift,
                     "abs_shift": abs(shift),
+                }
+            )
+        return pd.DataFrame(rows)
+
+    def _extract_cyclic_groups(self, records: Sequence[RunRecord]) -> pd.DataFrame:
+        grouped: dict[str, list[RunRecord]] = {}
+        for rec in records:
+            if rec.context.pattern != ReplicatePattern.CYCLIC or not rec.result.success:
+                continue
+            if not np.isfinite(rec.result.objective):
+                continue
+            grouped.setdefault(rec.context.group_id, []).append(rec)
+
+        rows: list[dict[str, float]] = []
+        for group_id, group in grouped.items():
+            group_sorted = sorted(group, key=lambda r: r.context.run_index)
+            if len(group_sorted) < 2:
+                continue
+            vals = np.asarray([float(rec.result.objective) for rec in group_sorted], dtype=float)
+            mean_val = float(np.mean(vals))
+            rows.append(
+                {
+                    "group_id": group_id,
+                    "n_reps": int(vals.size),
+                    "group_rsd_pct": compute_rsd(vals.tolist()),
+                    "abs_deviation_median": float(np.median(np.abs(vals - mean_val))),
+                    "range_abs": float(np.max(vals) - np.min(vals)),
                 }
             )
         return pd.DataFrame(rows)

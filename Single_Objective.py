@@ -38,8 +38,17 @@ from core.hardware.protocol_scripts import (
 from core.utils.logger import StreamlitLogger
 import sys
 
+# Prevent stale StreamlitLogger stdout from previous reruns.
+sys.stdout = sys.__stdout__
+
 SAVE_DIR = "resumable_runs"
 os.makedirs(SAVE_DIR, exist_ok=True)
+_SINGLE_DEFERRED_SESSION_UPDATES_KEY = "_single_deferred_session_updates"
+REPRO_PATTERN_LABELS = [
+    "Immediate (A->A)",
+    "Bracketed (A->B->A)",
+    "Cyclic (1->...->N)x3",
+]
 
 # --- Helpers ---
 def sanitize_filename(name: str) -> str:
@@ -68,6 +77,23 @@ def _json_compatible(value):
     if isinstance(value, np.generic):
         return value.item()
     return value
+
+
+def _queue_single_deferred_updates(**updates) -> None:
+    pending = st.session_state.get(_SINGLE_DEFERRED_SESSION_UPDATES_KEY, {})
+    if not isinstance(pending, dict):
+        pending = {}
+    for key, value in updates.items():
+        pending[str(key)] = value
+    st.session_state[_SINGLE_DEFERRED_SESSION_UPDATES_KEY] = pending
+
+
+def _apply_single_deferred_updates() -> None:
+    pending = st.session_state.pop(_SINGLE_DEFERRED_SESSION_UPDATES_KEY, None)
+    if not isinstance(pending, dict):
+        return
+    for key, value in pending.items():
+        st.session_state[key] = value
 
 
 def _single_repro_seed_rows(repro_engine, param_names):
@@ -107,6 +133,42 @@ def _single_repro_seed_rows(repro_engine, param_names):
             }
         )
     return rows
+
+
+def _estimate_repro_schedule_runs(point_count, patterns, sentinel_every_n_runs=None):
+    """Estimate number of executed runs for one reproducibility schedule call."""
+    n_points = max(0, int(point_count))
+    if n_points == 0:
+        return 0
+
+    base_runs = 0
+    for pattern in (patterns or [ReplicatePattern.IMMEDIATE]):
+        pattern_key = pattern.value if hasattr(pattern, "value") else str(pattern)
+        if pattern_key == ReplicatePattern.IMMEDIATE.value:
+            base_runs += 2 * n_points
+        elif pattern_key == ReplicatePattern.BRACKETED.value:
+            base_runs += 3 * n_points
+        elif pattern_key == ReplicatePattern.CYCLIC.value:
+            base_runs += 3 * n_points
+
+    if base_runs <= 0:
+        return 0
+
+    if sentinel_every_n_runs is None:
+        return base_runs
+
+    interval = int(sentinel_every_n_runs)
+    if interval <= 0:
+        return base_runs
+
+    run_index = 0
+    sentinel_runs = 0
+    for _ in range(base_runs):
+        if run_index > 0 and run_index % interval == 0:
+            sentinel_runs += 1
+            run_index += 1
+        run_index += 1
+    return base_runs + sentinel_runs
 
 
 def section_header(title: str, accent: str, background: str = "#f8fafc") -> None:
@@ -162,7 +224,6 @@ ui_mode_single = st.radio(
 is_advanced_single = ui_mode_single == "Advanced"
 if not is_advanced_single:
     st.caption("Quick mode: core setup + run controls only. Switch to Advanced for templates, reproducibility, and design tooling.")
-    st.session_state.single_repro_enabled = False
 
 # --- Session defaults ---
 if "simulation_mode" not in st.session_state:
@@ -204,7 +265,7 @@ if "single_repro_method" not in st.session_state:
 if "single_repro_n_points" not in st.session_state:
     st.session_state.single_repro_n_points = 8
 if "single_repro_patterns" not in st.session_state:
-    st.session_state.single_repro_patterns = ["Immediate (A->A)", "Bracketed (A->B->A)"]
+    st.session_state.single_repro_patterns = list(REPRO_PATTERN_LABELS[:2])
 if "single_repro_use_sentinel" not in st.session_state:
     st.session_state.single_repro_use_sentinel = True
 if "single_repro_sentinel_every" not in st.session_state:
@@ -217,6 +278,27 @@ if "single_repro_block_on_fail" not in st.session_state:
     st.session_state.single_repro_block_on_fail = True
 if "single_repro_report" not in st.session_state:
     st.session_state.single_repro_report = None
+if "single_bo_qc_enabled" not in st.session_state:
+    st.session_state.single_bo_qc_enabled = False
+if "single_bo_qc_every_n_runs" not in st.session_state:
+    st.session_state.single_bo_qc_every_n_runs = 5
+if "single_bo_qc_count" not in st.session_state:
+    st.session_state.single_bo_qc_count = 0
+if "single_bo_qc_history" not in st.session_state:
+    st.session_state.single_bo_qc_history = []
+
+# Apply deferred state updates before sidebar widgets are created.
+_apply_single_deferred_updates()
+
+# One-shot sync from Reproducibility Studio when navigating via its buttons.
+single_repro_from_studio = st.session_state.pop("_single_repro_from_studio", None)
+if isinstance(single_repro_from_studio, dict):
+    for _k, _v in single_repro_from_studio.items():
+        st.session_state[_k] = _v
+
+# Quick mode should not erase stored reproducibility settings.
+# Gate execution remains tied to the effective flag below.
+single_repro_gate_enabled = bool(st.session_state.get("single_repro_enabled", False)) and is_advanced_single
 
 # --- Sidebar Simulation Mode Selector ---
 sim_mode_label = {
@@ -307,15 +389,23 @@ if resume_file != "None" and st.sidebar.button("Load Previous Run"):
     st.session_state.process_adapter = metadata.get("process_adapter", st.session_state.get("process_adapter", DEFAULT_PROCESS_ADAPTER))
     st.session_state.process_adapter_config = metadata.get("process_adapter_config", st.session_state.get("process_adapter_config", {}))
     st.session_state.running_protocol_script = metadata.get("running_protocol_script", st.session_state.get("running_protocol_script"))
-    st.session_state.measurement_source_prefix = metadata.get(
+    loaded_measurement_prefix = metadata.get(
         "measurement_source_prefix",
         st.session_state.get("measurement_source_prefix", "OpusOPCSvr.HP-CZC3484P17->"),
     )
-    st.session_state.measurement_source_signal = metadata.get(
+    loaded_measurement_signal = metadata.get(
         "measurement_source_signal",
         st.session_state.get("measurement_source_signal", "PDA - mM"),
     )
+    _queue_single_deferred_updates(
+        measurement_source_prefix=loaded_measurement_prefix,
+        measurement_source_signal=loaded_measurement_signal,
+    )
     st.session_state.single_repro_report = metadata.get("reproducibility")
+    st.session_state.single_bo_qc_enabled = bool(metadata.get("bo_qc_sentinel_enabled", st.session_state.get("single_bo_qc_enabled", False)))
+    st.session_state.single_bo_qc_every_n_runs = int(metadata.get("bo_qc_sentinel_every_n_runs", st.session_state.get("single_bo_qc_every_n_runs", 5)))
+    st.session_state.single_bo_qc_count = int(metadata.get("bo_qc_sentinel_count", st.session_state.get("single_bo_qc_count", 0)))
+    st.session_state.single_bo_qc_history = list(metadata.get("bo_qc_sentinel_history", st.session_state.get("single_bo_qc_history", [])))
     st.session_state.runner = ExperimentRunner(
         OPCClient(metadata["opc_url"]),
         "experiment_log.csv",
@@ -325,8 +415,8 @@ if resume_file != "None" and st.sidebar.button("Load Previous Run"):
         process_adapter=st.session_state.process_adapter,
         adapter_config=st.session_state.process_adapter_config,
         running_protocol_script=st.session_state.get("running_protocol_script"),
-        measurement_source_prefix=st.session_state.get("measurement_source_prefix"),
-        measurement_source_signal=st.session_state.get("measurement_source_signal"),
+        measurement_source_prefix=loaded_measurement_prefix,
+        measurement_source_signal=loaded_measurement_signal,
     )
     st.session_state.optimization_running = True
     st.session_state.run_name = resume_file
@@ -339,6 +429,7 @@ if resume_file != "None" and st.sidebar.button("Load Previous Run"):
         st.info(f"📋 Loaded pending parameters for experiment {len(df) + 1}")
     else:
         st.session_state.pending_next_params = None
+    st.rerun()
 
 # --- Experiment Metadata ---
 themed_section_header("metadata", "Experiment Metadata")
@@ -431,18 +522,31 @@ if is_advanced_single:
     themed_section_header("repro", "Reproducibility")
     st.checkbox("Enable reproducibility gate before optimization start", key="single_repro_enabled")
     if st.session_state.get("single_repro_enabled", False):
+        _single_pattern_labels = set(st.session_state.get("single_repro_patterns", []))
+        _single_patterns: list[ReplicatePattern] = []
+        if "Immediate (A->A)" in _single_pattern_labels or ReplicatePattern.IMMEDIATE.value in _single_pattern_labels:
+            _single_patterns.append(ReplicatePattern.IMMEDIATE)
+        if "Bracketed (A->B->A)" in _single_pattern_labels or ReplicatePattern.BRACKETED.value in _single_pattern_labels:
+            _single_patterns.append(ReplicatePattern.BRACKETED)
+        if "Cyclic (1->...->N)x3" in _single_pattern_labels or ReplicatePattern.CYCLIC.value in _single_pattern_labels:
+            _single_patterns.append(ReplicatePattern.CYCLIC)
+        _single_use_sentinel = bool(st.session_state.get("single_repro_use_sentinel", True))
+        _single_estimated_runs = _estimate_repro_schedule_runs(
+            point_count=int(st.session_state.get("single_repro_n_points", 8)),
+            patterns=_single_patterns or [ReplicatePattern.IMMEDIATE],
+            sentinel_every_n_runs=int(st.session_state.get("single_repro_sentinel_every", 5)) if _single_use_sentinel else None,
+        )
         st.caption(
             "Configured in Reproducibility Studio: "
             f"{st.session_state.get('single_repro_method', 'LHS')}, "
             f"{int(st.session_state.get('single_repro_n_points', 8))} points, "
             f"patterns={len(st.session_state.get('single_repro_patterns', []))}, "
-            f"sentinel={'on' if st.session_state.get('single_repro_use_sentinel', True) else 'off'}."
+            f"sentinel={'on' if _single_use_sentinel else 'off'}, "
+            f"estimated startup reproducibility runs={_single_estimated_runs}."
         )
-    col_repro_1, col_repro_2 = st.columns([1, 1])
-    if col_repro_1.button("Open Reproducibility Studio", key="single_open_repro_page"):
-        st.session_state.selected_page = "🧬 Reproducibility Studio"
+    if st.button("Open Reproducibility Studio", key="single_open_repro_page"):
+        st.session_state.selected_page = "reproducibility"
         st.rerun()
-    col_repro_2.caption("Detailed reproducibility settings moved to a dedicated page.")
 else:
     st.caption("Reproducibility controls are hidden in Quick mode. Switch to Advanced to view status.")
 if is_advanced_single:
@@ -478,12 +582,18 @@ if is_advanced_single:
                     if loaded_init in INIT_STRATEGY_OPTIONS:
                         st.session_state.init_strategy = loaded_init
                     st.session_state.random_seed = int(optimization.get("random_seed", st.session_state.get("random_seed", 42)))
+                    st.session_state.single_bo_qc_enabled = bool(
+                        optimization.get("bo_qc_sentinel_enabled", st.session_state.get("single_bo_qc_enabled", False))
+                    )
+                    st.session_state.single_bo_qc_every_n_runs = int(
+                        optimization.get("bo_qc_sentinel_every_n_runs", st.session_state.get("single_bo_qc_every_n_runs", 5))
+                    )
                     repro_cfg = optimization.get("reproducibility", {})
                     if isinstance(repro_cfg, dict):
                         st.session_state.single_repro_enabled = bool(repro_cfg.get("enabled", st.session_state.get("single_repro_enabled", False)))
                         st.session_state.single_repro_method = str(repro_cfg.get("method", st.session_state.get("single_repro_method", "LHS")))
                         st.session_state.single_repro_n_points = int(repro_cfg.get("n_points", st.session_state.get("single_repro_n_points", 8)))
-                        st.session_state.single_repro_patterns = list(repro_cfg.get("patterns", st.session_state.get("single_repro_patterns", ["Immediate (A->A)", "Bracketed (A->B->A)"])))
+                        st.session_state.single_repro_patterns = list(repro_cfg.get("patterns", st.session_state.get("single_repro_patterns", list(REPRO_PATTERN_LABELS[:2]))))
                         st.session_state.single_repro_use_sentinel = bool(repro_cfg.get("use_sentinel", st.session_state.get("single_repro_use_sentinel", True)))
                         st.session_state.single_repro_sentinel_every = int(repro_cfg.get("sentinel_every_n_runs", st.session_state.get("single_repro_sentinel_every", 5)))
                         st.session_state.single_repro_escalate_cleaning = bool(repro_cfg.get("escalate_cleaning", st.session_state.get("single_repro_escalate_cleaning", True)))
@@ -510,13 +620,15 @@ if is_advanced_single:
                         st.session_state.process_adapter = hardware.get("process_adapter", st.session_state.get("process_adapter", DEFAULT_PROCESS_ADAPTER))
                         st.session_state.process_adapter_config = hardware.get("process_adapter_config", st.session_state.get("process_adapter_config", {}))
                         st.session_state.running_protocol_script = hardware.get("running_protocol_script", st.session_state.get("running_protocol_script"))
-                        st.session_state.measurement_source_prefix = hardware.get(
+                        _queue_single_deferred_updates(
+                            measurement_source_prefix=hardware.get(
                             "measurement_source_prefix",
                             st.session_state.get("measurement_source_prefix", "OpusOPCSvr.HP-CZC3484P17->"),
-                        )
-                        st.session_state.measurement_source_signal = hardware.get(
+                            ),
+                            measurement_source_signal=hardware.get(
                             "measurement_source_signal",
                             st.session_state.get("measurement_source_signal", "PDA - mM"),
+                            ),
                         )
                     st.success(f"Loaded template: {selected_template}")
                     st.rerun()
@@ -538,11 +650,13 @@ if is_advanced_single:
                     "acq_func": acq_func,
                     "init_strategy": init_strategy,
                     "random_seed": int(random_seed),
+                    "bo_qc_sentinel_enabled": bool(st.session_state.get("single_bo_qc_enabled", False)),
+                    "bo_qc_sentinel_every_n_runs": int(st.session_state.get("single_bo_qc_every_n_runs", 5)),
                     "reproducibility": {
                         "enabled": bool(st.session_state.get("single_repro_enabled", False)),
                         "method": st.session_state.get("single_repro_method", "LHS"),
                         "n_points": int(st.session_state.get("single_repro_n_points", 8)),
-                        "patterns": list(st.session_state.get("single_repro_patterns", ["Immediate (A->A)", "Bracketed (A->B->A)"])),
+                        "patterns": list(st.session_state.get("single_repro_patterns", list(REPRO_PATTERN_LABELS[:2]))),
                         "use_sentinel": bool(st.session_state.get("single_repro_use_sentinel", True)),
                         "sentinel_every_n_runs": int(st.session_state.get("single_repro_sentinel_every", 5)),
                         "escalate_cleaning": bool(st.session_state.get("single_repro_escalate_cleaning", True)),
@@ -763,8 +877,26 @@ if is_advanced_single:
 else:
     reuse_runs = []
     st.caption("Templates, reuse, and initial-design preview are hidden in Quick mode.")
+
 # --- Run & Stop Buttons ---
 themed_section_header("run", "Run Control")
+# Sentinel QC controls are available in both Quick and Advanced modes.
+st.markdown(
+    "Would you like to use sentinel as a QC during optimization? "
+    "This is an experiment that will be repeated every N optimization experiments."
+)
+qc_col1, qc_col2 = st.columns([2, 1])
+qc_col1.checkbox("Use sentinel QC during optimization", key="single_bo_qc_enabled")
+qc_col2.number_input(
+    "Repeat every N experiments",
+    min_value=1,
+    max_value=1000,
+    step=1,
+    key="single_bo_qc_every_n_runs",
+    disabled=not bool(st.session_state.get("single_bo_qc_enabled", False)),
+)
+st.caption("QC sentinel runs are extra checks. They do not update the optimizer and do not count toward total iterations.")
+
 col_start, col_stop = st.columns(2)
 if col_start.button("▶ Start Optimization"):
     run_path = os.path.join(SAVE_DIR, experiment_name)
@@ -805,9 +937,11 @@ if col_start.button("▶ Start Optimization"):
     )
     st.session_state.optimization_running = True
     st.session_state.single_repro_report = None
+    st.session_state.single_bo_qc_count = 0
+    st.session_state.single_bo_qc_history = []
     repro_seed_rows = []
 
-    if st.session_state.get("single_repro_enabled", False):
+    if single_repro_gate_enabled:
         bounds_by_name = {name: (float(low), float(high)) for name, low, high, _ in st.session_state.variables}
         method_name = "lhs" if st.session_state.get("single_repro_method", "LHS") == "LHS" else "corners_center"
         test_points = build_initialization_points(
@@ -822,24 +956,107 @@ if col_start.button("▶ Start Optimization"):
 
         selected_patterns: list[ReplicatePattern] = []
         selected_pattern_labels = set(st.session_state.get("single_repro_patterns", []))
-        if "Immediate (A->A)" in selected_pattern_labels:
+        if "Immediate (A->A)" in selected_pattern_labels or ReplicatePattern.IMMEDIATE.value in selected_pattern_labels:
             selected_patterns.append(ReplicatePattern.IMMEDIATE)
-        if "Bracketed (A->B->A)" in selected_pattern_labels:
+        if "Bracketed (A->B->A)" in selected_pattern_labels or ReplicatePattern.BRACKETED.value in selected_pattern_labels:
             selected_patterns.append(ReplicatePattern.BRACKETED)
+        if "Cyclic (1->...->N)x3" in selected_pattern_labels or ReplicatePattern.CYCLIC.value in selected_pattern_labels:
+            selected_patterns.append(ReplicatePattern.CYCLIC)
 
         if selected_patterns or sentinel_point is not None:
+            patterns_to_run = selected_patterns or [ReplicatePattern.IMMEDIATE]
+            sentinel_every = int(st.session_state.get("single_repro_sentinel_every", 5)) if sentinel_point else None
+            startup_expected_runs = _estimate_repro_schedule_runs(
+                point_count=len(test_points),
+                patterns=patterns_to_run,
+                sentinel_every_n_runs=sentinel_every,
+            )
+            retest_points = test_points[: min(3, len(test_points))]
+            retest_expected_runs = _estimate_repro_schedule_runs(
+                point_count=len(retest_points),
+                patterns=patterns_to_run,
+                sentinel_every_n_runs=sentinel_every,
+            )
+
+            st.markdown("#### Reproducibility Gate Monitor")
+            repro_monitor_status = st.empty()
+            repro_monitor_progress = st.progress(0.0)
+            repro_monitor_table = st.empty()
+            repro_runtime = {
+                "done": 0,
+                "planned": max(1, int(startup_expected_runs)),
+                "phase": "startup",
+            }
+            repro_rows = []
+            repro_inter_run_delay_s = 1.0
+
+            def _refresh_repro_monitor(note: str = "") -> None:
+                done = int(repro_runtime["done"])
+                planned = max(int(repro_runtime["planned"]), 1)
+                ratio = min(done / planned, 1.0)
+                phase = str(repro_runtime.get("phase", "startup"))
+                suffix = f" | {note}" if note else ""
+                repro_monitor_status.info(f"Reproducibility phase: `{phase}` | run `{done}` / `{planned}`{suffix}")
+                repro_monitor_progress.progress(ratio)
+                if repro_rows:
+                    repro_monitor_table.dataframe(pd.DataFrame(repro_rows[-30:]), use_container_width=True)
+
+            _refresh_repro_monitor("Preparing schedule")
+
             def _repro_single_runner(point: dict, metadata: dict) -> dict:
-                return st.session_state.runner.run_experiment(
-                    point,
-                    objectives=[response_to_optimize],
-                )
+                repro_runtime["done"] += 1
+                run_no = int(repro_runtime["done"])
+                planned = max(int(repro_runtime["planned"]), run_no)
+                phase = str(metadata.get("phase", repro_runtime.get("phase", "startup")))
+                pattern = str(metadata.get("pattern", ""))
+                role = str(metadata.get("replicate_role", ""))
+                repro_runtime["phase"] = phase
+                param_row = {str(k): float(v) for k, v in dict(point).items()}
+                row = {
+                    "Run": run_no,
+                    "Phase": phase,
+                    "Pattern": pattern,
+                    "Role": role,
+                    "Status": "Running",
+                    "Objective": np.nan,
+                    **param_row,
+                }
+                repro_rows.append(row)
+                _refresh_repro_monitor(f"Running {pattern} {role}".strip())
+                if run_no > 1 and repro_inter_run_delay_s > 0:
+                    time.sleep(repro_inter_run_delay_s)
+
+                try:
+                    result = st.session_state.runner.run_experiment(
+                        point,
+                        experiment_number=run_no,
+                        total_iterations=planned,
+                        objectives=[response_to_optimize],
+                    )
+                    objective_value = np.nan
+                    if isinstance(result, dict):
+                        raw = result.get(response_to_optimize)
+                        if raw is None and result:
+                            raw = next(iter(result.values()))
+                        try:
+                            objective_value = float(raw)
+                        except Exception:
+                            objective_value = np.nan
+                    row["Status"] = "Done"
+                    row["Objective"] = objective_value
+                    _refresh_repro_monitor(f"Completed {pattern} {role}".strip())
+                    return result
+                except Exception as exc:
+                    row["Status"] = f"Failed: {exc}"
+                    _refresh_repro_monitor(f"Failed {pattern} {role}".strip())
+                    raise
 
             repro_engine = ReproducibilityEngine(_repro_single_runner, objective_key=response_to_optimize)
             repro_engine.schedule_with_reproducibility(
                 test_points=test_points,
-                patterns=selected_patterns or [ReplicatePattern.IMMEDIATE],
+                patterns=patterns_to_run,
                 sentinel_point=sentinel_point,
-                sentinel_every_n_runs=int(st.session_state.get("single_repro_sentinel_every", 5)) if sentinel_point else None,
+                sentinel_every_n_runs=sentinel_every,
                 base_metadata={
                     "workflow": "single_objective",
                     "experiment_name": experiment_name,
@@ -854,15 +1071,19 @@ if col_start.button("▶ Start Optimization"):
                 )
                 if needs_escalation:
                     def _cleaning_callback(_cleaning_level: int) -> None:
+                        repro_runtime["phase"] = f"cleaning_{_cleaning_level}"
+                        if retest_expected_runs > 0:
+                            repro_runtime["planned"] = int(repro_runtime["planned"]) + int(retest_expected_runs)
+                        _refresh_repro_monitor(f"Escalating cleaning to level {_cleaning_level}")
                         cleaner = getattr(st.session_state.runner, "cleaning_electrochemical_cell", None)
                         if callable(cleaner):
                             cleaner()
 
                     escalation = repro_engine.escalate_cleaning_and_retest(
-                        selected_points=test_points[: min(3, len(test_points))],
+                        selected_points=retest_points,
                         sentinel_point=sentinel_point,
-                        sentinel_every_n_runs=int(st.session_state.get("single_repro_sentinel_every", 5)) if sentinel_point else None,
-                        patterns=selected_patterns or [ReplicatePattern.IMMEDIATE],
+                        sentinel_every_n_runs=sentinel_every,
+                        patterns=patterns_to_run,
                         max_cleaning_level=int(st.session_state.get("single_repro_max_cleaning", 2)),
                         base_metadata={
                             "workflow": "single_objective",
@@ -872,6 +1093,10 @@ if col_start.button("▶ Start Optimization"):
                     )
                     repro_report = escalation.get("final_analysis", repro_report)
                     repro_report["escalation"] = escalation
+
+            repro_runtime["planned"] = max(int(repro_runtime["planned"]), int(repro_runtime["done"]))
+            _refresh_repro_monitor("Completed")
+            repro_monitor_progress.progress(1.0)
 
             repro_log_path = os.path.join(run_path, "reproducibility_log.csv")
             repro_report_path = os.path.join(run_path, "reproducibility_report.json")
@@ -1050,10 +1275,50 @@ if st.session_state.get("optimization_running", False):
     response_to_optimize = st.session_state.response_to_optimize
     run_name = st.session_state.run_name
     run_path = os.path.join(SAVE_DIR, run_name)
+    bo_qc_enabled = bool(st.session_state.get("single_bo_qc_enabled", False))
+    bo_qc_every_n_runs = max(1, int(st.session_state.get("single_bo_qc_every_n_runs", 5)))
+    bo_qc_count = int(st.session_state.get("single_bo_qc_count", 0))
+    planned_qc_runs = (total_iterations // bo_qc_every_n_runs) if bo_qc_enabled else 0
+    planned_total_live_runs = int(total_iterations + planned_qc_runs)
+    qc_history = list(st.session_state.get("single_bo_qc_history", []))
+    bo_qc_point = {
+        name: float((float(low) + float(high)) / 2.0)
+        for name, low, high, _ in st.session_state.variables
+    }
 
     results_chart = st.empty()
     scatter_rows = [st.columns(2) for _ in range((len(st.session_state.variables) + 1) // 2)]
     scatter_placeholders = [col.empty() for row in scatter_rows for col in row][:len(st.session_state.variables)]
+    if bo_qc_enabled:
+        st.markdown("### QC Sentinel Trend")
+    qc_chart_placeholder = st.empty()
+
+    def _render_single_qc_chart() -> None:
+        if not bo_qc_enabled:
+            return
+        if not qc_history:
+            qc_chart_placeholder.info("QC sentinel chart will appear after the first sentinel run.")
+            return
+        df_qc = pd.DataFrame(qc_history)
+        if df_qc.empty or "value" not in df_qc.columns:
+            qc_chart_placeholder.info("No QC sentinel values available yet.")
+            return
+        df_plot = df_qc[pd.to_numeric(df_qc["value"], errors="coerce").notna()].copy()
+        if df_plot.empty:
+            qc_chart_placeholder.info("QC sentinel values are not available yet.")
+            return
+        y_vals = df_plot["value"].astype(float)
+        y_min = float(y_vals.min())
+        y_max = float(y_vals.max())
+        margin = (y_max - y_min) * 0.05 if y_max > y_min else 1.0
+        qc_chart = alt.Chart(df_plot).mark_line(point=True).encode(
+            x=alt.X("qc_run:Q", title="QC run"),
+            y=alt.Y("value:Q", title=f"Sentinel {response_to_optimize}", scale=alt.Scale(domain=[y_min - margin, y_max + margin])),
+            tooltip=["qc_run:Q", "after_experiment:Q", "timestamp:N", "value:Q", "status:N"],
+        ).properties(height=250)
+        qc_chart_placeholder.altair_chart(qc_chart, use_container_width=True)
+
+    _render_single_qc_chart()
 
     while iteration < total_iterations and st.session_state.optimization_running:
         # Check if we have pending parameters from a previous resume
@@ -1067,7 +1332,21 @@ if st.session_state.get("optimization_running", False):
             x = optimizer.suggest()
         
         params = {name: val for (name, *_), val in zip(st.session_state.variables, x)}
-        result = runner.run_experiment(params, experiment_number=iteration + 1, total_iterations=total_iterations, objectives=[response_to_optimize])
+        run_serial = int(iteration + 1 + bo_qc_count)
+        try:
+            result = runner.run_experiment(
+                params,
+                experiment_number=run_serial,
+                total_iterations=total_iterations,
+                objectives=[response_to_optimize],
+                status_title=f"Optimization Experiment {iteration + 1} of {total_iterations}",
+                status_note=f"Live run {run_serial} of ~{planned_total_live_runs} (includes QC runs).",
+            )
+        except Exception as exc:
+            st.session_state.optimization_running = False
+            st.error(f"Optimization run failed at iteration {iteration + 1}.")
+            st.exception(exc)
+            break
         y = -result[response_to_optimize]
         optimizer.observe(x, y)
 
@@ -1104,6 +1383,10 @@ if st.session_state.get("optimization_running", False):
             "reused_runs": reuse_runs,
             "reused_count": st.session_state.get("reused_count", 0),
             "reproducibility": st.session_state.get("single_repro_report"),
+            "bo_qc_sentinel_enabled": bool(bo_qc_enabled),
+            "bo_qc_sentinel_every_n_runs": int(bo_qc_every_n_runs),
+            "bo_qc_sentinel_count": int(bo_qc_count),
+            "bo_qc_sentinel_history": list(qc_history),
         }
         with open(os.path.join(run_path, "metadata.json"), "w") as f:
             json.dump(metadata, f, indent=4)
@@ -1154,6 +1437,58 @@ if st.session_state.get("optimization_running", False):
         iteration += 1
         st.session_state.iteration = iteration
         st.session_state.experiment_data = experiment_data
+
+        if bo_qc_enabled and iteration > 0 and iteration % bo_qc_every_n_runs == 0 and st.session_state.optimization_running:
+            qc_serial = int(iteration + 1 + bo_qc_count)
+            try:
+                qc_result = runner.run_experiment(
+                    bo_qc_point,
+                    experiment_number=qc_serial,
+                    total_iterations=total_iterations,
+                    objectives=[response_to_optimize],
+                    status_title=f"QC Sentinel {bo_qc_count + 1} (after optimization experiment {iteration})",
+                    status_note=f"Live run {qc_serial} of ~{planned_total_live_runs}. This QC run does not update the optimizer.",
+                )
+                qc_value = np.nan
+                if isinstance(qc_result, dict):
+                    raw_qc = qc_result.get(response_to_optimize)
+                    if raw_qc is None and qc_result:
+                        raw_qc = next(iter(qc_result.values()))
+                    try:
+                        qc_value = float(raw_qc)
+                    except Exception:
+                        qc_value = np.nan
+                qc_history.append(
+                    {
+                        "qc_run": int(bo_qc_count + 1),
+                        "after_experiment": int(iteration),
+                        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        "value": qc_value,
+                        "status": "Done",
+                    }
+                )
+                bo_qc_count += 1
+                st.session_state.single_bo_qc_count = bo_qc_count
+                st.session_state.single_bo_qc_history = list(qc_history)
+            except Exception as exc:
+                qc_history.append(
+                    {
+                        "qc_run": int(bo_qc_count + 1),
+                        "after_experiment": int(iteration),
+                        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        "value": np.nan,
+                        "status": f"Failed: {exc}",
+                    }
+                )
+                st.session_state.single_bo_qc_history = list(qc_history)
+                st.warning(f"QC sentinel run failed after experiment {iteration}: {exc}")
+
+        metadata["bo_qc_sentinel_count"] = int(bo_qc_count)
+        metadata["bo_qc_sentinel_history"] = list(qc_history)
+        with open(os.path.join(run_path, "metadata.json"), "w") as f:
+            json.dump(metadata, f, indent=4)
+        _render_single_qc_chart()
+
         time.sleep(1)
 
     if experiment_data and iteration == total_iterations:
@@ -1179,6 +1514,9 @@ if st.session_state.get("optimization_running", False):
             "measurement_source_prefix": st.session_state.get("measurement_source_prefix", "OpusOPCSvr.HP-CZC3484P17->"),
             "measurement_source_signal": st.session_state.get("measurement_source_signal", "PDA - mM"),
             "reproducibility": st.session_state.get("single_repro_report"),
+            "bo_qc_sentinel_enabled": bool(st.session_state.get("single_bo_qc_enabled", False)),
+            "bo_qc_sentinel_every_n_runs": int(st.session_state.get("single_bo_qc_every_n_runs", 5)),
+            "bo_qc_sentinel_count": int(st.session_state.get("single_bo_qc_count", 0)),
         }
 
         db_handler.save_experiment(
@@ -1191,6 +1529,9 @@ if st.session_state.get("optimization_running", False):
         )
 
         st.session_state.optimization_running = False
+
+    # Restore default stdout after optimization section.
+    sys.stdout = sys.__stdout__
 
 
 

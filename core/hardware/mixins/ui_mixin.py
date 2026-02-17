@@ -17,16 +17,31 @@ class UIMixin:
             self.countdown_placeholder.markdown(countdown_html, unsafe_allow_html=True)
             time.sleep(1)
 
-    def display_experiment_info(self, experiment_number, total_iterations, parameters):
+    def display_experiment_info(
+        self,
+        experiment_number,
+        total_iterations,
+        parameters,
+        status_title=None,
+        status_note=None,
+    ):
         elapsed = time.time() - self.start_time if self.start_time else 0
         mins, secs = divmod(int(elapsed), 60)
 
         self.timer_placeholder.markdown(f"Total Time Running: {mins:02d}:{secs:02d}")
 
+        if status_title:
+            title_text = str(status_title)
+        else:
+            title_text = f"Experiment {experiment_number} of {total_iterations}"
+
+        note_html = f"<p style='margin:5px 0 10px 0;'>{status_note}</p>" if status_note else ""
+
         html = f"""
         <div style='background-color:#eef6fb; padding: 10px; border-left: 5px solid #2c91c6;'>
-            <h4 style='margin:0;'>Experiment {experiment_number} of {total_iterations}</h4>
+            <h4 style='margin:0;'>{title_text}</h4>
             <p style='margin:5px 0 10px 0;'>Elapsed Time: {mins:02d}:{secs:02d}</p>
+            {note_html}
             <ul style='padding-left: 20px;'>
         """
         for key, val in parameters.items():

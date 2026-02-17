@@ -69,8 +69,8 @@ def decide(metrics: Mapping[str, float], thresholds: Mapping[str, float] | None 
     """
     th = merged_thresholds(thresholds)
     rules = [
-        ("immediate_rsd_pct", "Immediate replicate RSD (%)", "rsd_pass_pct", "rsd_conditional_pct"),
-        ("immediate_abs_deviation_median", "Immediate abs deviation", "abs_dev_pass", "abs_dev_conditional"),
+        ("immediate_rsd_pct", "Replicate RSD (%)", "rsd_pass_pct", "rsd_conditional_pct"),
+        ("immediate_abs_deviation_median", "Replicate abs deviation", "abs_dev_pass", "abs_dev_conditional"),
         ("sentinel_drift_slope_abs", "Sentinel drift slope abs", "drift_pass_slope", "drift_conditional_slope"),
         ("memory_abs_shift_median", "Bracketed memory abs shift", "memory_pass_abs_shift", "memory_conditional_abs_shift"),
     ]

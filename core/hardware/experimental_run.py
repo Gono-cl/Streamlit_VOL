@@ -205,10 +205,33 @@ class ExperimentRunner(
     # ---------------------------------------------------------------------------
     #                          RUNNING EXPERIMENT
     # ---------------------------------------------------------------------------
-    def run_experiment(self, parameters, experiment_number=None, total_iterations=None, objectives=None, directions=None):
-        if experiment_number is not None and total_iterations is not None:
-            print(f"Running Experiment {experiment_number} of {total_iterations}")
-            self.display_experiment_info(experiment_number, total_iterations, parameters)
+    def run_experiment(
+        self,
+        parameters,
+        experiment_number=None,
+        total_iterations=None,
+        objectives=None,
+        directions=None,
+        status_title=None,
+        status_note=None,
+    ):
+        should_display = status_title is not None or (
+            experiment_number is not None and total_iterations is not None
+        )
+        if should_display:
+            if status_title is not None:
+                print(f"Running {status_title}")
+                if status_note:
+                    print(status_note)
+            else:
+                print(f"Running Experiment {experiment_number} of {total_iterations}")
+            self.display_experiment_info(
+                experiment_number,
+                total_iterations,
+                parameters,
+                status_title=status_title,
+                status_note=status_note,
+            )
 
         if self.simulation_mode in ["off", "hybrid"]:
             if self.protocol_prepare_fn:
