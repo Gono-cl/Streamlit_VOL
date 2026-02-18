@@ -77,12 +77,13 @@ def _compute_operating_point(parameters):
     total_current_mA = current_density_mA_cm2 * ELECTRODE_AREA_CM2
     total_current_A = total_current_mA / 1000.0
 
-    # User-provided commissioning equation (returns mL/min with substrate concentration in mM).
+    # Total flow in mL/min with substrate concentration in mM.
+    # Q[mL/min] = I[A] / (F * charge[F/mol]) * 60[s/min] * 1e6 / C[mM]
     total_flow_ml_min = (
         (total_current_mA / 1000.0 / FARADAY_CONSTANT / applied_charge)
         * 60.0
         / substrate_target_mM
-        * 10e6
+        * 1e6
     )
 
     flow_pump4_ml_min = (substrate_target_mM / STOCK_SUBSTRATE_CONCENTRATION_MM) * total_flow_ml_min

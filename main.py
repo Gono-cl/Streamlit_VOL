@@ -62,15 +62,15 @@ st.sidebar.write(f"Email: {st.user.email}")
 
 # ===== Define app pages =====
 PAGES = {
-    "Home": "Home.py",
-    "Autonomous Single Objective Optimization": "Single_Objective.py",
-    "Autonomous Multi-Objective Optimization": "Multi_Objective.py",
-    "DOE Executor (External Matrix)": "DoE_Executor.py",
-    "Reproducibility Studio": "Reproducibility.py",
-    "Running Protocol Library": "Running_Protocols.py",
-    "Data Analysis & Visualization": "Data_Analysis.py",
-    "Preview Saved Run": "preview_run.py",
-    "Experiment DataBase": "experiment_database.py",
+    "\U0001F3E0 Home": "Home.py",
+    "\U0001F9EA Autonomous Single Objective Optimization": "Single_Objective.py",
+    "\U0001F9EA Autonomous Multi-Objective Optimization": "Multi_Objective.py",
+    "\U0001F9EE DOE Executor (External Matrix)": "DoE_Executor.py",
+    "\U0001F9EC Reproducibility Studio": "Reproducibility.py",
+    "\U0001F4DA Running Protocol Library": "Running_Protocols.py",
+    "\U0001F4CA Data Analysis & Visualization": "Data_Analysis.py",
+    "\U0001F441 Preview Saved Run": "preview_run.py",
+    "\U0001F5C4 Experiment DataBase": "experiment_database.py",
 }
 
 PAGE_ALIASES = {
@@ -83,6 +83,17 @@ PAGE_ALIASES = {
     "data_analysis": "Data_Analysis.py",
     "preview_saved_run": "preview_run.py",
     "experiment_database": "experiment_database.py",
+}
+LEGACY_LABEL_ALIASES = {
+    "Home": "\U0001F3E0 Home",
+    "Autonomous Single Objective Optimization": "\U0001F9EA Autonomous Single Objective Optimization",
+    "Autonomous Multi-Objective Optimization": "\U0001F9EA Autonomous Multi-Objective Optimization",
+    "DOE Executor (External Matrix)": "\U0001F9EE DOE Executor (External Matrix)",
+    "Reproducibility Studio": "\U0001F9EC Reproducibility Studio",
+    "Running Protocol Library": "\U0001F4DA Running Protocol Library",
+    "Data Analysis & Visualization": "\U0001F4CA Data Analysis & Visualization",
+    "Preview Saved Run": "\U0001F441 Preview Saved Run",
+    "Experiment DataBase": "\U0001F5C4 Experiment DataBase",
 }
 NAV_SELECTION_KEY = "_nav_selected_label"
 
@@ -101,6 +112,8 @@ def _resolve_selection(raw_selection) -> str:
     """
     if raw_selection in PAGES:
         return str(raw_selection)
+    if raw_selection in LEGACY_LABEL_ALIASES:
+        return LEGACY_LABEL_ALIASES[str(raw_selection)]
 
     raw = str(raw_selection or "").strip()
     if raw in PAGE_ALIASES:
@@ -134,7 +147,10 @@ st.sidebar.image("assets/image.png", width=300)
 st.sidebar.title("Navigation")
 
 if NAV_SELECTION_KEY not in st.session_state or st.session_state.get(NAV_SELECTION_KEY) not in PAGES:
-    st.session_state[NAV_SELECTION_KEY] = list(PAGES.keys())[0]
+    if st.session_state.get(NAV_SELECTION_KEY) in LEGACY_LABEL_ALIASES:
+        st.session_state[NAV_SELECTION_KEY] = LEGACY_LABEL_ALIASES[st.session_state[NAV_SELECTION_KEY]]
+    else:
+        st.session_state[NAV_SELECTION_KEY] = list(PAGES.keys())[0]
 
 if "selected_page" in st.session_state:
     requested = _resolve_selection(st.session_state.pop("selected_page"))
