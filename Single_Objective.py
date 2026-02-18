@@ -942,6 +942,10 @@ if col_start.button("▶ Start Optimization"):
     repro_seed_rows = []
 
     if single_repro_gate_enabled:
+        st.markdown("### Live Log")
+        gate_log_placeholder = st.empty()
+        sys.stdout = StreamlitLogger(placeholder=gate_log_placeholder)
+
         bounds_by_name = {name: (float(low), float(high)) for name, low, high, _ in st.session_state.variables}
         method_name = "lhs" if st.session_state.get("single_repro_method", "LHS") == "LHS" else "corners_center"
         test_points = build_initialization_points(

@@ -951,6 +951,10 @@ if start_clicked:
         curr_names = [n for n, *_ in st.session_state.variables]
 
         if multi_repro_gate_enabled:
+            st.markdown("### Live Log")
+            gate_log_placeholder = st.empty()
+            sys.stdout = StreamlitLogger(placeholder=gate_log_placeholder)
+
             repro_objective = st.session_state.get("multi_repro_objective")
             if not repro_objective:
                 st.error("Reproducibility gate is enabled, but no metric objective is selected.")

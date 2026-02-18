@@ -7,14 +7,15 @@ from typing import Mapping, Sequence
 import numpy as np
 
 DEFAULT_THRESHOLDS: dict[str, float] = {
-    "rsd_pass_pct": 2.5,
-    "rsd_conditional_pct": 5.0,
-    "abs_dev_pass": 0.03,
-    "abs_dev_conditional": 0.08,
-    "drift_pass_slope": 0.002,
-    "drift_conditional_slope": 0.006,
-    "memory_pass_abs_shift": 0.03,
-    "memory_conditional_abs_shift": 0.08,
+    # Commissioning defaults (looser than strict mode for early real-lab deployment)
+    "rsd_pass_pct": 5.0,
+    "rsd_conditional_pct": 10.0,
+    "abs_dev_pass": 0.08,
+    "abs_dev_conditional": 0.20,
+    "drift_pass_slope": 0.006,
+    "drift_conditional_slope": 0.020,
+    "memory_pass_abs_shift": 0.08,
+    "memory_conditional_abs_shift": 0.20,
 }
 
 
