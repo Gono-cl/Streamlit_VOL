@@ -65,7 +65,7 @@ def calculate_objectives(raw_area, substrate_concentration,  flow_aq = 1.0, flow
 
     normalized_area = norm_area(raw_area, flow_aq, flow_org)
     computed = {
-        "Yield": product_concentration/substrate_concentration * 100,
+        "Yield": product_concentration*0.72/substrate_concentration * 100,
         "Area": normalized_area,
         "Concentration": raw_area, 
         "Throughput": throughput(raw_area, flow_org),
