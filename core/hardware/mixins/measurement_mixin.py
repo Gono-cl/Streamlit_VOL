@@ -35,11 +35,8 @@ class MeasurementMixin:
     def _read_measurement(self, parameters=None):
         if self.simulation_mode == "full":
             return np.random.uniform(70, 100)
-        elif self.simulation_mode == "hybrid":
-            return np.random.uniform(70, 100)
-        else:
-            measurement_tag = self._resolve_measurement_tag(parameters)
-            product_area = float(self.opc.read_value(measurement_tag))
+        measurement_tag = self._resolve_measurement_tag(parameters)
+        product_area = float(self.opc.read_value(measurement_tag))
         return product_area
 
     def collect_measurements(self, rsd_threshold=3, max_measurements=15, iteration=0, parameters=None, min_mean_threshold=10.0, abs_std_threshold=0.5):

@@ -194,12 +194,12 @@ def autosampler_flow_rate(runner, parameters):
 
 
 def stop_pumps(runner, parameters):
-        if self.simulation_mode in ["off", "hybrid"]:
-            for pump in ["PUMP3.W1", "PUMP4.W1", "PC_OUT"]:
-                self.opc.write_value(f"Hitec_OPC_DA20_Server->E_CHEM:{pump}", 0)
-            print("All pumps stopped.")
-        else:
-            print("Simulation mode: skipping pump shutdown.")
+    if runner.simulation_mode in ["off", "hybrid"]:
+        for pump in ["PUMP3.W1", "PUMP4.W1", "PC_OUT"]:
+            runner.opc.write_value(f"Hitec_OPC_DA20_Server->E_CHEM:{pump}", 0)
+        print("All pumps stopped.")
+    else:
+        print("Simulation mode: skipping pump shutdown.")
 
 
 def cleanup(runner, parameters):

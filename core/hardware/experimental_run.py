@@ -88,6 +88,7 @@ class ExperimentRunner(
         self.protocol_prepare_fn = self._protocol_callable("prepare_hardware")
         self.protocol_calculate_fn = self._protocol_callable("calculate_real_result")
         self.protocol_autosampler_fn = self._protocol_callable("autosampler_flow_rate")
+        self.protocol_stop_pumps_fn = self._protocol_callable("stop_pumps")
         self.protocol_cleanup_fn = self._protocol_callable("cleanup")
         self.protocol_measurement_tag_fn = self._protocol_callable("measurement_tag")
         self.experiment_status_placeholder = st.sidebar.empty()
@@ -275,6 +276,9 @@ class ExperimentRunner(
             self.tray_pos_collect = (self.tray_pos_collect + 2) % 32
         else:
             print("Autosampler disabled: skipping sample collection.")
+
+        if self.protocol_stop_pumps_fn:
+            self.protocol_stop_pumps_fn(self, parameters)
 
         if self.protocol_cleanup_fn:
             self.protocol_cleanup_fn(self, parameters)
