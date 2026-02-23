@@ -55,28 +55,28 @@
             "immediate_noise_sigma": NaN,
             "immediate_averaged_sigma": NaN,
             "memory_abs_shift_median": NaN,
-            "sentinel_drift_slope": -2.001042319685866e-17,
-            "sentinel_drift_slope_abs": 2.001042319685866e-17
+            "sentinel_drift_slope": NaN,
+            "sentinel_drift_slope_abs": NaN
         },
         "thresholds": {
-            "rsd_pass_pct": 2.5,
-            "rsd_conditional_pct": 5.0,
-            "abs_dev_pass": 0.03,
-            "abs_dev_conditional": 0.08,
-            "drift_pass_slope": 0.002,
-            "drift_conditional_slope": 0.006,
-            "memory_pass_abs_shift": 0.03,
-            "memory_conditional_abs_shift": 0.08
+            "rsd_pass_pct": 5.0,
+            "rsd_conditional_pct": 10.0,
+            "abs_dev_pass": 0.08,
+            "abs_dev_conditional": 0.2,
+            "drift_pass_slope": 0.006,
+            "drift_conditional_slope": 0.02,
+            "memory_pass_abs_shift": 0.08,
+            "memory_conditional_abs_shift": 0.2
         },
         "drift_detected": false,
         "counts": {
-            "total_runs": 21,
-            "successful_runs": 21,
+            "total_runs": 15,
+            "successful_runs": 15,
             "failed_runs": 0,
             "immediate_pairs": 0,
             "bracketed_groups": 0,
             "cyclic_groups": 5,
-            "sentinel_runs": 6
+            "sentinel_runs": 0
         }
     },
     "bo_qc_sentinel_enabled": true,
@@ -86,36 +86,36 @@
         {
             "qc_run": 1,
             "after_experiment": 10,
-            "timestamp": "2026-02-18 13:16:50",
-            "value": 3.2,
+            "timestamp": "2026-02-23 13:17:33",
+            "value": 2.304,
             "status": "Done"
         },
         {
             "qc_run": 2,
             "after_experiment": 15,
-            "timestamp": "2026-02-18 13:16:57",
-            "value": 3.2,
+            "timestamp": "2026-02-23 13:17:41",
+            "value": 2.304,
             "status": "Done"
         },
         {
             "qc_run": 3,
             "after_experiment": 20,
-            "timestamp": "2026-02-18 13:17:05",
-            "value": 3.2,
+            "timestamp": "2026-02-23 13:17:49",
+            "value": 2.304,
             "status": "Done"
         },
         {
             "qc_run": 4,
             "after_experiment": 25,
-            "timestamp": "2026-02-18 13:17:13",
-            "value": 3.2,
+            "timestamp": "2026-02-23 13:17:58",
+            "value": 2.304,
             "status": "Done"
         },
         {
             "qc_run": 5,
             "after_experiment": 30,
-            "timestamp": "2026-02-18 13:17:22",
-            "value": 3.2,
+            "timestamp": "2026-02-23 13:18:06",
+            "value": 2.304,
             "status": "Done"
         }
     ]

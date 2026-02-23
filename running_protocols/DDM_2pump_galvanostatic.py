@@ -162,14 +162,15 @@ def prepare_hardware(runner, parameters):
     runner.opc.write_value(PUMP4_TAG, round(op["flow_pump4_ml_min"] * 1000.0, 0))
     runner.opc.write_value(PUMP3_TAG, round(op["flow_pump3_ml_min"] * 1000.0, 0))
 
-    print(f"filling electrochemical cell for {op['filling_time_cell_s']:.1f} seconds")
-    time.sleep(max(0.0, float(op["filling_time_cell_s"])))
+    #print(f"filling electrochemical cell for {op['filling_time_cell_s']:.1f} seconds")
+    #time.sleep(max(0.0, float(op["filling_time_cell_s"])))
 
     # Set galvanostatic current setpoint.
-    runner.set_current(op["total_current_A"])
+    runner.set_current(op["total_current_A"])# set in A
     runner.turn_on_power_supply()
 
-    _countdown_to_measurement(runner, op["measurement_time_after_power_s"])
+    #_countdown_to_measurement(runner, op["measurement_time_after_power_s"])
+    _countdown_to_measurement(runner, 10)
 
 
 def measurement_tag(runner, parameters):
@@ -192,5 +193,15 @@ def autosampler_flow_rate(runner, parameters):
     return float(op["total_flow_ml_min"])
 
 
+def stop_pumps(runner, parameters):
+        if self.simulation_mode in ["off", "hybrid"]:
+            for pump in ["PUMP3.W1", "PUMP4.W1", "PC_OUT"]:
+                self.opc.write_value(f"Hitec_OPC_DA20_Server->E_CHEM:{pump}", 0)
+            print("All pumps stopped.")
+        else:
+            print("Simulation mode: skipping pump shutdown.")
+
+
 def cleanup(runner, parameters):
     pass  # No cleanup actions needed for this protocol.
+

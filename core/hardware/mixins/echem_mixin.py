@@ -92,7 +92,7 @@ class EchemMixin:
         if not self._hardware_enabled():
             print("Simulation mode: skipping current setpoint.")
             return
-        self.opc.write_value("Hitec_OPC_DA20_Server-%3EE_CHEM%3ABKK_P.CURR", round(current, 2))
+        self.opc.write_value("Hitec_OPC_DA20_Server-%3EE_CHEM%3ABKK_P.SETCURR", round(current, 5))
 
     def turn_on_power_supply(self):
         """Turn on the power supply for the electrochemical cell."""

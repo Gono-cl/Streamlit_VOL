@@ -241,7 +241,7 @@ class ExperimentRunner(
         else:
             print("Full simulation mode enabled: skipping temperature and pump setup.")
 
-        if self.simulation_mode in ["full", "hybrid"]:
+        if self.simulation_mode in ["full"]:
             result = self.simulate_experiment(parameters, objectives, directions)
         else:
             mean_measurement = self.collect_measurements(parameters=parameters)
