@@ -135,6 +135,20 @@ def _countdown_to_measurement(runner, seconds):
         runner.countdown_placeholder.markdown(html, unsafe_allow_html=True)
         time.sleep(1)
 
+def _countdown_to_filling(runner, seconds):
+    secs_total = max(0, int(round(float(seconds))))
+    if secs_total <= 0:
+        return
+    for secs in range(secs_total, 0, -1):
+        mm, ss = divmod(secs, 60)
+        html = f"""
+        <div style='background-color:#fff3cd; padding: 15px; border-left: 5px solid #ffca28; border-radius: 5px;'>
+            <h4 style='margin:0;'>Countdown for filling the electrochemical cell</h4>
+            <p style='font-size: 24px; font-weight: bold; color: #856404; margin: 5px 0 0 0;'>{mm:02d}:{ss:02d}</p>
+        </div>
+        """
+        runner.countdown_placeholder.markdown(html, unsafe_allow_html=True)
+        time.sleep(1)
 
 def prepare_hardware(runner, parameters):
     op = _compute_operating_point(parameters)
@@ -162,20 +176,21 @@ def prepare_hardware(runner, parameters):
     runner.opc.write_value(PUMP4_TAG, round(op["flow_pump4_ml_min"] * 1000.0, 0))
     runner.opc.write_value(PUMP3_TAG, round(op["flow_pump3_ml_min"] * 1000.0, 0))
 
-    #print(f"filling electrochemical cell for {op['filling_time_cell_s']:.1f} seconds")
-    #time.sleep(max(0.0, float(op["filling_time_cell_s"])))
+    print(f"filling electrochemical cell for {op['filling_time_cell_s']:.1f} seconds")
+    _countdown_to_filling(runner, op['filling_time_cell_s'])
+    #_countdown_to_filling(runner, 10)
 
     # Set galvanostatic current setpoint.
     runner.set_current(op["total_current_A"])# set in A
     runner.turn_on_power_supply()
 
-    #_countdown_to_measurement(runner, op["measurement_time_after_power_s"])
-    _countdown_to_measurement(runner, 10)
+    _countdown_to_measurement(runner, op["measurement_time_after_power_s"])
+    #_countdown_to_measurement(runner, 10)
 
 
 def measurement_tag(runner, parameters):
     # Keep protocol explicit; change here if FT-IR tag differs for DDM campaign.
-    return "OpusOPCSvr.HP-CZC3484P17->PDA - mM"
+    return "OpusOPCSvr.HP-CZC3484P17->DDM - mM"
 
 
 def calculate_real_result(runner, mean_measurement, parameters, objectives, directions):
@@ -198,6 +213,8 @@ def stop_pumps(runner, parameters):
         for pump in ["PUMP3.W1", "PUMP4.W1", "PC_OUT"]:
             runner.opc.write_value(f"Hitec_OPC_DA20_Server->E_CHEM:{pump}", 0)
         print("All pumps stopped.")
+        runner.turn_off_power_supply()
+        time.sleep(10)
     else:
         print("Simulation mode: skipping pump shutdown.")
 
