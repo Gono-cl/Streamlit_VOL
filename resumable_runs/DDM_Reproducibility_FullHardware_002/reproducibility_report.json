@@ -1,0 +1,36 @@
+{
+  "decision": "FAIL",
+  "reasons": [
+    "Replicate RSD (%)=14.8443 > 10",
+    "Replicate abs deviation=4.26833 > 0.2"
+  ],
+  "metrics": {
+    "immediate_rsd_pct": 14.844285063519688,
+    "immediate_abs_deviation_median": 4.2683309092629536,
+    "immediate_noise_sigma": NaN,
+    "immediate_averaged_sigma": NaN,
+    "memory_abs_shift_median": NaN,
+    "sentinel_drift_slope": NaN,
+    "sentinel_drift_slope_abs": NaN
+  },
+  "thresholds": {
+    "rsd_pass_pct": 5.0,
+    "rsd_conditional_pct": 10.0,
+    "abs_dev_pass": 0.08,
+    "abs_dev_conditional": 0.2,
+    "drift_pass_slope": 0.006,
+    "drift_conditional_slope": 0.02,
+    "memory_pass_abs_shift": 0.08,
+    "memory_conditional_abs_shift": 0.2
+  },
+  "drift_detected": false,
+  "counts": {
+    "total_runs": 15,
+    "successful_runs": 15,
+    "failed_runs": 0,
+    "immediate_pairs": 0,
+    "bracketed_groups": 0,
+    "cyclic_groups": 5,
+    "sentinel_runs": 0
+  }
+}

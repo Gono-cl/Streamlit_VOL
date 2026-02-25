@@ -228,10 +228,11 @@ def cleanup(runner, parameters):
     runner.opc.write_value("Hitec_OPC_DA20_Server-%3EE_CHEM%3AV_02_CLOSE", 0)
     runner.opc.write_value("Hitec_OPC_DA20_Server-%3EE_CHEM%3AV_02_OPEN", 0)
     print("Valves switched to cleaning position.")
-    runner.opc.write_value("Hitec_OPC_DA20_Server-%3EE_CHEM%3AROT_VALVE.POS", 3)
+    runner.opc.write_value("Hitec_OPC_DA20_Server-%3EE_CHEM%3AROT_VALVE.POS", 4)
     runner.opc.write_value("Hitec_OPC_DA20_Server-%3EE_CHEM%3APUMP_6.W1", 3)
     print("Cleaning electrochemical cell with solvent ACN...")
     time.sleep(60)
     runner.opc.write_value("Hitec_OPC_DA20_Server-%3EE_CHEM%3APUMP_6.W1", 0)
+    time.sleep(5)
     print("Cleaning Complete.")
 
