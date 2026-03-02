@@ -39,7 +39,7 @@ class EchemMixin:
             print("Simulation mode: skipping 4-pump flow setup.")
             return
 
-        stock_substrate_concentration = 716  # mM
+        stock_substrate_concentration = 750  # mM
         stock_acid_concentration = 1500  # mM
         stock_base_concentration = 1500  # mM
 
