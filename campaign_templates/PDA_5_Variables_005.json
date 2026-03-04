@@ -1,0 +1,72 @@
+{
+  "schema_version": 1,
+  "mode": "single",
+  "name": "PDA_5_Variables_005",
+  "variables": [
+    {
+      "name": "flow_rate",
+      "lower": 0.5,
+      "upper": 1.0,
+      "unit": "ml/min"
+    },
+    {
+      "name": "base_concentration",
+      "lower": 50.0,
+      "upper": 500.0,
+      "unit": "mM"
+    },
+    {
+      "name": "Voltage",
+      "lower": 2.0,
+      "upper": 3.0,
+      "unit": "V"
+    },
+    {
+      "name": "substrate_concentration",
+      "lower": 50.0,
+      "upper": 200.0,
+      "unit": "mM"
+    },
+    {
+      "name": "acid_concentration",
+      "lower": 50.0,
+      "upper": 500.0,
+      "unit": "mM"
+    }
+  ],
+  "optimization": {
+    "initial_experiments": 10,
+    "total_iterations": 20,
+    "response": "Yield",
+    "acq_func": "EI",
+    "init_strategy": "LHS",
+    "random_seed": 42,
+    "bo_qc_sentinel_enabled": false,
+    "bo_qc_sentinel_every_n_runs": 5,
+    "reproducibility": {
+      "enabled": false,
+      "method": "LHS",
+      "n_points": 8,
+      "patterns": [
+        "Immediate (A->A)",
+        "Bracketed (A->B->A)"
+      ],
+      "use_sentinel": true,
+      "sentinel_every_n_runs": 5,
+      "escalate_cleaning": true,
+      "max_cleaning_level": 2,
+      "block_on_fail": true
+    }
+  },
+  "hardware": {
+    "simulation_mode": "hybrid",
+    "opc_url": "http://em-nun:57080",
+    "use_autosampler": false,
+    "volume_to_collect": 3.0,
+    "process_adapter": "echem_4pump",
+    "process_adapter_config": {},
+    "running_protocol_script": "PDA_5_variables.py",
+    "measurement_source_prefix": "OpusOPCSvr.HP-CZC3484P17->",
+    "measurement_source_signal": "PDA - mM"
+  }
+}

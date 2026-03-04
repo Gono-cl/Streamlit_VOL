@@ -1,0 +1,54 @@
+{
+    "variables": [
+        [
+            "flow_rate",
+            0.5,
+            1.0,
+            "ml/min"
+        ],
+        [
+            "base_concentration",
+            50.0,
+            500.0,
+            "mM"
+        ],
+        [
+            "Voltage",
+            2.0,
+            3.0,
+            "V"
+        ],
+        [
+            "substrate_concentration",
+            50.0,
+            200.0,
+            "mM"
+        ],
+        [
+            "acid_concentration",
+            50.0,
+            500.0,
+            "mM"
+        ]
+    ],
+    "response": "Yield",
+    "initial_experiments": 10,
+    "total_iterations": 20,
+    "opc_url": "http://em-nun:57080",
+    "simulation_mode": "off",
+    "process_adapter": "echem_4pump",
+    "process_adapter_config": {},
+    "running_protocol_script": "PDA_5_variables.py",
+    "measurement_source_prefix": "OpusOPCSvr.HP-CZC3484P17->",
+    "measurement_source_signal": "PDA - mM",
+    "acq_func": "EI",
+    "init_strategy": "LHS",
+    "random_seed": 42,
+    "reused_runs": [],
+    "reused_count": 0,
+    "reproducibility": null,
+    "bo_qc_sentinel_enabled": false,
+    "bo_qc_sentinel_every_n_runs": 5,
+    "bo_qc_sentinel_count": 0,
+    "bo_qc_sentinel_history": []
+}
