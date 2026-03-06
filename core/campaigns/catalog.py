@@ -14,6 +14,7 @@ VARIABLE_OPTIONS = {
     "Applied Charge": "applied_charge",
     "Substrate Concentration": "substrate_concentration",
     "Acid Concentration": "acid_concentration",
+    "Salt concentration" : "salt_concentration"
 }
 
 SINGLE_OBJECTIVE_OPTIONS = [

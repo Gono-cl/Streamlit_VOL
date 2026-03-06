@@ -108,4 +108,4 @@ class FlowCalculationsMixin:
     def calculate_residence_time(self, flow_rate, reaction_volume=2):
         """Calculate the residence time based on the flow_rate and reactor+measurement volume."""
         residence_time = reaction_volume / flow_rate * 60  # seconds
-        return residence_time * 1.5  # 1.5 residence times
+        return residence_time * 2  # 1.5 residence times
