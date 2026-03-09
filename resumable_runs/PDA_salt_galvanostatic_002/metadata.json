@@ -1,0 +1,54 @@
+{
+    "variables": [
+        [
+            "current_density",
+            5.0,
+            15.0,
+            "mA/cm2"
+        ],
+        [
+            "applied_charge",
+            1.8,
+            2.2,
+            "F/mol"
+        ],
+        [
+            "substrate_concentration",
+            40.0,
+            80.0,
+            "mM"
+        ],
+        [
+            "base_concentration",
+            100.0,
+            300.0,
+            "mM"
+        ],
+        [
+            "salt_concentration",
+            100.0,
+            300.0,
+            "mM"
+        ]
+    ],
+    "response": "Yield",
+    "initial_experiments": 10,
+    "total_iterations": 20,
+    "opc_url": "http://em-nun:57080",
+    "simulation_mode": "off",
+    "process_adapter": "echem_4pump",
+    "process_adapter_config": {},
+    "running_protocol_script": "PDA_5_current_density_applied_charge.py",
+    "measurement_source_prefix": "OpusOPCSvr.HP-CZC3484P17->",
+    "measurement_source_signal": "PDA - mM",
+    "acq_func": "EI",
+    "init_strategy": "LHS",
+    "random_seed": 42,
+    "reused_runs": [],
+    "reused_count": 0,
+    "reproducibility": null,
+    "bo_qc_sentinel_enabled": false,
+    "bo_qc_sentinel_every_n_runs": 5,
+    "bo_qc_sentinel_count": 0,
+    "bo_qc_sentinel_history": []
+}
