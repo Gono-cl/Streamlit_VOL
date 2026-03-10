@@ -1,0 +1,35 @@
+{
+  "decision": "CONDITIONAL",
+  "reasons": [
+    "Replicate abs deviation=1.92928 > 0.08"
+  ],
+  "metrics": {
+    "immediate_rsd_pct": 4.608416723944093,
+    "immediate_abs_deviation_median": 1.9292833592121568,
+    "immediate_noise_sigma": NaN,
+    "immediate_averaged_sigma": NaN,
+    "memory_abs_shift_median": NaN,
+    "sentinel_drift_slope": NaN,
+    "sentinel_drift_slope_abs": NaN
+  },
+  "thresholds": {
+    "rsd_pass_pct": 5.0,
+    "rsd_conditional_pct": 10.0,
+    "abs_dev_pass": 0.08,
+    "abs_dev_conditional": 2.0,
+    "drift_pass_slope": 0.006,
+    "drift_conditional_slope": 0.02,
+    "memory_pass_abs_shift": 0.08,
+    "memory_conditional_abs_shift": 0.2
+  },
+  "drift_detected": false,
+  "counts": {
+    "total_runs": 15,
+    "successful_runs": 15,
+    "failed_runs": 0,
+    "immediate_pairs": 0,
+    "bracketed_groups": 0,
+    "cyclic_groups": 5,
+    "sentinel_runs": 0
+  }
+}

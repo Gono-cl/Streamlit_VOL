@@ -1,0 +1,124 @@
+{
+    "variables": [
+        [
+            "base_concentration",
+            100.0,
+            300.0,
+            "mM"
+        ],
+        [
+            "current_density",
+            4.0,
+            10.0,
+            "mA/cm2"
+        ],
+        [
+            "applied_charge",
+            1.8,
+            2.2,
+            "F/mol"
+        ],
+        [
+            "substrate_concentration",
+            25.0,
+            75.0,
+            "mM"
+        ],
+        [
+            "salt_concentration",
+            100.0,
+            300.0,
+            "mM"
+        ]
+    ],
+    "response": "Yield",
+    "initial_experiments": 10,
+    "total_iterations": 20,
+    "opc_url": "http://em-nun:57080",
+    "simulation_mode": "off",
+    "process_adapter": "echem_4pump",
+    "process_adapter_config": {},
+    "running_protocol_script": "PDA_5_current_density_applied_charge.py",
+    "measurement_source_prefix": "OpusOPCSvr.HP-CZC3484P17->",
+    "measurement_source_signal": "PDA - mM",
+    "acq_func": "EI",
+    "init_strategy": "LHS",
+    "random_seed": 42,
+    "reused_runs": [],
+    "reused_count": 5,
+    "reproducibility": {
+        "decision": "CONDITIONAL",
+        "reasons": [
+            "Replicate abs deviation=1.92928 > 0.08"
+        ],
+        "metrics": {
+            "immediate_rsd_pct": 4.608416723944093,
+            "immediate_abs_deviation_median": 1.9292833592121568,
+            "immediate_noise_sigma": NaN,
+            "immediate_averaged_sigma": NaN,
+            "memory_abs_shift_median": NaN,
+            "sentinel_drift_slope": NaN,
+            "sentinel_drift_slope_abs": NaN
+        },
+        "thresholds": {
+            "rsd_pass_pct": 5.0,
+            "rsd_conditional_pct": 10.0,
+            "abs_dev_pass": 0.08,
+            "abs_dev_conditional": 2.0,
+            "drift_pass_slope": 0.006,
+            "drift_conditional_slope": 0.02,
+            "memory_pass_abs_shift": 0.08,
+            "memory_conditional_abs_shift": 0.2
+        },
+        "drift_detected": false,
+        "counts": {
+            "total_runs": 15,
+            "successful_runs": 15,
+            "failed_runs": 0,
+            "immediate_pairs": 0,
+            "bracketed_groups": 0,
+            "cyclic_groups": 5,
+            "sentinel_runs": 0
+        }
+    },
+    "bo_qc_sentinel_enabled": true,
+    "bo_qc_sentinel_every_n_runs": 3,
+    "bo_qc_sentinel_count": 5,
+    "bo_qc_sentinel_history": [
+        {
+            "qc_run": 1,
+            "after_experiment": 6,
+            "timestamp": "2026-03-10 13:02:53",
+            "value": 54.03462726666666,
+            "status": "Done"
+        },
+        {
+            "qc_run": 2,
+            "after_experiment": 9,
+            "timestamp": "2026-03-10 13:46:25",
+            "value": 60.41849393333333,
+            "status": "Done"
+        },
+        {
+            "qc_run": 3,
+            "after_experiment": 12,
+            "timestamp": "2026-03-10 14:26:43",
+            "value": 65.17993539999999,
+            "status": "Done"
+        },
+        {
+            "qc_run": 4,
+            "after_experiment": 15,
+            "timestamp": "2026-03-10 15:09:21",
+            "value": 53.513271333333336,
+            "status": "Done"
+        },
+        {
+            "qc_run": 5,
+            "after_experiment": 18,
+            "timestamp": "2026-03-10 15:48:23",
+            "value": 53.077261666666665,
+            "status": "Done"
+        }
+    ]
+}
