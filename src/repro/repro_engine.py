@@ -141,13 +141,16 @@ class ReproducibilityEngine:
         self.runner = runner if isinstance(runner, RunnerAdapter) else RunnerAdapter(runner, objective_key=objective_key)
         self.thresholds = merged_thresholds(thresholds)
         self.records: list[RunRecord] = []
+        self.adjudication_events: list[dict[str, Any]] = []
         self.cleaning_level = 0
         self._next_run_index = 0
+        self._downgrade_pass_to_conditional_on_adjudication = True
 
     def schedule_with_reproducibility(
         self,
         test_points: Sequence[Point | Mapping[str, float]],
         patterns: Sequence[ReplicatePattern | str] | None = None,
+        cyclic_repeats: int = 3,
         sentinel_point: Point | Mapping[str, float] | None = None,
         sentinel_every_n_runs: int | None = None,
         base_metadata: Mapping[str, Any] | None = None,
@@ -159,13 +162,15 @@ class ReproducibilityEngine:
         points = self._coerce_points(test_points, prefix="test")
         norm_patterns = self._normalize_patterns(patterns)
         sentinel = self._coerce_point(sentinel_point, point_id="sentinel") if sentinel_point is not None else None
+        cyclic_repeats_count = max(1, int(cyclic_repeats))
         interval = int(sentinel_every_n_runs) if sentinel_every_n_runs else None
         if interval is not None and interval <= 0:
             raise ValueError("sentinel_every_n_runs must be > 0 when provided.")
 
-        base_specs = self._build_base_specs(points, norm_patterns, phase=phase)
+        base_specs = self._build_base_specs(points, norm_patterns, phase=phase, cyclic_repeats=cyclic_repeats_count)
         metadata = dict(base_metadata or {})
         metadata.setdefault("phase", phase)
+        metadata.setdefault("cyclic_repeats", cyclic_repeats_count)
 
         new_records: list[RunRecord] = []
         for point, pattern, group_id, role in base_specs:
@@ -201,10 +206,14 @@ class ReproducibilityEngine:
         thresholds: Mapping[str, float] | None = None,
     ) -> dict[str, Any]:
         """Compute reproducibility metrics and decision label."""
-        run_records = list(records) if records is not None else list(self.records)
+        raw_records = list(records) if records is not None else list(self.records)
+        run_records = self.effective_records(records=raw_records)
         th = dict(self.thresholds)
         if thresholds:
             th.update({str(k): float(v) for k, v in thresholds.items()})
+        selected_events = self._select_adjudication_events(raw_records)
+        confirmed_events = [event for event in selected_events if str(event.get("status")) == "confirmed_outlier"]
+        unresolved_events = [event for event in selected_events if str(event.get("status")) == "unresolved"]
 
         immediate_pairs = self._extract_immediate_pairs(run_records)
         bracketed_groups = self._extract_bracketed_groups(run_records)
@@ -254,10 +263,22 @@ class ReproducibilityEngine:
 
         decision_raw, reasons = decide(metrics, thresholds=th)
         decision = DecisionLabel(decision_raw)
+        if confirmed_events:
+            adjudication_note = (
+                f"Cyclic outlier adjudication resolved {len(confirmed_events)} point(s)."
+            )
+            reasons = list(reasons)
+            if decision == DecisionLabel.PASS and self._downgrade_pass_to_conditional_on_adjudication:
+                decision = DecisionLabel.CONDITIONAL
+                reasons.append(f"{adjudication_note} PASS downgraded to CONDITIONAL.")
+            else:
+                reasons.append(adjudication_note)
         drift_detected = bool(np.isfinite(sentinel_slope_abs) and sentinel_slope_abs > th["drift_pass_slope"])
 
-        total = len(run_records)
-        successful = sum(1 for r in run_records if r.result.success and np.isfinite(r.result.objective))
+        total = len(raw_records)
+        successful = sum(1 for r in raw_records if r.result.success and np.isfinite(r.result.objective))
+        effective_total = len(run_records)
+        effective_successful = sum(1 for r in run_records if r.result.success and np.isfinite(r.result.objective))
 
         return {
             "decision": decision,
@@ -269,11 +290,128 @@ class ReproducibilityEngine:
                 "total_runs": total,
                 "successful_runs": successful,
                 "failed_runs": total - successful,
+                "effective_runs": effective_total,
+                "effective_successful_runs": effective_successful,
+                "excluded_outlier_runs": int(len(self._confirmed_outlier_run_ids(raw_records))),
                 "immediate_pairs": int(len(immediate_pairs)),
                 "bracketed_groups": int(len(bracketed_groups)),
                 "cyclic_groups": int(len(cyclic_groups)),
                 "sentinel_runs": int(len(sentinel_df)),
+                "adjudication_confirmed_outliers": int(len(confirmed_events)),
+                "adjudication_unresolved": int(len(unresolved_events)),
+                "adjudication_extra_runs": int(len(selected_events)),
             },
+            "adjudication": {
+                "downgrade_pass_to_conditional": bool(self._downgrade_pass_to_conditional_on_adjudication),
+                "events": selected_events,
+            },
+        }
+
+    def effective_records(self, records: Sequence[RunRecord] | None = None) -> list[RunRecord]:
+        """Return records after excluding confirmed cyclic outlier runs."""
+        raw_records = list(records) if records is not None else list(self.records)
+        excluded_run_ids = self._confirmed_outlier_run_ids(raw_records)
+        if not excluded_run_ids:
+            return raw_records
+        return [record for record in raw_records if record.run_id not in excluded_run_ids]
+
+    def adjudicate_cyclic_outliers(
+        self,
+        *,
+        thresholds: Mapping[str, float] | None = None,
+        pair_rsd_threshold_pct: float | None = None,
+        outlier_gap_threshold_pct: float | None = None,
+        max_extra_replicates_per_point: int = 1,
+        downgrade_pass_to_conditional: bool = True,
+        base_metadata: Mapping[str, Any] | None = None,
+        repeat_callback: Callable[[dict[str, Any]], None] | None = None,
+    ) -> dict[str, Any]:
+        """
+        Detect suspicious cyclic replicate groups and run one extra replicate for adjudication.
+
+        A point is considered suspicious when removing one cyclic replicate leaves a tight cluster
+        and that removed replicate sits far from the remaining cluster. The extra run is used to
+        confirm or reject the outlier.
+        """
+        th = dict(self.thresholds)
+        if thresholds:
+            th.update({str(k): float(v) for k, v in thresholds.items()})
+
+        pair_limit = float(
+            pair_rsd_threshold_pct
+            if pair_rsd_threshold_pct is not None
+            else th.get("cyclic_outlier_pair_rsd_pct", 5.0)
+        )
+        gap_limit = float(
+            outlier_gap_threshold_pct
+            if outlier_gap_threshold_pct is not None
+            else th.get("cyclic_outlier_gap_pct", 10.0)
+        )
+        max_extra = max(0, int(max_extra_replicates_per_point))
+        self._downgrade_pass_to_conditional_on_adjudication = bool(downgrade_pass_to_conditional)
+
+        if max_extra <= 0:
+            return {
+                "pair_rsd_threshold_pct": pair_limit,
+                "outlier_gap_threshold_pct": gap_limit,
+                "events": [],
+                "extra_runs": [],
+            }
+
+        events: list[dict[str, Any]] = []
+        extra_runs: list[RunRecord] = []
+        for candidate in self._find_suspicious_cyclic_groups(
+            pair_rsd_threshold_pct=pair_limit,
+            outlier_gap_threshold_pct=gap_limit,
+            max_extra_replicates_per_point=max_extra,
+        ):
+            preview = {
+                "group_id": candidate["group_id"],
+                "point_id": candidate["point"].id,
+                "phase": candidate["phase"],
+                "repeat_role": f"C{len(candidate['primary_group']) + 1}_ADJ",
+            }
+            if repeat_callback is not None:
+                try:
+                    repeat_callback(preview)
+                except Exception:
+                    pass
+
+            repeat_metadata = dict(base_metadata or {})
+            repeat_metadata.update(
+                {
+                    "phase": candidate["phase"],
+                    "adjudication": "cyclic_outlier_repeat",
+                    "adjudication_group_id": candidate["group_id"],
+                    "adjudication_candidate_run_id": candidate["candidate_record"].run_id,
+                    "adjudication_pair_run_ids": [rec.run_id for rec in candidate["pair_records"]],
+                }
+            )
+            repeat_record = self._execute(
+                point=candidate["point"],
+                pattern=ReplicatePattern.CYCLIC,
+                group_id=str(candidate["group_id"]),
+                role=preview["repeat_role"],
+                is_sentinel=False,
+                metadata=repeat_metadata,
+            )
+            self.records.append(repeat_record)
+            extra_runs.append(repeat_record)
+
+            event = self._build_cyclic_adjudication_event(
+                candidate=candidate,
+                repeat_record=repeat_record,
+                pair_rsd_threshold_pct=pair_limit,
+                outlier_gap_threshold_pct=gap_limit,
+            )
+            self.adjudication_events.append(event)
+            events.append(event)
+
+        return {
+            "pair_rsd_threshold_pct": pair_limit,
+            "outlier_gap_threshold_pct": gap_limit,
+            "events": events,
+            "extra_runs": extra_runs,
         }
 
     def escalate_cleaning_and_retest(
@@ -282,10 +420,13 @@ class ReproducibilityEngine:
         sentinel_point: Point | Mapping[str, float] | None = None,
         sentinel_every_n_runs: int | None = None,
         patterns: Sequence[ReplicatePattern | str] | None = None,
+        cyclic_repeats: int = 3,
         thresholds: Mapping[str, float] | None = None,
         max_cleaning_level: int = 3,
         base_metadata: Mapping[str, Any] | None = None,
         cleaning_callback: Callable[[int], None] | None = None,
+        adjudication_config: Mapping[str, Any] | None = None,
+        adjudication_callback: Callable[[dict[str, Any]], None] | None = None,
     ) -> dict[str, Any]:
         """
         Escalate cleaning level and retest points if FAIL or drift is detected.
@@ -323,11 +464,18 @@ class ReproducibilityEngine:
             self.schedule_with_reproducibility(
                 test_points=retest_points,
                 patterns=patterns or [ReplicatePattern.IMMEDIATE],
+                cyclic_repeats=cyclic_repeats,
                 sentinel_point=sentinel_point,
                 sentinel_every_n_runs=sentinel_every_n_runs,
                 base_metadata=run_meta,
                 phase=f"cleaning_{self.cleaning_level}",
             )
+            if adjudication_config:
+                self.adjudicate_cyclic_outliers(
+                    base_metadata=run_meta,
+                    repeat_callback=adjudication_callback,
+                    **dict(adjudication_config),
+                )
             analysis = self.analyze(thresholds=thresholds)
             history.append({"cleaning_level": self.cleaning_level, "analysis": analysis})
 
@@ -434,6 +582,7 @@ class ReproducibilityEngine:
         points: Sequence[Point],
         patterns: Sequence[ReplicatePattern],
         phase: str,
+        cyclic_repeats: int,
     ) -> list[tuple[Point, ReplicatePattern, str, str]]:
         specs: list[tuple[Point, ReplicatePattern, str, str]] = []
         for pattern in patterns:
@@ -450,7 +599,7 @@ class ReproducibilityEngine:
                     specs.append((b, ReplicatePattern.BRACKETED, group_id, "B"))
                     specs.append((a, ReplicatePattern.BRACKETED, group_id, "A_POST"))
             elif pattern == ReplicatePattern.CYCLIC:
-                for cycle_idx in range(3):
+                for cycle_idx in range(max(1, int(cyclic_repeats))):
                     role = f"C{cycle_idx + 1}"
                     for i, a in enumerate(points):
                         group_id = f"{phase}_cyclic_{i:03d}_c{self.cleaning_level}"
@@ -629,6 +778,163 @@ class ReproducibilityEngine:
             )
         return pd.DataFrame(rows).sort_values("run_index") if rows else pd.DataFrame(columns=["run_index", "objective"])
 
+    def _find_suspicious_cyclic_groups(
+        self,
+        *,
+        pair_rsd_threshold_pct: float,
+        outlier_gap_threshold_pct: float,
+        max_extra_replicates_per_point: int,
+    ) -> list[dict[str, Any]]:
+        grouped: dict[str, list[RunRecord]] = {}
+        for record in self.records:
+            if record.context.pattern != ReplicatePattern.CYCLIC or record.context.is_sentinel:
+                continue
+            if not record.result.success or not np.isfinite(record.result.objective):
+                continue
+            grouped.setdefault(record.context.group_id, []).append(record)
+
+        candidates: list[dict[str, Any]] = []
+        for group_id, group in grouped.items():
+            prior_events = sum(1 for event in self.adjudication_events if str(event.get("group_id")) == str(group_id))
+            if prior_events >= max_extra_replicates_per_point:
+                continue
+
+            primary_group = [
+                record
+                for record in sorted(group, key=lambda rec: rec.context.run_index)
+                if not str(record.context.replicate_role).upper().endswith("_ADJ")
+            ]
+            if len(primary_group) < 3:
+                continue
+
+            candidate = self._single_cyclic_outlier_candidate(
+                primary_group=primary_group,
+                pair_rsd_threshold_pct=pair_rsd_threshold_pct,
+                outlier_gap_threshold_pct=outlier_gap_threshold_pct,
+            )
+            if candidate:
+                candidate["group_id"] = group_id
+                candidate["point"] = primary_group[0].point
+                candidate["phase"] = str(primary_group[0].context.metadata.get("phase", "baseline"))
+                candidate["primary_group"] = primary_group
+                candidates.append(candidate)
+
+        return sorted(
+            candidates,
+            key=lambda item: int(item["candidate_record"].context.run_index),
+        )
+
+    def _single_cyclic_outlier_candidate(
+        self,
+        *,
+        primary_group: Sequence[RunRecord],
+        pair_rsd_threshold_pct: float,
+        outlier_gap_threshold_pct: float,
+    ) -> dict[str, Any] | None:
+        best: dict[str, Any] | None = None
+        for idx, candidate_record in enumerate(primary_group):
+            cluster_records = [record for pair_idx, record in enumerate(primary_group) if pair_idx != idx]
+            if len(cluster_records) < 2:
+                continue
+            cluster_values = [float(record.result.objective) for record in cluster_records]
+            cluster_rsd = compute_rsd(cluster_values)
+            if not np.isfinite(cluster_rsd) or cluster_rsd > pair_rsd_threshold_pct:
+                continue
+
+            cluster_mean = float(np.mean(cluster_values))
+            candidate_value = float(candidate_record.result.objective)
+            gap_pct = _relative_gap_pct(candidate_value, cluster_mean)
+            if not np.isfinite(gap_pct) or gap_pct < outlier_gap_threshold_pct:
+                continue
+
+            proposed = {
+                "candidate_record": candidate_record,
+                "candidate_value": candidate_value,
+                "pair_records": cluster_records,
+                "pair_values": cluster_values,
+                "pair_mean": cluster_mean,
+                "pair_rsd_pct": cluster_rsd,
+                "outlier_gap_pct": gap_pct,
+            }
+            if best is None:
+                best = proposed
+                continue
+
+            if float(proposed["pair_rsd_pct"]) < float(best["pair_rsd_pct"]):
+                best = proposed
+                continue
+            if np.isclose(float(proposed["pair_rsd_pct"]), float(best["pair_rsd_pct"])) and float(
+                proposed["outlier_gap_pct"]
+            ) > float(best["outlier_gap_pct"]):
+                best = proposed
+
+        return best
+
+    def _build_cyclic_adjudication_event(
+        self,
+        *,
+        candidate: Mapping[str, Any],
+        repeat_record: RunRecord,
+        pair_rsd_threshold_pct: float,
+        outlier_gap_threshold_pct: float,
+    ) -> dict[str, Any]:
+        pair_values = [float(value) for value in candidate["pair_values"]]
+        repeat_value = float(repeat_record.result.objective)
+        resolution_rsd = compute_rsd(pair_values + [repeat_value]) if repeat_record.result.success else float("nan")
+        repeat_gap_pct = _relative_gap_pct(repeat_value, float(candidate["pair_mean"]))
+        status = "unresolved"
+        if not repeat_record.result.success or not np.isfinite(repeat_value):
+            status = "repeat_failed"
+        elif (
+            np.isfinite(resolution_rsd)
+            and resolution_rsd <= pair_rsd_threshold_pct
+            and np.isfinite(repeat_gap_pct)
+            and repeat_gap_pct <= outlier_gap_threshold_pct
+        ):
+            status = "confirmed_outlier"
+
+        return {
+            "event_id": f"adj_{len(self.adjudication_events):06d}",
+            "pattern": ReplicatePattern.CYCLIC.value,
+            "group_id": str(candidate["group_id"]),
+            "phase": str(candidate["phase"]),
+            "point_id": str(candidate["point"].id),
+            "cleaning_level": int(repeat_record.context.cleaning_level),
+            "status": status,
+            "candidate_run_id": str(candidate["candidate_record"].run_id),
+            "candidate_role": str(candidate["candidate_record"].context.replicate_role),
+            "candidate_value": float(candidate["candidate_value"]),
+            "cluster_run_ids": [str(record.run_id) for record in candidate["pair_records"]],
+            "cluster_roles": [str(record.context.replicate_role) for record in candidate["pair_records"]],
+            "cluster_values": pair_values,
+            "cluster_pair_rsd_pct": float(candidate["pair_rsd_pct"]),
+            "outlier_gap_pct": float(candidate["outlier_gap_pct"]),
+            "repeat_run_id": str(repeat_record.run_id),
+            "repeat_role": str(repeat_record.context.replicate_role),
+            "repeat_value": repeat_value,
+            "repeat_gap_to_cluster_pct": repeat_gap_pct,
+            "resolution_rsd_pct": resolution_rsd,
+            "pair_rsd_threshold_pct": float(pair_rsd_threshold_pct),
+            "outlier_gap_threshold_pct": float(outlier_gap_threshold_pct),
+        }
+
+    def _select_adjudication_events(self, records: Sequence[RunRecord]) -> list[dict[str, Any]]:
+        record_ids = {record.run_id for record in records}
+        selected: list[dict[str, Any]] = []
+        for event in self.adjudication_events:
+            candidate_id = str(event.get("candidate_run_id", ""))
+            repeat_id = str(event.get("repeat_run_id", ""))
+            if candidate_id in record_ids or repeat_id in record_ids:
+                selected.append(dict(event))
+        return selected
+
+    def _confirmed_outlier_run_ids(self, records: Sequence[RunRecord]) -> set[str]:
+        excluded: set[str] = set()
+        for event in self._select_adjudication_events(records):
+            if str(event.get("status")) == "confirmed_outlier":
+                excluded.add(str(event.get("candidate_run_id")))
+        return excluded
+
 
 def _safe_json_loads(raw: Any, default: Any) -> Any:
     if raw is None or (isinstance(raw, float) and np.isnan(raw)):
@@ -646,6 +952,11 @@ def _median_or_nan(values: np.ndarray) -> float:
     if values.size == 0:
         return float("nan")
     return float(np.median(values))
+
+
+def _relative_gap_pct(value: float, reference: float) -> float:
+    denom = max(abs(float(reference)), 1e-12)
+    return abs(float(value) - float(reference)) / denom * 100.0
 
 
 def _parse_pattern(raw: Any) -> ReplicatePattern:

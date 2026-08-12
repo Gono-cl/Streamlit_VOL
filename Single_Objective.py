@@ -44,10 +44,12 @@ sys.stdout = sys.__stdout__
 SAVE_DIR = "resumable_runs"
 os.makedirs(SAVE_DIR, exist_ok=True)
 _SINGLE_DEFERRED_SESSION_UPDATES_KEY = "_single_deferred_session_updates"
+REPRO_CYCLIC_LABEL = "Cyclic (1->...->N) x repeats"
+REPRO_CYCLIC_LABEL_LEGACY = "Cyclic (1->...->N)x3"
 REPRO_PATTERN_LABELS = [
     "Immediate (A->A)",
     "Bracketed (A->B->A)",
-    "Cyclic (1->...->N)x3",
+    REPRO_CYCLIC_LABEL,
 ]
 
 # --- Helpers ---
@@ -99,7 +101,7 @@ def _apply_single_deferred_updates() -> None:
 def _single_repro_seed_rows(repro_engine, param_names):
     """Aggregate reproducibility runs into unique seed points for BO initialization."""
     aggregated = {}
-    for record in getattr(repro_engine, "records", []):
+    for record in repro_engine.effective_records():
         if bool(getattr(record.context, "is_sentinel", False)):
             continue
         if not bool(getattr(record.result, "success", False)):
@@ -135,7 +137,7 @@ def _single_repro_seed_rows(repro_engine, param_names):
     return rows
 
 
-def _estimate_repro_schedule_runs(point_count, patterns, sentinel_every_n_runs=None):
+def _estimate_repro_schedule_runs(point_count, patterns, sentinel_every_n_runs=None, cyclic_repeats=3):
     """Estimate number of executed runs for one reproducibility schedule call."""
     n_points = max(0, int(point_count))
     if n_points == 0:
@@ -149,7 +151,7 @@ def _estimate_repro_schedule_runs(point_count, patterns, sentinel_every_n_runs=N
         elif pattern_key == ReplicatePattern.BRACKETED.value:
             base_runs += 3 * n_points
         elif pattern_key == ReplicatePattern.CYCLIC.value:
-            base_runs += 3 * n_points
+            base_runs += max(1, int(cyclic_repeats)) * n_points
 
     if base_runs <= 0:
         return 0
@@ -266,6 +268,8 @@ if "single_repro_n_points" not in st.session_state:
     st.session_state.single_repro_n_points = 8
 if "single_repro_patterns" not in st.session_state:
     st.session_state.single_repro_patterns = list(REPRO_PATTERN_LABELS[:2])
+if "single_repro_cyclic_repeats" not in st.session_state:
+    st.session_state.single_repro_cyclic_repeats = 3
 if "single_repro_use_sentinel" not in st.session_state:
     st.session_state.single_repro_use_sentinel = True
 if "single_repro_sentinel_every" not in st.session_state:
@@ -276,6 +280,14 @@ if "single_repro_max_cleaning" not in st.session_state:
     st.session_state.single_repro_max_cleaning = 2
 if "single_repro_block_on_fail" not in st.session_state:
     st.session_state.single_repro_block_on_fail = True
+if "single_repro_outlier_repeat_enabled" not in st.session_state:
+    st.session_state.single_repro_outlier_repeat_enabled = False
+if "single_repro_outlier_pair_rsd_pct" not in st.session_state:
+    st.session_state.single_repro_outlier_pair_rsd_pct = 5.0
+if "single_repro_outlier_gap_pct" not in st.session_state:
+    st.session_state.single_repro_outlier_gap_pct = 10.0
+if "single_repro_outlier_downgrade_conditional" not in st.session_state:
+    st.session_state.single_repro_outlier_downgrade_conditional = True
 if "single_repro_report" not in st.session_state:
     st.session_state.single_repro_report = None
 if "single_bo_qc_enabled" not in st.session_state:
@@ -528,20 +540,27 @@ if is_advanced_single:
             _single_patterns.append(ReplicatePattern.IMMEDIATE)
         if "Bracketed (A->B->A)" in _single_pattern_labels or ReplicatePattern.BRACKETED.value in _single_pattern_labels:
             _single_patterns.append(ReplicatePattern.BRACKETED)
-        if "Cyclic (1->...->N)x3" in _single_pattern_labels or ReplicatePattern.CYCLIC.value in _single_pattern_labels:
+        if (
+            REPRO_CYCLIC_LABEL in _single_pattern_labels
+            or REPRO_CYCLIC_LABEL_LEGACY in _single_pattern_labels
+            or ReplicatePattern.CYCLIC.value in _single_pattern_labels
+        ):
             _single_patterns.append(ReplicatePattern.CYCLIC)
         _single_use_sentinel = bool(st.session_state.get("single_repro_use_sentinel", True))
         _single_estimated_runs = _estimate_repro_schedule_runs(
             point_count=int(st.session_state.get("single_repro_n_points", 8)),
             patterns=_single_patterns or [ReplicatePattern.IMMEDIATE],
             sentinel_every_n_runs=int(st.session_state.get("single_repro_sentinel_every", 5)) if _single_use_sentinel else None,
+            cyclic_repeats=int(st.session_state.get("single_repro_cyclic_repeats", 3)),
         )
         st.caption(
             "Configured in Reproducibility Studio: "
             f"{st.session_state.get('single_repro_method', 'LHS')}, "
             f"{int(st.session_state.get('single_repro_n_points', 8))} points, "
+            f"cyclic repeats={int(st.session_state.get('single_repro_cyclic_repeats', 3))}, "
             f"patterns={len(st.session_state.get('single_repro_patterns', []))}, "
             f"sentinel={'on' if _single_use_sentinel else 'off'}, "
+            f"outlier repeat={'on' if st.session_state.get('single_repro_outlier_repeat_enabled', False) else 'off'}, "
             f"estimated startup reproducibility runs={_single_estimated_runs}."
         )
     if st.button("Open Reproducibility Studio", key="single_open_repro_page"):
@@ -594,11 +613,29 @@ if is_advanced_single:
                         st.session_state.single_repro_method = str(repro_cfg.get("method", st.session_state.get("single_repro_method", "LHS")))
                         st.session_state.single_repro_n_points = int(repro_cfg.get("n_points", st.session_state.get("single_repro_n_points", 8)))
                         st.session_state.single_repro_patterns = list(repro_cfg.get("patterns", st.session_state.get("single_repro_patterns", list(REPRO_PATTERN_LABELS[:2]))))
+                        st.session_state.single_repro_cyclic_repeats = int(
+                            repro_cfg.get("cyclic_repeats", st.session_state.get("single_repro_cyclic_repeats", 3))
+                        )
                         st.session_state.single_repro_use_sentinel = bool(repro_cfg.get("use_sentinel", st.session_state.get("single_repro_use_sentinel", True)))
                         st.session_state.single_repro_sentinel_every = int(repro_cfg.get("sentinel_every_n_runs", st.session_state.get("single_repro_sentinel_every", 5)))
                         st.session_state.single_repro_escalate_cleaning = bool(repro_cfg.get("escalate_cleaning", st.session_state.get("single_repro_escalate_cleaning", True)))
                         st.session_state.single_repro_max_cleaning = int(repro_cfg.get("max_cleaning_level", st.session_state.get("single_repro_max_cleaning", 2)))
                         st.session_state.single_repro_block_on_fail = bool(repro_cfg.get("block_on_fail", st.session_state.get("single_repro_block_on_fail", True)))
+                        st.session_state.single_repro_outlier_repeat_enabled = bool(
+                            repro_cfg.get("outlier_repeat_enabled", st.session_state.get("single_repro_outlier_repeat_enabled", False))
+                        )
+                        st.session_state.single_repro_outlier_pair_rsd_pct = float(
+                            repro_cfg.get("outlier_pair_rsd_pct", st.session_state.get("single_repro_outlier_pair_rsd_pct", 5.0))
+                        )
+                        st.session_state.single_repro_outlier_gap_pct = float(
+                            repro_cfg.get("outlier_gap_pct", st.session_state.get("single_repro_outlier_gap_pct", 10.0))
+                        )
+                        st.session_state.single_repro_outlier_downgrade_conditional = bool(
+                            repro_cfg.get(
+                                "outlier_downgrade_conditional",
+                                st.session_state.get("single_repro_outlier_downgrade_conditional", True),
+                            )
+                        )
                         for _widget_key in [
                             "single_repro_enabled_widget",
                             "single_repro_method_select",
@@ -609,6 +646,10 @@ if is_advanced_single:
                             "single_repro_escalate_cleaning_widget",
                             "single_repro_max_cleaning_input",
                             "single_repro_block_on_fail_widget",
+                            "single_repro_outlier_repeat_enabled_widget",
+                            "single_repro_outlier_pair_rsd_pct_widget",
+                            "single_repro_outlier_gap_pct_widget",
+                            "single_repro_outlier_downgrade_conditional_widget",
                         ]:
                             st.session_state.pop(_widget_key, None)
                     hardware = payload.get("hardware", {})
@@ -657,11 +698,18 @@ if is_advanced_single:
                         "method": st.session_state.get("single_repro_method", "LHS"),
                         "n_points": int(st.session_state.get("single_repro_n_points", 8)),
                         "patterns": list(st.session_state.get("single_repro_patterns", list(REPRO_PATTERN_LABELS[:2]))),
+                        "cyclic_repeats": int(st.session_state.get("single_repro_cyclic_repeats", 3)),
                         "use_sentinel": bool(st.session_state.get("single_repro_use_sentinel", True)),
                         "sentinel_every_n_runs": int(st.session_state.get("single_repro_sentinel_every", 5)),
                         "escalate_cleaning": bool(st.session_state.get("single_repro_escalate_cleaning", True)),
                         "max_cleaning_level": int(st.session_state.get("single_repro_max_cleaning", 2)),
                         "block_on_fail": bool(st.session_state.get("single_repro_block_on_fail", True)),
+                        "outlier_repeat_enabled": bool(st.session_state.get("single_repro_outlier_repeat_enabled", False)),
+                        "outlier_pair_rsd_pct": float(st.session_state.get("single_repro_outlier_pair_rsd_pct", 5.0)),
+                        "outlier_gap_pct": float(st.session_state.get("single_repro_outlier_gap_pct", 10.0)),
+                        "outlier_downgrade_conditional": bool(
+                            st.session_state.get("single_repro_outlier_downgrade_conditional", True)
+                        ),
                     },
                 },
                 hardware={
@@ -964,22 +1012,39 @@ if col_start.button("▶ Start Optimization"):
             selected_patterns.append(ReplicatePattern.IMMEDIATE)
         if "Bracketed (A->B->A)" in selected_pattern_labels or ReplicatePattern.BRACKETED.value in selected_pattern_labels:
             selected_patterns.append(ReplicatePattern.BRACKETED)
-        if "Cyclic (1->...->N)x3" in selected_pattern_labels or ReplicatePattern.CYCLIC.value in selected_pattern_labels:
+        if (
+            REPRO_CYCLIC_LABEL in selected_pattern_labels
+            or REPRO_CYCLIC_LABEL_LEGACY in selected_pattern_labels
+            or ReplicatePattern.CYCLIC.value in selected_pattern_labels
+        ):
             selected_patterns.append(ReplicatePattern.CYCLIC)
 
         if selected_patterns or sentinel_point is not None:
             patterns_to_run = selected_patterns or [ReplicatePattern.IMMEDIATE]
+            cyclic_repeats = int(st.session_state.get("single_repro_cyclic_repeats", 3))
             sentinel_every = int(st.session_state.get("single_repro_sentinel_every", 5)) if sentinel_point else None
+            adjudication_config = None
+            if bool(st.session_state.get("single_repro_outlier_repeat_enabled", False)):
+                adjudication_config = {
+                    "pair_rsd_threshold_pct": float(st.session_state.get("single_repro_outlier_pair_rsd_pct", 5.0)),
+                    "outlier_gap_threshold_pct": float(st.session_state.get("single_repro_outlier_gap_pct", 10.0)),
+                    "max_extra_replicates_per_point": 1,
+                    "downgrade_pass_to_conditional": bool(
+                        st.session_state.get("single_repro_outlier_downgrade_conditional", True)
+                    ),
+                }
             startup_expected_runs = _estimate_repro_schedule_runs(
                 point_count=len(test_points),
                 patterns=patterns_to_run,
                 sentinel_every_n_runs=sentinel_every,
+                cyclic_repeats=cyclic_repeats,
             )
             retest_points = test_points[: min(3, len(test_points))]
             retest_expected_runs = _estimate_repro_schedule_runs(
                 point_count=len(retest_points),
                 patterns=patterns_to_run,
                 sentinel_every_n_runs=sentinel_every,
+                cyclic_repeats=cyclic_repeats,
             )
 
             st.markdown("#### Reproducibility Gate Monitor")
@@ -1006,6 +1071,12 @@ if col_start.button("▶ Start Optimization"):
                     repro_monitor_table.dataframe(pd.DataFrame(repro_rows[-30:]), use_container_width=True)
 
             _refresh_repro_monitor("Preparing schedule")
+
+            def _outlier_repeat_callback(info: dict) -> None:
+                repro_runtime["planned"] = int(repro_runtime["planned"]) + 1
+                point_id = str(info.get("point_id", ""))
+                note = f"Scheduling extra replicate for {point_id}" if point_id else "Scheduling extra replicate"
+                _refresh_repro_monitor(note)
 
             def _repro_single_runner(point: dict, metadata: dict) -> dict:
                 repro_runtime["done"] += 1
@@ -1059,6 +1130,7 @@ if col_start.button("▶ Start Optimization"):
             repro_engine.schedule_with_reproducibility(
                 test_points=test_points,
                 patterns=patterns_to_run,
+                cyclic_repeats=cyclic_repeats,
                 sentinel_point=sentinel_point,
                 sentinel_every_n_runs=sentinel_every,
                 base_metadata={
@@ -1067,6 +1139,15 @@ if col_start.button("▶ Start Optimization"):
                 },
                 phase="startup",
             )
+            if adjudication_config:
+                repro_engine.adjudicate_cyclic_outliers(
+                    base_metadata={
+                        "workflow": "single_objective",
+                        "experiment_name": experiment_name,
+                    },
+                    repeat_callback=_outlier_repeat_callback,
+                    **adjudication_config,
+                )
             repro_report = repro_engine.analyze()
 
             if st.session_state.get("single_repro_escalate_cleaning", True):
@@ -1088,12 +1169,15 @@ if col_start.button("▶ Start Optimization"):
                         sentinel_point=sentinel_point,
                         sentinel_every_n_runs=sentinel_every,
                         patterns=patterns_to_run,
+                        cyclic_repeats=cyclic_repeats,
                         max_cleaning_level=int(st.session_state.get("single_repro_max_cleaning", 2)),
                         base_metadata={
                             "workflow": "single_objective",
                             "experiment_name": experiment_name,
                         },
                         cleaning_callback=_cleaning_callback,
+                        adjudication_config=adjudication_config,
+                        adjudication_callback=_outlier_repeat_callback,
                     )
                     repro_report = escalation.get("final_analysis", repro_report)
                     repro_report["escalation"] = escalation

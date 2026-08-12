@@ -16,6 +16,8 @@ DEFAULT_THRESHOLDS: dict[str, float] = {
     "drift_conditional_slope": 0.020,
     "memory_pass_abs_shift": 0.08,
     "memory_conditional_abs_shift": 0.20,
+    "cyclic_outlier_pair_rsd_pct": 5.0,
+    "cyclic_outlier_gap_pct": 10.0,
 }
 
 

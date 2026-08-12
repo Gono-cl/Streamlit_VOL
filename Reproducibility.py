@@ -1,17 +1,20 @@
 import streamlit as st
 
+REPRO_CYCLIC_LABEL = "Cyclic (1->...->N) x repeats"
+REPRO_CYCLIC_LABEL_LEGACY = "Cyclic (1->...->N)x3"
 REPRO_PATTERN_LABELS = [
     "Immediate (A->A)",
     "Bracketed (A->B->A)",
-    "Cyclic (1->...->N)x3",
+    REPRO_CYCLIC_LABEL,
 ]
 REPRO_PATTERN_LABEL_ALIASES = {
     "Immediate (A->A)": "Immediate (A->A)",
     "Bracketed (A->B->A)": "Bracketed (A->B->A)",
-    "Cyclic (1->...->N)x3": "Cyclic (1->...->N)x3",
+    REPRO_CYCLIC_LABEL: REPRO_CYCLIC_LABEL,
+    REPRO_CYCLIC_LABEL_LEGACY: REPRO_CYCLIC_LABEL,
     "immediate": "Immediate (A->A)",
     "bracketed": "Bracketed (A->B->A)",
-    "cyclic": "Cyclic (1->...->N)x3",
+    "cyclic": REPRO_CYCLIC_LABEL,
 }
 
 
@@ -70,6 +73,8 @@ def ensure_defaults() -> None:
         st.session_state.single_repro_n_points = 8
     if "single_repro_patterns" not in st.session_state:
         st.session_state.single_repro_patterns = list(REPRO_PATTERN_LABELS[:2])
+    if "single_repro_cyclic_repeats" not in st.session_state:
+        st.session_state.single_repro_cyclic_repeats = 3
     if "single_repro_use_sentinel" not in st.session_state:
         st.session_state.single_repro_use_sentinel = True
     if "single_repro_sentinel_every" not in st.session_state:
@@ -80,6 +85,14 @@ def ensure_defaults() -> None:
         st.session_state.single_repro_max_cleaning = 2
     if "single_repro_block_on_fail" not in st.session_state:
         st.session_state.single_repro_block_on_fail = True
+    if "single_repro_outlier_repeat_enabled" not in st.session_state:
+        st.session_state.single_repro_outlier_repeat_enabled = False
+    if "single_repro_outlier_pair_rsd_pct" not in st.session_state:
+        st.session_state.single_repro_outlier_pair_rsd_pct = 5.0
+    if "single_repro_outlier_gap_pct" not in st.session_state:
+        st.session_state.single_repro_outlier_gap_pct = 10.0
+    if "single_repro_outlier_downgrade_conditional" not in st.session_state:
+        st.session_state.single_repro_outlier_downgrade_conditional = True
 
     # Multi-objective reproducibility defaults
     if "multi_repro_enabled" not in st.session_state:
@@ -90,6 +103,8 @@ def ensure_defaults() -> None:
         st.session_state.multi_repro_n_points = 8
     if "multi_repro_patterns" not in st.session_state:
         st.session_state.multi_repro_patterns = list(REPRO_PATTERN_LABELS[:2])
+    if "multi_repro_cyclic_repeats" not in st.session_state:
+        st.session_state.multi_repro_cyclic_repeats = 3
     if "multi_repro_use_sentinel" not in st.session_state:
         st.session_state.multi_repro_use_sentinel = True
     if "multi_repro_sentinel_every" not in st.session_state:
@@ -102,6 +117,14 @@ def ensure_defaults() -> None:
         st.session_state.multi_repro_block_on_fail = True
     if "multi_repro_objective" not in st.session_state:
         st.session_state.multi_repro_objective = ""
+    if "multi_repro_outlier_repeat_enabled" not in st.session_state:
+        st.session_state.multi_repro_outlier_repeat_enabled = False
+    if "multi_repro_outlier_pair_rsd_pct" not in st.session_state:
+        st.session_state.multi_repro_outlier_pair_rsd_pct = 5.0
+    if "multi_repro_outlier_gap_pct" not in st.session_state:
+        st.session_state.multi_repro_outlier_gap_pct = 10.0
+    if "multi_repro_outlier_downgrade_conditional" not in st.session_state:
+        st.session_state.multi_repro_outlier_downgrade_conditional = True
 
 
 ensure_defaults()
@@ -132,12 +155,30 @@ else:
     )
 if "single_repro_use_sentinel_widget" not in st.session_state:
     st.session_state.single_repro_use_sentinel_widget = bool(st.session_state.get("single_repro_use_sentinel", True))
+if "single_repro_cyclic_repeats_widget" not in st.session_state:
+    st.session_state.single_repro_cyclic_repeats_widget = int(st.session_state.get("single_repro_cyclic_repeats", 3))
 if "single_repro_escalate_cleaning_widget" not in st.session_state:
     st.session_state.single_repro_escalate_cleaning_widget = bool(st.session_state.get("single_repro_escalate_cleaning", True))
 if "single_repro_max_cleaning_widget" not in st.session_state:
     st.session_state.single_repro_max_cleaning_widget = int(st.session_state.get("single_repro_max_cleaning", 2))
 if "single_repro_block_on_fail_widget" not in st.session_state:
     st.session_state.single_repro_block_on_fail_widget = bool(st.session_state.get("single_repro_block_on_fail", True))
+if "single_repro_outlier_repeat_enabled_widget" not in st.session_state:
+    st.session_state.single_repro_outlier_repeat_enabled_widget = bool(
+        st.session_state.get("single_repro_outlier_repeat_enabled", False)
+    )
+if "single_repro_outlier_pair_rsd_pct_widget" not in st.session_state:
+    st.session_state.single_repro_outlier_pair_rsd_pct_widget = float(
+        st.session_state.get("single_repro_outlier_pair_rsd_pct", 5.0)
+    )
+if "single_repro_outlier_gap_pct_widget" not in st.session_state:
+    st.session_state.single_repro_outlier_gap_pct_widget = float(
+        st.session_state.get("single_repro_outlier_gap_pct", 10.0)
+    )
+if "single_repro_outlier_downgrade_conditional_widget" not in st.session_state:
+    st.session_state.single_repro_outlier_downgrade_conditional_widget = bool(
+        st.session_state.get("single_repro_outlier_downgrade_conditional", True)
+    )
 
 if "multi_repro_method_widget" not in st.session_state:
     st.session_state.multi_repro_method_widget = st.session_state.get("multi_repro_method", "LHS")
@@ -156,6 +197,8 @@ else:
     )
 if "multi_repro_use_sentinel_widget" not in st.session_state:
     st.session_state.multi_repro_use_sentinel_widget = bool(st.session_state.get("multi_repro_use_sentinel", True))
+if "multi_repro_cyclic_repeats_widget" not in st.session_state:
+    st.session_state.multi_repro_cyclic_repeats_widget = int(st.session_state.get("multi_repro_cyclic_repeats", 3))
 if "multi_repro_escalate_cleaning_widget" not in st.session_state:
     st.session_state.multi_repro_escalate_cleaning_widget = bool(st.session_state.get("multi_repro_escalate_cleaning", True))
 if "multi_repro_max_cleaning_widget" not in st.session_state:
@@ -164,6 +207,22 @@ if "multi_repro_block_on_fail_widget" not in st.session_state:
     st.session_state.multi_repro_block_on_fail_widget = bool(st.session_state.get("multi_repro_block_on_fail", True))
 if "multi_repro_objective_widget" not in st.session_state:
     st.session_state.multi_repro_objective_widget = st.session_state.get("multi_repro_objective", "")
+if "multi_repro_outlier_repeat_enabled_widget" not in st.session_state:
+    st.session_state.multi_repro_outlier_repeat_enabled_widget = bool(
+        st.session_state.get("multi_repro_outlier_repeat_enabled", False)
+    )
+if "multi_repro_outlier_pair_rsd_pct_widget" not in st.session_state:
+    st.session_state.multi_repro_outlier_pair_rsd_pct_widget = float(
+        st.session_state.get("multi_repro_outlier_pair_rsd_pct", 5.0)
+    )
+if "multi_repro_outlier_gap_pct_widget" not in st.session_state:
+    st.session_state.multi_repro_outlier_gap_pct_widget = float(
+        st.session_state.get("multi_repro_outlier_gap_pct", 10.0)
+    )
+if "multi_repro_outlier_downgrade_conditional_widget" not in st.session_state:
+    st.session_state.multi_repro_outlier_downgrade_conditional_widget = bool(
+        st.session_state.get("multi_repro_outlier_downgrade_conditional", True)
+    )
 
 st.title("Reproducibility Studio")
 st.caption("Configure reproducibility settings in one page and reuse them in Single/Multi optimization.")
@@ -192,20 +251,55 @@ single_patterns = st.multiselect(
     options=REPRO_PATTERN_LABELS,
     key="single_repro_patterns_widget",
 )
+single_cyclic_repeats = st.number_input(
+    "Cyclic repeats",
+    min_value=3,
+    max_value=20,
+    step=1,
+    key="single_repro_cyclic_repeats_widget",
+)
 col_sf1, col_sf2, col_sf3, col_sf4 = st.columns(4)
 single_use_sentinel = col_sf1.checkbox("Enable sentinel", key="single_repro_use_sentinel_widget")
 single_escalate = col_sf2.checkbox("Escalate cleaning", key="single_repro_escalate_cleaning_widget")
 single_max_cleaning = col_sf3.number_input("Max cleaning level", min_value=1, max_value=10, step=1, key="single_repro_max_cleaning_widget")
 single_block_on_fail = col_sf4.checkbox("Block on FAIL", key="single_repro_block_on_fail_widget")
+st.caption("Optional cyclic adjudication: if one cyclic result is far from the remaining cluster, run one extra full replicate for that point.")
+col_so1, col_so2, col_so3, col_so4 = st.columns(4)
+single_outlier_repeat = col_so1.checkbox("Repeat suspicious cyclic points", key="single_repro_outlier_repeat_enabled_widget")
+single_outlier_pair_rsd = col_so2.number_input(
+    "Pair max RSD (%)",
+    min_value=0.1,
+    max_value=100.0,
+    value=float(st.session_state.get("single_repro_outlier_pair_rsd_pct_widget", 5.0)),
+    step=0.5,
+    key="single_repro_outlier_pair_rsd_pct_widget",
+)
+single_outlier_gap = col_so3.number_input(
+    "Outlier min gap (%)",
+    min_value=0.1,
+    max_value=500.0,
+    value=float(st.session_state.get("single_repro_outlier_gap_pct_widget", 10.0)),
+    step=1.0,
+    key="single_repro_outlier_gap_pct_widget",
+)
+single_outlier_downgrade = col_so4.checkbox(
+    "Downgrade resolved cases to CONDITIONAL",
+    key="single_repro_outlier_downgrade_conditional_widget",
+)
 
 st.session_state.single_repro_method = str(single_method)
 st.session_state.single_repro_n_points = int(single_n_points)
 st.session_state.single_repro_sentinel_every = int(single_sentinel_every)
 st.session_state.single_repro_patterns = list(single_patterns)
+st.session_state.single_repro_cyclic_repeats = int(single_cyclic_repeats)
 st.session_state.single_repro_use_sentinel = bool(single_use_sentinel)
 st.session_state.single_repro_escalate_cleaning = bool(single_escalate)
 st.session_state.single_repro_max_cleaning = int(single_max_cleaning)
 st.session_state.single_repro_block_on_fail = bool(single_block_on_fail)
+st.session_state.single_repro_outlier_repeat_enabled = bool(single_outlier_repeat)
+st.session_state.single_repro_outlier_pair_rsd_pct = float(single_outlier_pair_rsd)
+st.session_state.single_repro_outlier_gap_pct = float(single_outlier_gap)
+st.session_state.single_repro_outlier_downgrade_conditional = bool(single_outlier_downgrade)
 
 section_header("Multi-Objective Repro Settings", accent="#f59e0b", background="#fffbeb")
 st.checkbox("Enable gate for Multi Objective", key="multi_repro_enabled")
@@ -217,6 +311,13 @@ multi_patterns = st.multiselect(
     "Replication patterns",
     options=REPRO_PATTERN_LABELS,
     key="multi_repro_patterns_widget",
+)
+multi_cyclic_repeats = st.number_input(
+    "Cyclic repeats",
+    min_value=3,
+    max_value=20,
+    step=1,
+    key="multi_repro_cyclic_repeats_widget",
 )
 if objectives:
     default_obj = st.session_state.get("multi_repro_objective_widget", st.session_state.get("multi_repro_objective", ""))
@@ -236,15 +337,43 @@ multi_use_sentinel = col_mf1.checkbox("Enable sentinel", key="multi_repro_use_se
 multi_escalate = col_mf2.checkbox("Escalate cleaning", key="multi_repro_escalate_cleaning_widget")
 multi_max_cleaning = col_mf3.number_input("Max cleaning level", min_value=1, max_value=10, step=1, key="multi_repro_max_cleaning_widget")
 multi_block_on_fail = col_mf4.checkbox("Block on FAIL", key="multi_repro_block_on_fail_widget")
+st.caption("Optional cyclic adjudication: if one cyclic result is far from the remaining cluster, run one extra full replicate for that point.")
+col_mo1, col_mo2, col_mo3, col_mo4 = st.columns(4)
+multi_outlier_repeat = col_mo1.checkbox("Repeat suspicious cyclic points", key="multi_repro_outlier_repeat_enabled_widget")
+multi_outlier_pair_rsd = col_mo2.number_input(
+    "Pair max RSD (%)",
+    min_value=0.1,
+    max_value=100.0,
+    value=float(st.session_state.get("multi_repro_outlier_pair_rsd_pct_widget", 5.0)),
+    step=0.5,
+    key="multi_repro_outlier_pair_rsd_pct_widget",
+)
+multi_outlier_gap = col_mo3.number_input(
+    "Outlier min gap (%)",
+    min_value=0.1,
+    max_value=500.0,
+    value=float(st.session_state.get("multi_repro_outlier_gap_pct_widget", 10.0)),
+    step=1.0,
+    key="multi_repro_outlier_gap_pct_widget",
+)
+multi_outlier_downgrade = col_mo4.checkbox(
+    "Downgrade resolved cases to CONDITIONAL",
+    key="multi_repro_outlier_downgrade_conditional_widget",
+)
 
 st.session_state.multi_repro_method = str(multi_method)
 st.session_state.multi_repro_n_points = int(multi_n_points)
 st.session_state.multi_repro_sentinel_every = int(multi_sentinel_every)
 st.session_state.multi_repro_patterns = list(multi_patterns)
+st.session_state.multi_repro_cyclic_repeats = int(multi_cyclic_repeats)
 st.session_state.multi_repro_use_sentinel = bool(multi_use_sentinel)
 st.session_state.multi_repro_escalate_cleaning = bool(multi_escalate)
 st.session_state.multi_repro_max_cleaning = int(multi_max_cleaning)
 st.session_state.multi_repro_block_on_fail = bool(multi_block_on_fail)
+st.session_state.multi_repro_outlier_repeat_enabled = bool(multi_outlier_repeat)
+st.session_state.multi_repro_outlier_pair_rsd_pct = float(multi_outlier_pair_rsd)
+st.session_state.multi_repro_outlier_gap_pct = float(multi_outlier_gap)
+st.session_state.multi_repro_outlier_downgrade_conditional = bool(multi_outlier_downgrade)
 
 section_header("Navigation", accent="#10b981", background="#ecfdf5")
 st.info(
@@ -258,11 +387,16 @@ if col_go1.button("Go To Single Objective"):
         "single_repro_method": st.session_state.get("single_repro_method", "LHS"),
         "single_repro_n_points": int(st.session_state.get("single_repro_n_points", 8)),
         "single_repro_patterns": list(st.session_state.get("single_repro_patterns", list(REPRO_PATTERN_LABELS[:2]))),
+        "single_repro_cyclic_repeats": int(st.session_state.get("single_repro_cyclic_repeats", 3)),
         "single_repro_use_sentinel": bool(st.session_state.get("single_repro_use_sentinel", True)),
         "single_repro_sentinel_every": int(st.session_state.get("single_repro_sentinel_every", 5)),
         "single_repro_escalate_cleaning": bool(st.session_state.get("single_repro_escalate_cleaning", True)),
         "single_repro_max_cleaning": int(st.session_state.get("single_repro_max_cleaning", 2)),
         "single_repro_block_on_fail": bool(st.session_state.get("single_repro_block_on_fail", True)),
+        "single_repro_outlier_repeat_enabled": bool(st.session_state.get("single_repro_outlier_repeat_enabled", False)),
+        "single_repro_outlier_pair_rsd_pct": float(st.session_state.get("single_repro_outlier_pair_rsd_pct", 5.0)),
+        "single_repro_outlier_gap_pct": float(st.session_state.get("single_repro_outlier_gap_pct", 10.0)),
+        "single_repro_outlier_downgrade_conditional": bool(st.session_state.get("single_repro_outlier_downgrade_conditional", True)),
     }
     st.session_state.single_ui_mode = "Advanced"
     st.session_state.selected_page = "single_objective"
@@ -273,12 +407,17 @@ if col_go2.button("Go To Multi Objective"):
         "multi_repro_method": st.session_state.get("multi_repro_method", "LHS"),
         "multi_repro_n_points": int(st.session_state.get("multi_repro_n_points", 8)),
         "multi_repro_patterns": list(st.session_state.get("multi_repro_patterns", list(REPRO_PATTERN_LABELS[:2]))),
+        "multi_repro_cyclic_repeats": int(st.session_state.get("multi_repro_cyclic_repeats", 3)),
         "multi_repro_use_sentinel": bool(st.session_state.get("multi_repro_use_sentinel", True)),
         "multi_repro_sentinel_every": int(st.session_state.get("multi_repro_sentinel_every", 5)),
         "multi_repro_escalate_cleaning": bool(st.session_state.get("multi_repro_escalate_cleaning", True)),
         "multi_repro_max_cleaning": int(st.session_state.get("multi_repro_max_cleaning", 2)),
         "multi_repro_block_on_fail": bool(st.session_state.get("multi_repro_block_on_fail", True)),
         "multi_repro_objective": st.session_state.get("multi_repro_objective", ""),
+        "multi_repro_outlier_repeat_enabled": bool(st.session_state.get("multi_repro_outlier_repeat_enabled", False)),
+        "multi_repro_outlier_pair_rsd_pct": float(st.session_state.get("multi_repro_outlier_pair_rsd_pct", 5.0)),
+        "multi_repro_outlier_gap_pct": float(st.session_state.get("multi_repro_outlier_gap_pct", 10.0)),
+        "multi_repro_outlier_downgrade_conditional": bool(st.session_state.get("multi_repro_outlier_downgrade_conditional", True)),
     }
     st.session_state.multi_ui_mode = "Advanced"
     st.session_state.selected_page = "multi_objective"
