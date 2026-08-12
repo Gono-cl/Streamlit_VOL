@@ -159,6 +159,7 @@ def test_cyclic_outlier_repeat_confirms_transient_and_downgrades_to_conditional(
     assert report["counts"]["effective_runs"] == 3
     assert report["counts"]["excluded_outlier_runs"] == 1
     assert report["counts"]["adjudication_confirmed_outliers"] == 1
+    assert report["adjudication"]["pass_downgraded_to_conditional"] is True
     assert "downgraded to CONDITIONAL" in " ".join(report["reasons"])
 
 

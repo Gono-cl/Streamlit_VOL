@@ -263,6 +263,7 @@ class ReproducibilityEngine:
 
         decision_raw, reasons = decide(metrics, thresholds=th)
         decision = DecisionLabel(decision_raw)
+        pass_downgraded_to_conditional = False
         if confirmed_events:
             adjudication_note = (
                 f"Cyclic outlier adjudication resolved {len(confirmed_events)} point(s)."
@@ -270,6 +271,7 @@ class ReproducibilityEngine:
             reasons = list(reasons)
             if decision == DecisionLabel.PASS and self._downgrade_pass_to_conditional_on_adjudication:
                 decision = DecisionLabel.CONDITIONAL
+                pass_downgraded_to_conditional = True
                 reasons.append(f"{adjudication_note} PASS downgraded to CONDITIONAL.")
             else:
                 reasons.append(adjudication_note)
@@ -303,6 +305,9 @@ class ReproducibilityEngine:
             },
             "adjudication": {
                 "downgrade_pass_to_conditional": bool(self._downgrade_pass_to_conditional_on_adjudication),
+                "pass_downgraded_to_conditional": bool(pass_downgraded_to_conditional),
+                "confirmed_outliers": int(len(confirmed_events)),
+                "unresolved_events": int(len(unresolved_events)),
                 "events": selected_events,
             },
         }

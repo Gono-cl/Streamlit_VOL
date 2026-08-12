@@ -184,6 +184,78 @@ def _estimate_repro_schedule_runs(point_count, patterns, sentinel_every_n_runs=N
     return base_runs + sentinel_runs
 
 
+def _fmt_repro_metric(value) -> str:
+    try:
+        numeric = float(value)
+    except Exception:
+        return "-"
+    if not np.isfinite(numeric):
+        return "-"
+    return f"{numeric:.4g}"
+
+
+def _render_repro_report_panel(report: dict | None) -> None:
+    if not isinstance(report, dict):
+        return
+
+    counts = dict(report.get("counts", {}) or {})
+    metrics = dict(report.get("metrics", {}) or {})
+    adjudication = dict(report.get("adjudication", {}) or {})
+    events = [dict(event) for event in adjudication.get("events", []) if isinstance(event, dict)]
+    reasons = [str(reason) for reason in (report.get("reasons", []) or []) if str(reason).strip()]
+
+    st.markdown("#### Reproducibility Report")
+    col_r1, col_r2, col_r3, col_r4 = st.columns(4)
+    col_r1.metric("Decision", str(report.get("decision", "UNKNOWN")))
+    col_r2.metric("Total runs", int(counts.get("total_runs", 0)))
+    col_r3.metric("Effective runs", int(counts.get("effective_runs", counts.get("successful_runs", 0))))
+    col_r4.metric(
+        "Flagged points",
+        int(adjudication.get("confirmed_outliers", 0)) + int(adjudication.get("unresolved_events", 0)),
+    )
+
+    col_m1, col_m2, col_m3 = st.columns(3)
+    col_m1.metric("Replicate RSD (%)", _fmt_repro_metric(metrics.get("immediate_rsd_pct")))
+    col_m2.metric("Memory shift", _fmt_repro_metric(metrics.get("memory_abs_shift_median")))
+    col_m3.metric("Sentinel drift", _fmt_repro_metric(metrics.get("sentinel_drift_slope_abs")))
+
+    if bool(adjudication.get("pass_downgraded_to_conditional", False)):
+        st.warning("Result downgraded to CONDITIONAL because an extra cyclic replicate confirmed a suspicious run.")
+    elif int(adjudication.get("confirmed_outliers", 0)) > 0:
+        st.info("Suspicious cyclic runs were rechecked with an extra replicate.")
+    elif int(adjudication.get("unresolved_events", 0)) > 0:
+        st.info("Suspicious cyclic runs were rechecked but remained unresolved.")
+
+    if reasons:
+        st.caption("Reasons: " + " | ".join(reasons))
+
+    if events:
+        rows = []
+        downgraded = bool(adjudication.get("pass_downgraded_to_conditional", False))
+        for event in events:
+            cluster_values = []
+            for value in event.get("cluster_values", []) or []:
+                try:
+                    cluster_values.append(float(value))
+                except Exception:
+                    continue
+            cluster_mean = float(np.mean(cluster_values)) if cluster_values else float("nan")
+            rows.append(
+                {
+                    "Status": str(event.get("status", "")),
+                    "Point": str(event.get("point_id", "")),
+                    "Suspicious run": str(event.get("candidate_role", "")),
+                    "Suspicious value": _fmt_repro_metric(event.get("candidate_value")),
+                    "Extra run": str(event.get("repeat_role", "")),
+                    "Extra value": _fmt_repro_metric(event.get("repeat_value")),
+                    "Cluster runs": ", ".join(str(role) for role in (event.get("cluster_roles", []) or [])),
+                    "Cluster mean": _fmt_repro_metric(cluster_mean),
+                    "Downgraded": "Yes" if downgraded else "No",
+                }
+            )
+        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+
 def section_header(title: str, accent: str, background: str = "#f8fafc") -> None:
     st.markdown(
         f"""
@@ -585,6 +657,9 @@ if is_advanced_multi:
     if st.button("Open Reproducibility Studio", key="multi_open_repro_page"):
         st.session_state.selected_page = "reproducibility"
         st.rerun()
+    existing_multi_repro_report = st.session_state.get("multi_repro_report")
+    if isinstance(existing_multi_repro_report, dict):
+        _render_repro_report_panel(existing_multi_repro_report)
 else:
     st.caption("Reproducibility controls are hidden in Quick mode. Switch to Advanced to view status.")
 if is_advanced_multi:
@@ -1224,6 +1299,8 @@ if start_clicked:
                     st.warning("Reproducibility gate: CONDITIONAL")
                 else:
                     st.error("Reproducibility gate: FAIL")
+                _render_repro_report_panel(repro_report_safe)
+                if decision_value not in (DecisionLabel.PASS.value, DecisionLabel.CONDITIONAL.value):
                     if st.session_state.get("multi_repro_block_on_fail", True):
                         st.session_state.optimization_running = False
                         st.error("Optimization start blocked by reproducibility gate.")
