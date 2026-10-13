@@ -1,0 +1,44 @@
+{
+    "opc": {
+        "host": "http://YOUR_OPC_EXPERT_HOST:57080",
+        "area": "E_CHEM"
+    },
+    "spectragryph": {
+        "spectra_folder": "C:\\path\\to\\Spectragryph\\exports",
+        "file_pattern": "my_acquired_spectra_*.csv"
+    },
+    "pumps": {
+        "stock_pump": "PUMP1",
+        "water_pump": "PUMP2"
+    },
+    "calibration": {
+        "stock_concentration": 400.0,
+        "total_flow": 2.0,
+        "target_concentrations": [
+            0,
+            80,
+            160,
+            240,
+            280,
+            320
+        ],
+        "target_wavelength": 664.0,
+        "wait_time": 60,
+        "n_replicates": 5,
+        "replicate_interval": 2.0,
+        "cv_threshold": 5.0,
+        "max_extra_measurements": 10
+    },
+    "sample_measurement": {
+        "n_replicates": 5,
+        "replicate_interval": 2.0,
+        "cv_threshold": 5.0,
+        "max_extra_measurements": 10
+    },
+    "output": {
+        "calibration_results_file": "calibration_results.csv",
+        "calibration_plot_file": "calibration_curve.png",
+        "calibration_model_file": "calibration_model.json",
+        "sample_results_file": "sample_results.csv"
+    }
+}

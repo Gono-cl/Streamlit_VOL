@@ -1,0 +1,9 @@
+{
+    "slope": 0.003794,
+    "intercept": 0.009579,
+    "r2": 0.9926,
+    "range_min": 0.0,
+    "range_max": 320.0,
+    "wavelength": 663.857,
+    "concentration_unit": "mg/L"
+}
