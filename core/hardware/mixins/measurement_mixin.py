@@ -2,13 +2,66 @@
 from __future__ import annotations
 
 import time
+import json
 from datetime import datetime
 from typing import List
 
 import numpy as np
 
+from core.hardware.uvvis_measurement import UVVisMeasurement, MeasurementValidationError
+
 
 class MeasurementMixin:
+    def _get_uvvis_measurement(self):
+        if getattr(self, "_uvvis_measurement", None) is None:
+            self._uvvis_measurement = UVVisMeasurement(self.uvvis_config)
+            self.uvvis_config["expected_calibration_id"] = self._uvvis_measurement.calibration_id
+        return self._uvvis_measurement
+
+    def measurement_result_fields(self):
+        result = getattr(self, "last_measurement_result", None)
+        if not result:
+            return {}
+        return {
+            "Measurement Source": "UV/VIS",
+            "Concentration Unit": result["concentration_unit"],
+            "UV/VIS Concentration": result["concentration"],
+            "UV/VIS Absorbance": result["absorbance"],
+            "UV/VIS Absorbance SD": result["absorbance_sd"],
+            "UV/VIS CV (%)": result["absorbance_cv"],
+            "UV/VIS Accepted": result["accepted"],
+            "UV/VIS Range Status": result["status"],
+            "UV/VIS Extra Measurements": result["extra_measurements"],
+            "UV/VIS Calibration": result["calibration_file"],
+            "UV/VIS Calibration ID": result["calibration_id"],
+        }
+
+    def _collect_uvvis_measurements(self, iteration, parameters):
+        provider = self._get_uvvis_measurement()
+        result = None
+        try:
+            result = provider.measure()
+            self.last_measurement_result = result
+            return provider.require_valid(result)
+        finally:
+            for index, acquisition in enumerate(provider.reader.acquisitions, 1):
+                self.full_measurement_log.append({
+                    "Iteration": iteration,
+                    "Timestamp": acquisition["timestamp"],
+                    **(parameters or {}),
+                    "Measurement #": index,
+                    "Value": float(provider.sample.calculate_concentration(acquisition["absorbance"])),
+                    "Absorbance": acquisition["absorbance"],
+                    "Wavelength (nm)": acquisition["wavelength"],
+                    "Spectrum File": acquisition["file"],
+                    "Concentration Unit": provider.concentration_unit,
+                    "Accepted": bool(result and result["accepted"] and result["status"] == "valid"),
+                    "Range Status": result["status"] if result else "acquisition_failed",
+                    "Absorbance CV (%)": result["absorbance_cv"] if result else "",
+                    "Calibration ID": provider.calibration_id,
+                    "Calibration Model": json.dumps(provider.sample.calibration_model, sort_keys=True),
+                })
+
     def calculate_rsd(self, measurements: List[float]):
         return (np.std(measurements) / np.mean(measurements)) * 100 if np.mean(measurements) != 0 else float("inf")
 
@@ -33,8 +86,8 @@ class MeasurementMixin:
         return f"{prefix}{signal}"
 
     def _read_measurement(self, parameters=None):
-        if self.simulation_mode == "full":
-            return np.random.uniform(70, 100)
+        if self.simulation_mode in ["full", "hybrid"]:
+            return self.synthetic_raw_area((parameters or {}).get("residence_time", 20))
         measurement_tag = self._resolve_measurement_tag(parameters)
         product_area = float(self.opc.read_value(measurement_tag))
         return product_area
@@ -51,6 +104,9 @@ class MeasurementMixin:
             min_mean_threshold: Below this mean, use absolute std dev instead of RSD
             abs_std_threshold: Absolute std dev threshold for low-value measurements
         """
+        if getattr(self, "measurement_backend", "opc") == "uvvis" and self.simulation_mode == "off":
+            return self._collect_uvvis_measurements(iteration, parameters)
+
         measurements = []
         all_measurements = []
 
@@ -59,7 +115,7 @@ class MeasurementMixin:
             print(f"Measurement {len(measurements)+1} = {val:.2f}")
             measurements.append(val)
             all_measurements.append(val)
-            if len(measurements) < 3:
+            if len(measurements) < 3 and self.simulation_mode == "off":
                 time.sleep(20)
 
         mean_val = np.mean(measurements)
@@ -76,13 +132,14 @@ class MeasurementMixin:
             use_rsd = True
             is_acceptable = rsd < rsd_threshold
 
-        while not is_acceptable and len(measurements) < max_measurements:
+        while not is_acceptable and len(all_measurements) < max_measurements:
             if use_rsd:
                 print(f"Warning: RSD too high ({rsd:.2f}% > {rsd_threshold}%). Taking another measurement...")
             else:
                 print(f"Warning: Abs StdDev too high ({abs_std:.3f} > {abs_std_threshold}). Taking another measurement...")
 
-            time.sleep(20)  # Wait before next measurement
+            if self.simulation_mode == "off":
+                time.sleep(20)  # Wait before next measurement
             new_val = self._read_measurement(parameters=parameters)
             print(f"New Measurement = {new_val:.2f}")
             measurements = measurements[-2:] + [new_val]
@@ -112,7 +169,9 @@ class MeasurementMixin:
                 "Value": val
             })
 
-        return np.mean(measurements)
+        if not is_acceptable:
+            raise MeasurementValidationError(f"OPC measurement failed stability after {len(all_measurements)} readings.")
+        return float(np.mean(measurements))
 
     def synthetic_raw_area(self, res_time):
         """
