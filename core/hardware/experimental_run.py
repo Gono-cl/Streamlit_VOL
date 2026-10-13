@@ -28,6 +28,7 @@ from core.hardware.protocol_scripts import load_protocol_module, protocol_info
 from core.hardware.mixins.ui_mixin import UIMixin
 from core.hardware.opc_communication import OPCClient
 from core.objectives import calculate_objectives
+from core.hardware.uvvis_measurement import measurement_settings
 
 
 class ExperimentRunner(
@@ -50,6 +51,8 @@ class ExperimentRunner(
         measurement_source_prefix: str | None = None,
         measurement_source_signal: str | None = None,
         measurement_source_tag: str | None = None,
+        measurement_backend: str = "opc",
+        uvvis_config: dict | None = None,
     ):
         self.opc = opc_client
         self.use_autosampler = use_autosampler
@@ -64,6 +67,13 @@ class ExperimentRunner(
         self.measurement_source_prefix = measurement_source_prefix
         self.measurement_source_signal = measurement_source_signal
         self.measurement_source_tag = measurement_source_tag
+        settings = measurement_settings({"measurement_backend": measurement_backend, "uvvis_config": uvvis_config})
+        if settings["measurement_backend"] not in ("opc", "uvvis"):
+            raise ValueError("Measurement backend must be 'opc' or 'uvvis'.")
+        self.measurement_backend = settings["measurement_backend"]
+        self.uvvis_config = settings["uvvis_config"]
+        self._uvvis_measurement = None
+        self.last_measurement_result = None
         if self.running_protocol_script:
             try:
                 self.running_protocol_module = load_protocol_module(self.running_protocol_script)
@@ -234,66 +244,86 @@ class ExperimentRunner(
                 status_note=status_note,
             )
 
-        if self.simulation_mode in ["off", "hybrid"]:
-            if self.protocol_prepare_fn:
-                self.protocol_prepare_fn(self, parameters)
+        self.last_measurement_result = None
+        if self.measurement_backend == "uvvis" and self.simulation_mode == "off":
+            # Validate the folder/model before any protocol can start hardware.
+            self._get_uvvis_measurement()
+        hardware_started = False
+        completed = False
+        try:
+            if self.simulation_mode in ["off", "hybrid"]:
+                hardware_started = True
+                if self.protocol_prepare_fn:
+                    self.protocol_prepare_fn(self, parameters)
+                else:
+                    self.process_adapter.prepare_hardware(self, parameters)
             else:
-                self.process_adapter.prepare_hardware(self, parameters)
-        else:
-            print("Full simulation mode enabled: skipping temperature and pump setup.")
+                print("Full simulation mode enabled: skipping temperature and pump setup.")
 
-        if self.simulation_mode in ["full"]:
-            result = self.simulate_experiment(parameters, objectives, directions)
-        else:
-            mean_measurement = self.collect_measurements(parameters=parameters)
-            if self.protocol_calculate_fn:
-                result = self.protocol_calculate_fn(
-                    self,
-                    mean_measurement,
-                    parameters,
-                    objectives,
-                    directions,
-                )
+            if self.simulation_mode in ["full"]:
+                result = self.simulate_experiment(parameters, objectives, directions)
             else:
-                result = self.process_adapter.calculate_real_result(
-                    self,
-                    mean_measurement,
-                    parameters,
-                    objectives,
-                    directions,
-                )
-            result = self._normalize_result_payload(result, objectives)
+                mean_measurement = self.collect_measurements(iteration=experiment_number or 0, parameters=parameters)
+                if self.protocol_calculate_fn:
+                    result = self.protocol_calculate_fn(
+                        self,
+                        mean_measurement,
+                        parameters,
+                        objectives,
+                        directions,
+                    )
+                else:
+                    result = self.process_adapter.calculate_real_result(
+                        self,
+                        mean_measurement,
+                        parameters,
+                        objectives,
+                        directions,
+                    )
+                result = self._normalize_result_payload(result, objectives)
 
-        if self.use_autosampler:
-            self.autosampler.clean_before_collect(self.tray_pos_waste)
-            self.autosampler.move_prepare_needle(self.tray_pos_collect)
-            if self.protocol_autosampler_fn:
-                flow_org = float(self.protocol_autosampler_fn(self, parameters))
+            if self.use_autosampler and self.simulation_mode in ["off", "hybrid"]:
+                self.autosampler.clean_before_collect(self.tray_pos_waste)
+                self.autosampler.move_prepare_needle(self.tray_pos_collect)
+                if self.protocol_autosampler_fn:
+                    flow_org = float(self.protocol_autosampler_fn(self, parameters))
+                else:
+                    flow_org = self.process_adapter.autosampler_flow_rate(self, parameters)
+                self.autosampler.start_collection(flow_rate=flow_org, volume=self.volume_to_collect)
+                self.tray_pos_waste = (self.tray_pos_waste + 2) % 32
+                self.tray_pos_collect = (self.tray_pos_collect + 2) % 32
             else:
-                flow_org = self.process_adapter.autosampler_flow_rate(self, parameters)
-            self.autosampler.start_collection(flow_rate=flow_org, volume=self.volume_to_collect)
-            self.tray_pos_waste = (self.tray_pos_waste + 2) % 32
-            self.tray_pos_collect = (self.tray_pos_collect + 2) % 32
-        else:
-            print("Autosampler disabled: skipping sample collection.")
-
-        if self.protocol_stop_pumps_fn:
-            self.protocol_stop_pumps_fn(self, parameters)
-
-        if self.protocol_cleanup_fn:
-            self.protocol_cleanup_fn(self, parameters)
-        else:
-            self.process_adapter.cleanup(self, parameters)
-        return self._normalize_result_payload(result, objectives)
+                print("Autosampler disabled: skipping sample collection.")
+            completed = True
+            return self._normalize_result_payload(result, objectives)
+        finally:
+            if hardware_started:
+                try:
+                    try:
+                        if self.protocol_stop_pumps_fn:
+                            self.protocol_stop_pumps_fn(self, parameters)
+                    finally:
+                        if self.protocol_cleanup_fn:
+                            self.protocol_cleanup_fn(self, parameters)
+                        else:
+                            self.process_adapter.cleanup(self, parameters)
+                except Exception as cleanup_error:
+                    if completed:
+                        raise
+                    # Preserve the measurement/preparation error for the caller.
+                    print(f"Hardware cleanup also failed: {cleanup_error}")
 
     # ---------------------------------------------------------------------------
     #                          SAVING FUNCTIONS
     # ---------------------------------------------------------------------------
     def save_full_measurements_to_csv(self, experiment_name):
         os.makedirs("raw_measurements", exist_ok=True)
-        filename = f"raw_measurements/{experiment_name.replace(' ', '_')}_measurements.csv"
+        suffix = "_uvvis" if self.measurement_backend == "uvvis" and self.simulation_mode == "off" else ""
+        filename = f"raw_measurements/{experiment_name.replace(' ', '_')}{suffix}_measurements.csv"
+        if not self.full_measurement_log:
+            return filename
         keys = self.full_measurement_log[0].keys() if self.full_measurement_log else []
-        file_exists = os.path.isfile(filename)
+        file_exists = os.path.isfile(filename) and os.path.getsize(filename) > 0
         mode = "a" if file_exists else "w"
         with open(filename, mode, newline="") as f:
             writer = csv.DictWriter(f, fieldnames=keys)

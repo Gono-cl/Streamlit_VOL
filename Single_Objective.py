@@ -30,6 +30,8 @@ from core.utils.export_tools import export_to_csv, export_to_excel
 from core.utils import db_handler
 from core.hardware.opc_communication import OPCClient
 from core.hardware.experimental_run import ExperimentRunner
+from core.hardware.measurement_ui import render_measurement_settings
+from core.hardware.uvvis_measurement import measurement_settings, measurement_session_updates
 from core.hardware.process_adapters import DEFAULT_PROCESS_ADAPTER
 from core.hardware.protocol_scripts import (
     list_protocol_scripts,
@@ -405,16 +407,7 @@ st.session_state.simulation_mode = simulation_mode
 opc_url = st.sidebar.text_input("🔌 OPC Server URL", value=st.session_state.get("opc_url", "http://em-nun:57080"))
 st.session_state.opc_url = opc_url
 
-st.sidebar.markdown("Measurement Source")
-measurement_source_prefix = st.sidebar.text_input(
-    "Measurement OPC Prefix",
-    key="measurement_source_prefix",
-)
-measurement_source_signal = st.sidebar.text_input(
-    "Measurement Signal",
-    key="measurement_source_signal",
-)
-st.sidebar.caption(f"Current measurement tag: `{measurement_source_prefix}{measurement_source_signal}`")
+render_measurement_settings()
 
 # --- Sidebar: Use Autosampler ---
 use_autosampler = st.sidebar.checkbox("Use Autosampler", value=bool(st.session_state.get("use_autosampler", False)))
@@ -484,6 +477,7 @@ if resume_file != "None" and st.sidebar.button("Load Previous Run"):
     _queue_single_deferred_updates(
         measurement_source_prefix=loaded_measurement_prefix,
         measurement_source_signal=loaded_measurement_signal,
+        **measurement_session_updates(metadata),
     )
     st.session_state.single_repro_report = metadata.get("reproducibility")
     st.session_state.single_bo_qc_enabled = bool(metadata.get("bo_qc_sentinel_enabled", st.session_state.get("single_bo_qc_enabled", False)))
@@ -501,6 +495,7 @@ if resume_file != "None" and st.sidebar.button("Load Previous Run"):
         running_protocol_script=st.session_state.get("running_protocol_script"),
         measurement_source_prefix=loaded_measurement_prefix,
         measurement_source_signal=loaded_measurement_signal,
+        **measurement_settings(metadata),
     )
     st.session_state.optimization_running = True
     st.session_state.run_name = resume_file
@@ -745,6 +740,7 @@ if is_advanced_single:
                             "measurement_source_signal",
                             st.session_state.get("measurement_source_signal", "PDA - mM"),
                             ),
+                            **measurement_session_updates(hardware),
                         )
                     st.success(f"Loaded template: {selected_template}")
                     st.rerun()
@@ -797,6 +793,7 @@ if is_advanced_single:
                     "running_protocol_script": st.session_state.get("running_protocol_script"),
                     "measurement_source_prefix": st.session_state.get("measurement_source_prefix", "OpusOPCSvr.HP-CZC3484P17->"),
                     "measurement_source_signal": st.session_state.get("measurement_source_signal", "PDA - mM"),
+                    **measurement_settings(st.session_state),
                 },
             )
             path = save_campaign_template(save_template_name, template_payload)
@@ -1057,6 +1054,7 @@ if col_start.button("▶ Start Optimization"):
         running_protocol_script=st.session_state.get("running_protocol_script"),
         measurement_source_prefix=st.session_state.get("measurement_source_prefix"),
         measurement_source_signal=st.session_state.get("measurement_source_signal"),
+        **measurement_settings(st.session_state),
     )
     st.session_state.optimization_running = True
     st.session_state.single_repro_report = None
@@ -1510,6 +1508,10 @@ if st.session_state.get("optimization_running", False):
         except Exception as exc:
             st.session_state.optimization_running = False
             st.error(f"Optimization run failed at iteration {iteration + 1}.")
+            try:
+                runner.save_full_measurements_to_csv(experiment_name)
+            except Exception as log_error:
+                print(f"Could not save failed measurement readings: {log_error}")
             st.exception(exc)
             break
         y = -result[response_to_optimize]
@@ -1520,7 +1522,8 @@ if st.session_state.get("optimization_running", False):
             "Timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             **params,
             "Measurement": -y,
-            response_to_optimize: result[response_to_optimize]
+            response_to_optimize: result[response_to_optimize],
+            **runner.measurement_result_fields(),
         }
         experiment_data.append(row)
         df_results = pd.DataFrame(experiment_data)
@@ -1552,6 +1555,7 @@ if st.session_state.get("optimization_running", False):
             "bo_qc_sentinel_every_n_runs": int(bo_qc_every_n_runs),
             "bo_qc_sentinel_count": int(bo_qc_count),
             "bo_qc_sentinel_history": list(qc_history),
+            **measurement_settings(runner.__dict__),
         }
         with open(os.path.join(run_path, "metadata.json"), "w") as f:
             json.dump(metadata, f, indent=4)
@@ -1682,6 +1686,7 @@ if st.session_state.get("optimization_running", False):
             "bo_qc_sentinel_enabled": bool(st.session_state.get("single_bo_qc_enabled", False)),
             "bo_qc_sentinel_every_n_runs": int(st.session_state.get("single_bo_qc_every_n_runs", 5)),
             "bo_qc_sentinel_count": int(st.session_state.get("single_bo_qc_count", 0)),
+            **measurement_settings(runner.__dict__),
         }
 
         db_handler.save_experiment(

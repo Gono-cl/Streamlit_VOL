@@ -10,6 +10,8 @@ import streamlit as st
 
 from core.campaigns import MULTI_OBJECTIVE_OPTIONS, SINGLE_OBJECTIVE_OPTIONS
 from core.hardware.experimental_run import ExperimentRunner
+from core.hardware.measurement_ui import render_measurement_settings
+from core.hardware.uvvis_measurement import measurement_settings, measurement_session_updates
 from core.hardware.opc_communication import OPCClient
 from core.hardware.process_adapters import DEFAULT_PROCESS_ADAPTER
 from core.hardware.protocol_scripts import (
@@ -281,7 +283,7 @@ def persist_run_state(run_path: str, plan_df: pd.DataFrame, results_df: pd.DataF
         json.dump(metadata, f, indent=2, default=str)
 
 
-def make_metadata(run_name: str, notes: str, run_date, param_cols: list[str], objectives: list[str]):
+def make_metadata(run_name: str, notes: str, run_date, param_cols: list[str], objectives: list[str], measurement_config=None):
     return {
         "mode": "doe_executor",
         "run_name": run_name,
@@ -300,6 +302,7 @@ def make_metadata(run_name: str, notes: str, run_date, param_cols: list[str], ob
         "measurement_source_signal": st.session_state.get("measurement_source_signal", "PDA - mM"),
         "source_file": st.session_state.get("doe_exec_loaded_file_name", ""),
         "total_rows": int(len(st.session_state.get("doe_exec_plan_df", pd.DataFrame()))),
+        **(measurement_config or measurement_settings(st.session_state)),
     }
 
 
@@ -344,18 +347,17 @@ def load_saved_run(run_name: str):
     st.session_state.process_adapter = metadata.get("process_adapter", st.session_state.get("process_adapter", DEFAULT_PROCESS_ADAPTER))
     st.session_state.process_adapter_config = metadata.get("process_adapter_config", st.session_state.get("process_adapter_config", {}))
     st.session_state.running_protocol_script = metadata.get("running_protocol_script", st.session_state.get("running_protocol_script"))
-    st.session_state.measurement_source_prefix = metadata.get(
-        "measurement_source_prefix",
-        st.session_state.get("measurement_source_prefix", "OpusOPCSvr.HP-CZC3484P17->"),
-    )
-    st.session_state.measurement_source_signal = metadata.get(
-        "measurement_source_signal",
-        st.session_state.get("measurement_source_signal", "PDA - mM"),
-    )
+    st.session_state["_doe_measurement_restore"] = {
+        **measurement_session_updates(metadata),
+        "measurement_source_prefix": metadata.get("measurement_source_prefix", "OpusOPCSvr.HP-CZC3484P17->"),
+        "measurement_source_signal": metadata.get("measurement_source_signal", "PDA - mM"),
+    }
     st.success(f"Loaded run: {run_name}")
 
 
 ensure_session_defaults()
+for _key, _value in st.session_state.pop("_doe_measurement_restore", {}).items():
+    st.session_state[_key] = _value
 
 st.title("DOE Executor")
 st.caption("Upload an externally created run matrix and execute it directly. No optimizer is used.")
@@ -386,16 +388,7 @@ opc_url = st.sidebar.text_input(
 )
 st.session_state.opc_url = opc_url
 
-st.sidebar.markdown("Measurement Source")
-measurement_source_prefix = st.sidebar.text_input(
-    "Measurement OPC Prefix",
-    key="measurement_source_prefix",
-)
-measurement_source_signal = st.sidebar.text_input(
-    "Measurement Signal",
-    key="measurement_source_signal",
-)
-st.sidebar.caption(f"Current measurement tag: `{measurement_source_prefix}{measurement_source_signal}`")
+render_measurement_settings()
 
 use_autosampler = st.sidebar.checkbox(
     "Use Autosampler",
@@ -439,6 +432,7 @@ saved_runs = [d for d in os.listdir(SAVE_DIR) if os.path.isdir(os.path.join(SAVE
 selected_saved = st.sidebar.selectbox("Load DOE Executor Run", options=["None"] + sorted(saved_runs), key="doe_exec_saved_run")
 if selected_saved != "None" and st.sidebar.button("Load Saved DOE Run", key="doe_exec_load_saved_run"):
     load_saved_run(selected_saved)
+    st.rerun()
 
 # Metadata
 doe_section_header("Run Metadata", accent="#0ea5e9", background="#eff6ff")
@@ -622,6 +616,7 @@ if col_start.button("Start From Pending", key="doe_exec_start"):
                 running_protocol_script=st.session_state.get("running_protocol_script"),
                 measurement_source_prefix=st.session_state.get("measurement_source_prefix"),
                 measurement_source_signal=st.session_state.get("measurement_source_signal"),
+                **measurement_settings(st.session_state),
             )
             st.session_state.doe_exec_queue = pending_idx
             st.session_state.doe_exec_running = True
@@ -650,6 +645,7 @@ if col_resume.button("Resume All Open", key="doe_exec_resume_open"):
             running_protocol_script=st.session_state.get("running_protocol_script"),
             measurement_source_prefix=st.session_state.get("measurement_source_prefix"),
             measurement_source_signal=st.session_state.get("measurement_source_signal"),
+            **measurement_settings(st.session_state),
         )
         st.session_state.doe_exec_queue = open_idx
         st.session_state.doe_exec_running = True
@@ -678,6 +674,7 @@ if col_retry.button("Retry Failed", key="doe_exec_retry_failed"):
             running_protocol_script=st.session_state.get("running_protocol_script"),
             measurement_source_prefix=st.session_state.get("measurement_source_prefix"),
             measurement_source_signal=st.session_state.get("measurement_source_signal"),
+            **measurement_settings(st.session_state),
         )
         st.session_state.doe_exec_queue = failed_idx
         st.session_state.doe_exec_running = True
@@ -754,6 +751,7 @@ if st.session_state.get("doe_exec_running", False):
                         "Source Row": int(row_idx) + 1,
                         "Timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                     }
+                    row_payload.update(runner.measurement_result_fields())
                     for col in plan_df.columns:
                         if col.startswith("__"):
                             continue
@@ -779,6 +777,7 @@ if st.session_state.get("doe_exec_running", False):
                 run_date=st.session_state.get("doe_exec_date"),
                 param_cols=param_cols,
                 objectives=objectives,
+                measurement_config=measurement_settings(runner.__dict__),
             )
             persist_run_state(run_path, plan_df, pd.DataFrame(results), metadata)
 
@@ -831,6 +830,7 @@ if st.session_state.get("doe_exec_results"):
             "measurement_source_prefix": st.session_state.get("measurement_source_prefix", "OpusOPCSvr.HP-CZC3484P17->"),
             "measurement_source_signal": st.session_state.get("measurement_source_signal", "PDA - mM"),
             "source_file": st.session_state.get("doe_exec_loaded_file_name", ""),
+            **measurement_settings(st.session_state.doe_exec_runner.__dict__ if st.session_state.get("doe_exec_runner") else st.session_state),
         }
         db_handler.save_experiment(
             name=st.session_state.get("doe_exec_run_name", "doe_exec"),

@@ -57,6 +57,30 @@ If a hook is missing, the default process-adapter behavior is used.
 - Or set it in a protocol with `measurement_tag(runner, parameters)`.
 - Protocol `measurement_tag(...)` takes priority over sidebar prefix/signal values.
 
+## UV/VIS measurements with a saved calibration
+
+Single Objective, Multi-Objective, and DOE Executor offer **Measurement method → UV/VIS (Spectragryph CSV)** in the sidebar.
+
+1. Set Spectragryph to acquire continuously, export CSV with one information row followed by a wavelength/absorbance header, and increment filenames automatically.
+2. Select the export folder and saved calibration JSON. Relative paths resolve from the VOL project folder.
+3. Select the concentration unit used to fit the calibration, such as `mM`. The coefficients and calibration range must already use this unit. Changing the unit label does not convert an existing calibration. Use matching substrate units when calculating yield.
+4. Click **Test UV/VIS measurement** to acquire a sample without starting pumps, power supplies, an autosampler, or an optimization campaign. The sample must already be flowing through the UV/VIS cell.
+5. Once that measurement is accepted, select `Concentration` as the first optimization/DOE objective and run the usual reaction protocol.
+
+The calibration requires `slope`, `intercept`, `r2`, `range_min`, `range_max`, and `wavelength`. An optional `concentration_unit` field is checked against the sidebar selection. Legacy models without a unit use the explicitly selected unit. The supplied methylene-blue example is labelled `mg/L`; replace its coefficients with your measured calibration before using another unit.
+
+Each measurement waits for distinct, complete exports created after acquisition begins, then uses the inline analytics rolling absorbance CV check. Defaults are five replicates, CV ≤ 5%, and up to ten extra spectra. Stale files, invalid spectra, timeouts, failed CV, and concentrations outside the calibration range cannot update the optimizer. A failed experiment runs the protocol cleanup path and reports the error. Calibration is loaded before hardware preparation and retained for the campaign; resuming checks that its contents have not changed.
+
+Run results include concentration unit, absorbance statistics, range/acceptance flags, and calibration identity. Raw readings, spectrum paths, and the calibration model are saved to `raw_measurements/<run>_uvvis_measurements.csv`. Acquisition settings are preserved in run metadata and campaign templates. Existing runs without a measurement method default to OPC. Hybrid/full simulation use synthetic measurements; the measurement test button always reads real CSV exports.
+
+This integration only measures using a saved calibration. Automated calibration remains available in the standalone inline analytics tool.
+
+Hardware-free checks:
+
+```bash
+python -B -m unittest discover -s tests -p test_uvvis_integration.py -v
+```
+
 ## Project Structure (Key Paths)
 
 - `main.py`: Streamlit entry point and page routing
