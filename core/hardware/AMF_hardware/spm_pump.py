@@ -434,11 +434,19 @@ class SPMPump:
                     "Disconnect warning:",
                     exc
                 )
+    
     def hard_stop(self):
 
         print("Stopping SPM pump...")
 
-        self.pump.hardStop()
+        try:
+            self.pump.hardStop()
+
+        except KeyError as exc:
+            print(
+                "AMFTools status parsing warning after hardStop:",
+                exc
+            )
 
         print(
             "Pump status:",
@@ -448,4 +456,4 @@ class SPMPump:
         print(
             "Plunger position:",
             self.pump.getPlungerPosition()
-    )
+        )

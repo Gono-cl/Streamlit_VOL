@@ -3,18 +3,23 @@
 VARIABLE_OPTIONS = {
     "Temperature": "temperature",
     "Pressure": "pressure",
-    "Ratio oraganic/aqueous": "ratio_org_aq",
+    "Ratio organic/aqueous": "ratio_org_aq",
     "Acid": "acid",
     "Residence Time": "residence_time",
     "Flow Rate": "flow_rate",
-    "base Concentration": "base_concentration",
+    "Base Concentration": "base_concentration",
     "Voltage": "Voltage",
     "Total Current": "total_current",
     "Current Density": "current_density",
     "Applied Charge": "applied_charge",
     "Substrate Concentration": "substrate_concentration",
     "Acid Concentration": "acid_concentration",
-    "Salt concentration" : "salt_concentration"
+    "Salt Concentration": "salt_concentration",
+
+    # Methylene blue electrooxidation
+    "Electrolyte Concentration": "electrolyte_concentration",
+    "Cell": "cell",
+    "Electrolyte": "electrolyte",
 }
 
 SINGLE_OBJECTIVE_OPTIONS = [
