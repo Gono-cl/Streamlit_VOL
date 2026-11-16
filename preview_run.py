@@ -1,4 +1,6 @@
 import streamlit as st
+from core.campaigns.templates import variables_as_tuples
+from core.campaigns.variables import read_campaign_data, variable_axis
 import pandas as pd
 import os
 import pickle
@@ -17,9 +19,11 @@ selected_run = st.selectbox("Select a Run to Preview", options=["None"] + runs)
 if selected_run != "None":
     run_path = os.path.join(SAVE_DIR, selected_run)
     try:
-        df = pd.read_csv(os.path.join(run_path, "experiment_data.csv"))
         with open(os.path.join(run_path, "metadata.json"), "r") as f:
             metadata = json.load(f)
+        df = read_campaign_data(os.path.join(run_path, "experiment_data.csv"), metadata["variables"])
+
+        metadata["variables"] = variables_as_tuples(metadata["variables"])
 
         st.markdown(f"### 📄 Run: `{selected_run}`")
         st.markdown(f"**Variables:** {[v[0] for v in metadata['variables']]}")
@@ -38,9 +42,9 @@ if selected_run != "None":
         scatter_rows = [st.columns(2) for _ in range((len(metadata['variables']) + 1) // 2)]
         scatter_placeholders = [col.empty() for row in scatter_rows for col in row][:len(metadata['variables'])]
 
-        for idx, (name, low, high, _) in enumerate(metadata['variables']):
+        for idx, (name, low, high, _, kind) in enumerate(metadata['variables']):
             chart = alt.Chart(df).mark_circle(size=60).encode(
-                x=alt.X(f"{name}:Q", scale=alt.Scale(domain=[low, high])),
+                x=variable_axis((name, low, high, "", kind)),
                 y="Measurement:Q"
             ).properties(
                 height=350,

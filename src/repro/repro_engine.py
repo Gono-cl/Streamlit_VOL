@@ -37,7 +37,7 @@ class Point:
     """A design-space point."""
 
     id: str
-    values: dict[str, float]
+    values: dict[str, float | str]
     tags: dict[str, Any] = field(default_factory=dict)
 
 
@@ -85,7 +85,7 @@ class RunnerAdapter:
 
     def __init__(
         self,
-        run_experiment: Callable[[dict[str, float], dict[str, Any]], Mapping[str, Any]],
+        run_experiment: Callable[[dict[str, float | str], dict[str, Any]], Mapping[str, Any]],
         objective_key: str = "objective",
     ) -> None:
         self._run_experiment = run_experiment
@@ -134,7 +134,7 @@ class ReproducibilityEngine:
 
     def __init__(
         self,
-        runner: RunnerAdapter | Callable[[dict[str, float], dict[str, Any]], Mapping[str, Any]],
+        runner: RunnerAdapter | Callable[[dict[str, float | str], dict[str, Any]], Mapping[str, Any]],
         objective_key: str = "objective",
         thresholds: Mapping[str, float] | None = None,
     ) -> None:
@@ -148,10 +148,10 @@ class ReproducibilityEngine:
 
     def schedule_with_reproducibility(
         self,
-        test_points: Sequence[Point | Mapping[str, float]],
+        test_points: Sequence[Point | Mapping[str, float | str]],
         patterns: Sequence[ReplicatePattern | str] | None = None,
         cyclic_repeats: int = 3,
-        sentinel_point: Point | Mapping[str, float] | None = None,
+        sentinel_point: Point | Mapping[str, float | str] | None = None,
         sentinel_every_n_runs: int | None = None,
         base_metadata: Mapping[str, Any] | None = None,
         phase: str = "baseline",
@@ -421,8 +421,8 @@ class ReproducibilityEngine:
 
     def escalate_cleaning_and_retest(
         self,
-        selected_points: Sequence[Point | Mapping[str, float]] | None = None,
-        sentinel_point: Point | Mapping[str, float] | None = None,
+        selected_points: Sequence[Point | Mapping[str, float | str]] | None = None,
+        sentinel_point: Point | Mapping[str, float | str] | None = None,
         sentinel_every_n_runs: int | None = None,
         patterns: Sequence[ReplicatePattern | str] | None = None,
         cyclic_repeats: int = 3,
@@ -514,7 +514,7 @@ class ReproducibilityEngine:
                 "output_json": json.dumps(record.result.output, sort_keys=True),
             }
             for key, value in sorted(record.point.values.items()):
-                row[f"x_{key}"] = float(value)
+                row[f"x_{key}"] = value
             rows.append(row)
         return pd.DataFrame(rows)
 
@@ -536,13 +536,13 @@ class ReproducibilityEngine:
             point_values = _safe_json_loads(row_dict.get("point_json"), default={})
             if not point_values:
                 point_values = {
-                    str(k)[2:]: float(v)
+                    str(k)[2:]: v
                     for k, v in row_dict.items()
                     if str(k).startswith("x_") and pd.notna(v)
                 }
             point = Point(
                 id=str(row_dict.get("point_id", f"loaded_point_{i:04d}")),
-                values={str(k): float(v) for k, v in dict(point_values).items()},
+                values={str(k): v for k, v in dict(point_values).items()},
                 tags=_safe_json_loads(row_dict.get("point_tags_json"), default={}),
             )
 
@@ -646,7 +646,7 @@ class ReproducibilityEngine:
 
     def _coerce_points(
         self,
-        points: Sequence[Point | Mapping[str, float]] | None,
+        points: Sequence[Point | Mapping[str, float | str]] | None,
         prefix: str,
     ) -> list[Point]:
         out: list[Point] = []
@@ -656,14 +656,14 @@ class ReproducibilityEngine:
 
     def _coerce_point(
         self,
-        point: Point | Mapping[str, float] | None,
+        point: Point | Mapping[str, float | str] | None,
         point_id: str,
     ) -> Point:
         if point is None:
             raise ValueError("Point cannot be None.")
         if isinstance(point, Point):
             return point
-        values = {str(k): float(v) for k, v in point.items()}
+        values = {str(k): v for k, v in point.items()}
         return Point(id=point_id, values=values)
 
     def _normalize_patterns(self, patterns: Sequence[ReplicatePattern | str] | None) -> list[ReplicatePattern]:

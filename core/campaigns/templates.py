@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import json
+from .variables import normalize_variable
 import os
 from pathlib import Path
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 DEFAULT_TEMPLATE_DIR = "campaign_templates"
 
 
@@ -33,38 +34,22 @@ def _template_path(template_name: str, base_dir: str = DEFAULT_TEMPLATE_DIR) -> 
 
 def normalize_variables(variables) -> list[dict]:
     out = []
-    for var in variables or []:
-        if isinstance(var, dict):
-            name = var.get("name")
-            lower = var.get("lower")
-            upper = var.get("upper")
-            unit = var.get("unit", "")
-        elif isinstance(var, (list, tuple)) and len(var) >= 3:
-            name = var[0]
-            lower = var[1]
-            upper = var[2]
-            unit = var[3] if len(var) > 3 else ""
-        else:
-            continue
+    for raw in variables or []:
         try:
-            out.append(
-                {
-                    "name": str(name),
-                    "lower": float(lower),
-                    "upper": float(upper),
-                    "unit": str(unit) if unit is not None else "",
-                }
-            )
-        except Exception:
+            name, low, high, unit, kind = normalize_variable(raw)
+        except (TypeError, ValueError, KeyError, IndexError):
             continue
+        variable = {"name": name, "unit": unit, "type": kind}
+        if kind == "categorical":
+            variable["categories"] = low
+        else:
+            variable.update(lower=low, upper=high)
+        out.append(variable)
     return out
 
 
 def variables_as_tuples(variables) -> list[tuple]:
-    out = []
-    for var in normalize_variables(variables):
-        out.append((var["name"], var["lower"], var["upper"], var.get("unit", "")))
-    return out
+    return [normalize_variable(v) for v in normalize_variables(variables)]
 
 
 def list_campaign_templates(mode: str | None = None, base_dir: str = DEFAULT_TEMPLATE_DIR) -> list[str]:

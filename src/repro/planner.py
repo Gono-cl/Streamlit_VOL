@@ -6,9 +6,11 @@ from itertools import product
 from typing import Mapping, Sequence
 
 import numpy as np
+from core.campaigns.variables import clip_point, coerce_value, is_categorical
+from core.optimization.initial_design import lhs_samples
 
 
-Bounds = Mapping[str, tuple[float, float]]
+Bounds = Mapping[str, tuple[float, float] | list[str]]
 
 
 def _validate_bounds(bounds: Bounds) -> list[str]:
@@ -16,6 +18,10 @@ def _validate_bounds(bounds: Bounds) -> list[str]:
     if not names:
         raise ValueError("Bounds cannot be empty.")
     for name in names:
+        if is_categorical(bounds[name]):
+            if not bounds[name]:
+                raise ValueError(f"Categories for '{name}' cannot be empty.")
+            continue
         low, high = bounds[name]
         low_f = float(low)
         high_f = float(high)
@@ -26,7 +32,7 @@ def _validate_bounds(bounds: Bounds) -> list[str]:
     return names
 
 
-def _downsample_evenly(points: list[dict[str, float]], n: int) -> list[dict[str, float]]:
+def _downsample_evenly(points: list[dict[str, float | str]], n: int) -> list[dict[str, float | str]]:
     if n <= 0:
         return []
     if n >= len(points):
@@ -35,22 +41,18 @@ def _downsample_evenly(points: list[dict[str, float]], n: int) -> list[dict[str,
     return [points[int(i)] for i in idx.tolist()]
 
 
-def points_from_user(user_points: Sequence[Mapping[str, float]], bounds: Bounds | None = None) -> list[dict[str, float]]:
+def points_from_user(user_points: Sequence[Mapping[str, float | str]], bounds: Bounds | None = None) -> list[dict[str, float | str]]:
     """Validate and normalize user-provided points."""
-    out: list[dict[str, float]] = []
+    out: list[dict[str, float | str]] = []
     names = list(bounds.keys()) if bounds is not None else None
     for raw in user_points:
-        point = {str(k): float(v) for k, v in raw.items()}
+        point = {str(k): v for k, v in raw.items()}
         if names is not None:
             missing = [k for k in names if k not in point]
             if missing:
                 raise ValueError(f"User point missing keys: {missing}")
-            clipped: dict[str, float] = {}
-            for name in names:
-                low, high = bounds[name]
-                val = float(point[name])
-                clipped[name] = min(max(val, float(low)), float(high))
-            point = clipped
+            values = [coerce_value(point[name], bounds[name]) for name in names]
+            point = dict(zip(names, clip_point(values, list(bounds.values()))))
         out.append(point)
     return out
 
@@ -59,27 +61,19 @@ def corners_and_center(
     bounds: Bounds,
     include_center: bool = True,
     max_points: int | None = None,
-) -> list[dict[str, float]]:
+) -> list[dict[str, float | str]]:
     """
-    Generate corner points and optional center for numeric bounds.
+    Generate numeric corners crossed with categorical levels, plus a reference point.
 
     For d variables, corners generate 2^d points.
     """
     names = _validate_bounds(bounds)
-    corner_rows: list[dict[str, float]] = []
-    for bitmask in product([0, 1], repeat=len(names)):
-        row: dict[str, float] = {}
-        for bit, name in zip(bitmask, names):
-            low, high = bounds[name]
-            row[name] = float(high if bit else low)
-        corner_rows.append(row)
-
-    points = list(corner_rows)
+    choices = [bounds[name] if is_categorical(bounds[name]) else (bounds[name][0], bounds[name][1])
+               for name in names]
+    points = [dict(zip(names, values)) for values in product(*choices)]
     if include_center:
-        center: dict[str, float] = {}
-        for name in names:
-            low, high = bounds[name]
-            center[name] = (float(low) + float(high)) / 2.0
+        center = {name: domain[0] if is_categorical(domain) else (domain[0] + domain[1]) / 2.0
+                  for name, domain in bounds.items()}
         points.append(center)
 
     if max_points is not None:
@@ -91,7 +85,7 @@ def latin_hypercube(
     bounds: Bounds,
     n_points: int,
     seed: int = 42,
-) -> list[dict[str, float]]:
+) -> list[dict[str, float | str]]:
     """Simple Latin hypercube sampling implementation using NumPy only."""
     names = _validate_bounds(bounds)
     n = int(n_points)
@@ -99,19 +93,8 @@ def latin_hypercube(
         return []
 
     rng = np.random.default_rng(seed)
-    samples = np.zeros((n, len(names)), dtype=float)
-    for j in range(len(names)):
-        perm = rng.permutation(n)
-        samples[:, j] = (perm + rng.random(n)) / n
-
-    out: list[dict[str, float]] = []
-    for i in range(n):
-        row: dict[str, float] = {}
-        for j, name in enumerate(names):
-            low, high = bounds[name]
-            row[name] = float(low + samples[i, j] * (float(high) - float(low)))
-        out.append(row)
-    return out
+    samples = lhs_samples(list(bounds.values()), n, rng)
+    return [dict(zip(names, point)) for point in samples]
 
 
 def build_initialization_points(
@@ -119,9 +102,9 @@ def build_initialization_points(
     n_points: int,
     method: str = "corners_center",
     seed: int = 42,
-    user_points: Sequence[Mapping[str, float]] | None = None,
+    user_points: Sequence[Mapping[str, float | str]] | None = None,
     include_center: bool = True,
-) -> list[dict[str, float]]:
+) -> list[dict[str, float | str]]:
     """
     Build initialization points from planner method plus optional user points.
 

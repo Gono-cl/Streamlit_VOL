@@ -1,10 +1,15 @@
 import streamlit as st
+from core.campaigns.variables import (
+    clip_point, expanded_domains, optimizer_dimensions,
+    parameters_from_row, point_from_row, read_campaign_data, reference_point, variable_axis, variable_domains,
+)
+from core.campaigns.variable_ui import render_variable_form, render_reference_categories, restore_reference_categories
 from datetime import datetime
 import numpy as np
 import pandas as pd
 import altair as alt
 import time
-from ProcessOptimizer import Optimizer
+from core.optimization.multiobjective import build_multiobjective_optimizer
 from core.optimization.initial_design import (
     augmented_lhs_with_reuse,
     gap_aware_initial_points,
@@ -94,7 +99,7 @@ def _multi_repro_seed_rows(repro_engine, param_names, objectives):
             continue
 
         try:
-            params = {name: float(record.point.values[name]) for name in param_names}
+            params = {name: record.point.values[name] for name in param_names}
         except Exception:
             continue
 
@@ -465,14 +470,15 @@ if resume_file != "None" and st.sidebar.button("Load Previous Run"):
     run_path = os.path.join(SAVE_DIR, resume_file)
     with open(os.path.join(run_path, "optimizer.pkl"), "rb") as f:
         st.session_state.optimizer = pickle.load(f)
-    df = pd.read_csv(os.path.join(run_path, "experiment_data.csv"))
     with open(os.path.join(run_path, "metadata.json"), "r") as f:
         metadata = json.load(f)
+    df = read_campaign_data(os.path.join(run_path, "experiment_data.csv"), metadata["variables"])
 
     # Restore session state
     st.session_state.experiment_data = df.to_dict("records")
     st.session_state.iteration = len(df)
-    st.session_state.variables = metadata["variables"]
+    st.session_state.variables = variables_as_tuples(metadata["variables"])
+    restore_reference_categories("multi", metadata.get("reference_categories", {}))
     st.session_state.objectives = metadata["objectives"]
     st.session_state.initial_experiments = int(metadata.get("initial_experiments", st.session_state.get("initial_experiments", 5)))
     st.session_state.total_iterations = metadata["total_iterations"]
@@ -535,39 +541,7 @@ experiment_notes = st.text_area("Additional Notes")
 # --- Define Variables ---
 themed_section_header("variables", "Optimization Variables")
 
-if "variables" not in st.session_state:
-    st.session_state.variables = []
-
-with st.form(key="variable_form"):
-    col1, col2, col3, col4 = st.columns(4)
-    with col1:
-        variable_choices = list(VARIABLE_OPTIONS.keys()) + ["Custom..."]
-        display_name = st.selectbox("Variable Name", variable_choices)
-        if display_name == "Custom...":
-            var_name = st.text_input("Custom Variable ID", value="", help="Use lowercase snake_case, e.g. cofeed_concentration")
-        else:
-            var_name = VARIABLE_OPTIONS[display_name]  # Use internal variable name
-    with col2:
-        lower_bound = st.number_input("Lower Bound", value=0.0, format="%.4f")
-    with col3:
-        upper_bound = st.number_input("Upper Bound", value=1.0, format="%.4f")
-    with col4:
-        unit = st.text_input("Unit")
-
-    submitted = st.form_submit_button("Add Variable")
-    if submitted:
-        if var_name and lower_bound < upper_bound:
-            st.session_state.variables.append((var_name, lower_bound, upper_bound, unit))
-        else:
-            st.warning("Please enter a valid name and ensure lower < upper bound.")
-
-# --- Display Added Variables ---
-if st.session_state.variables:
-    st.markdown("### 📟 Added Variables")
-    for i, (name, low, high, unit) in enumerate(st.session_state.variables):
-        st.write(f"{i+1}. **{name}**: from {low} to {high} {unit}")
-else:
-    st.info("No variables added yet.")
+render_variable_form()
 
 # --- Optimization Settings ---
 themed_section_header("settings", "Optimization Settings")
@@ -678,6 +652,7 @@ if is_advanced_multi:
                     if loaded_vars:
                         st.session_state.variables = loaded_vars
                     optimization = payload.get("optimization", {})
+                    restore_reference_categories("multi", optimization.get("reference_categories", {}))
                     st.session_state.initial_experiments = int(optimization.get("initial_experiments", st.session_state.get("initial_experiments", 5)))
                     st.session_state.total_iterations = int(optimization.get("total_iterations", st.session_state.get("total_iterations", 20)))
                     loaded_objectives = optimization.get("objectives", [])
@@ -780,6 +755,7 @@ if is_advanced_multi:
                 template_name=save_template_name,
                 variables=st.session_state.get("variables", []),
                 optimization={
+                    "reference_categories": st.session_state.get("multi_reference_categories", {}),
                     "initial_experiments": int(initial_experiments),
                     "total_iterations": int(total_iterations),
                     "objectives": list(objectives),
@@ -847,17 +823,17 @@ if is_advanced_multi:
                 try:
                     with open(meta_path, "r") as f:
                         meta = json.load(f)
-                    prev_vars = meta.get("variables", [])
+                    prev_vars = variables_as_tuples(meta.get("variables", []))
                     prev_names = [n for n, *_ in prev_vars]
                     if prev_names != curr_names:
                         continue
-                    df_prev = pd.read_csv(data_path)
+                    df_prev = read_campaign_data(data_path, prev_vars)
                     # require all selected objectives
                     if not all(obj in df_prev.columns for obj in objectives):
                         continue
                     for idx, row in df_prev.iterrows():
                         try:
-                            xvals = [float(row[name]) for name in curr_names]
+                            xvals = point_from_row(row, st.session_state.variables, allow_new_categories=True)
                             yvals = {obj: float(row[obj]) for obj in objectives}
                         except Exception:
                             continue
@@ -884,7 +860,7 @@ if is_advanced_multi:
                     if not bool(r.get("Select", False)):
                         continue
                     try:
-                        params = {name: float(r[name]) for name in curr_names}
+                        params = parameters_from_row(r, st.session_state.variables, allow_new_categories=True)
                         obj_vals = {obj: float(r[obj]) for obj in objectives}
                     except Exception:
                         continue
@@ -925,7 +901,7 @@ if is_advanced_multi:
             if not curr_names:
                 st.warning("Add at least one variable to preview the design.")
             else:
-                campaign_bounds = [(low, high) for _, low, high, _ in st.session_state.variables]
+                campaign_bounds = variable_domains(st.session_state.variables)
                 rng = np.random.default_rng(random_seed)
 
                 preview_reused = []
@@ -935,7 +911,7 @@ if is_advanced_multi:
                         if not bool(r.get("Select", False)):
                             continue
                         try:
-                            x = [float(r[name]) for name in curr_names]
+                            x = point_from_row(r, st.session_state.variables, allow_new_categories=True)
                         except Exception:
                             continue
                         preview_reused.append(x)
@@ -990,18 +966,14 @@ if is_advanced_multi:
         st.info(f"Initial design preview: {len(df_preview)} points (Reused: {reused_total}, New: {len(df_preview) - reused_total})")
         st.dataframe(df_preview)
 
-        bounds = st.session_state.get("initial_design_preview_bounds") or [(low, high) for _, low, high, _ in st.session_state.variables]
+        bounds = st.session_state.get("initial_design_preview_bounds") or variable_domains(st.session_state.variables)
         var_cols = [n for n, *_ in st.session_state.variables]
         chart_rows = [st.columns(1) for _ in range((len(var_cols) + 1) // 1)]
         chart_placeholders = [col.empty() for row in chart_rows for col in row][:len(var_cols)]
-        for idx, ((name, low, high, _), placeholder) in enumerate(zip(st.session_state.variables, chart_placeholders)):
+        for idx, ((name, low, high, _, kind), placeholder) in enumerate(zip(st.session_state.variables, chart_placeholders)):
             try:
                 chart = alt.Chart(df_preview).mark_tick(size=50, thickness=2).encode(
-                    x=alt.X(
-                        f"{name}:Q",
-                        scale=alt.Scale(domain=[low, high], nice=False),
-                        axis=alt.Axis(title=name, tickCount=6, ticks=True, labels=True, grid=True, format=".3g")
-                    ),
+                    x=variable_axis((name, low, high, "", kind)),
                     color=alt.Color("Source:N", legend=alt.Legend(orient='top')),
                     tooltip=["Order:Q", "Source:N", name]
                 ).properties(
@@ -1032,6 +1004,7 @@ qc_col2.number_input(
     disabled=not bool(st.session_state.get("multi_bo_qc_enabled", False)),
 )
 st.caption("QC sentinel runs are extra checks. They do not update the optimizer and do not count toward total iterations.")
+render_reference_categories("multi")
 col_actions_left, col_actions_right = st.columns([1, 1])
 start_clicked = col_actions_left.button("▶️ Start Optimization")
 stop_clicked = col_actions_right.button("🛑 Stop Optimization")
@@ -1042,6 +1015,10 @@ if stop_clicked:
     else:
         st.info("No optimization is currently running.")
 if start_clicked:
+    if not st.session_state.variables:
+        st.error("Define at least one optimization variable before starting.")
+        st.stop()
+
     if len(objectives) < 2:
         st.error("Please select at least two objectives to perform multi-objective optimization.")
     else:
@@ -1068,7 +1045,7 @@ if start_clicked:
         st.session_state.multi_bo_qc_count = 0
         st.session_state.multi_bo_qc_history = []
         repro_seed_rows = []
-        campaign_bounds = [(low, high) for _, low, high, _ in st.session_state.variables]
+        campaign_bounds = variable_domains(st.session_state.variables)
         curr_names = [n for n, *_ in st.session_state.variables]
 
         if multi_repro_gate_enabled:
@@ -1082,7 +1059,7 @@ if start_clicked:
                 st.session_state.optimization_running = False
                 st.stop()
 
-            bounds_by_name = {name: (float(low), float(high)) for name, low, high, _ in st.session_state.variables}
+            bounds_by_name = dict(zip((v[0] for v in st.session_state.variables), variable_domains(st.session_state.variables)))
             method_name = "lhs" if st.session_state.get("multi_repro_method", "LHS") == "LHS" else "corners_center"
             test_points = build_initialization_points(
                 bounds=bounds_by_name,
@@ -1092,7 +1069,7 @@ if start_clicked:
             )
             sentinel_point = None
             if st.session_state.get("multi_repro_use_sentinel", True):
-                sentinel_point = {k: (low + high) / 2.0 for k, (low, high) in bounds_by_name.items()}
+                sentinel_point = reference_point(st.session_state.variables, st.session_state.get("multi_reference_categories"))
 
             selected_patterns: list[ReplicatePattern] = []
             selected_pattern_labels = set(st.session_state.get("multi_repro_patterns", []))
@@ -1174,7 +1151,7 @@ if start_clicked:
                     pattern = str(metadata.get("pattern", ""))
                     role = str(metadata.get("replicate_role", ""))
                     repro_runtime["phase"] = phase
-                    param_row = {str(k): float(v) for k, v in dict(point).items()}
+                    param_row = dict(point)
                     row = {
                         "Run": run_no,
                         "Phase": phase,
@@ -1306,36 +1283,23 @@ if start_clicked:
             else:
                 st.warning("Reproducibility gate enabled, but no replicate patterns or sentinel are configured. Gate skipped.")
 
-        # Expand model bounds to include selected reuse rows
-        model_bounds = campaign_bounds.copy()
-        reuse_df_prev = st.session_state.get("reuse_candidates_mo")
-        if reuse_df_prev is not None and not reuse_df_prev.empty:
-            curr_names = [n for n, *_ in st.session_state.variables]
-            for j, name in enumerate(curr_names):
-                try:
-                    mask = reuse_df_prev.get("Select", True)
-                    col_vals = reuse_df_prev.loc[mask.astype(bool), name].astype(float)
-                    if len(col_vals) > 0:
-                        low_c, high_c = campaign_bounds[j]
-                        model_low = float(min(low_c, col_vals.min()))
-                        model_high = float(max(high_c, col_vals.max()))
-                        model_bounds[j] = (model_low, model_high)
-                except Exception:
-                    pass
+        model_bounds = expanded_domains(st.session_state.variables, st.session_state.get("reuse_candidates_mo"))
         n_objectives = len(objectives)
         st.session_state.objectives = objectives  # <-- Always update objectives in session state
         # Build optimizer with model bounds (we manage initialization ourselves)
         optimizer_kwargs = {
-            "dimensions": model_bounds,
+            "dimensions": optimizer_dimensions(st.session_state.variables, model_bounds, backend="ProcessOptimizer"),
+            "acq_optimizer": "sampling",
+            "random_state": random_seed,
             "n_initial_points": 0,
             "n_objectives": n_objectives
         }
         try:
-            st.session_state.optimizer = Optimizer(acq_func=acq_func, **optimizer_kwargs)
+            st.session_state.optimizer = build_multiobjective_optimizer(acq_func=acq_func, **optimizer_kwargs)
         except TypeError as exc:
             if "acq_func" not in str(exc):
                 raise
-            st.session_state.optimizer = Optimizer(**optimizer_kwargs)
+            st.session_state.optimizer = build_multiobjective_optimizer(**optimizer_kwargs)
             try:
                 setattr(st.session_state.optimizer, "acq_func", acq_func)
             except Exception:
@@ -1344,7 +1308,7 @@ if start_clicked:
 
         # Seed reused data from applied selected rows and prepare initial queue
         rng = np.random.default_rng(random_seed)
-        bounds = [(low, high) for _, low, high, _ in st.session_state.variables]
+        bounds = variable_domains(st.session_state.variables)
         curr_names = [n for n, *_ in st.session_state.variables]
         reused_count = 0
         existing_points = []
@@ -1360,7 +1324,7 @@ if start_clicked:
             params = rec.get("params", {})
             obj_vals = rec.get("objectives", {})
             try:
-                x = [float(params[name]) for name in curr_names]
+                x = point_from_row(params, st.session_state.variables, allow_new_categories=True)
                 y_multi = [-float(obj_vals[obj]) for obj in objectives]
             except Exception:
                 continue
@@ -1432,10 +1396,7 @@ if st.session_state.get("optimization_running", False):
     planned_qc_runs = (total_iterations // bo_qc_every_n_runs) if bo_qc_enabled else 0
     planned_total_live_runs = int(total_iterations + planned_qc_runs)
     qc_history = list(st.session_state.get("multi_bo_qc_history", []))
-    bo_qc_point = {
-        name: float((float(low) + float(high)) / 2.0)
-        for name, low, high, _ in st.session_state.variables
-    }
+    bo_qc_point = reference_point(st.session_state.variables, st.session_state.get("multi_reference_categories"))
 
     st.markdown("### 📋 Optimization Log")
     # --- Live Logger Setup ---
@@ -1498,8 +1459,8 @@ if st.session_state.get("optimization_running", False):
         else:
             x = optimizer.ask()
             # Clip to campaign bounds to enforce current limits
-            campaign_bounds = [(low, high) for _, low, high, _ in st.session_state.variables]
-            x = [min(max(val, low), high) for val, (low, high) in zip(x, campaign_bounds)]
+            campaign_bounds = variable_domains(st.session_state.variables)
+            x = clip_point(x, campaign_bounds)
         params = {name: val for (name, *_), val in zip(st.session_state.variables, x)}
         run_serial = int(iteration + 1 + bo_qc_count)
         try:
@@ -1644,6 +1605,7 @@ if st.session_state.get("optimization_running", False):
             pickle.dump(optimizer, f)
         metadata = {
             "variables": st.session_state.variables,
+            "reference_categories": st.session_state.get("multi_reference_categories", {}),
             "objectives": objectives,
             "objective_directions": {obj: st.session_state.get(f"{obj}_direction", "maximize") for obj in objectives},
             "initial_experiments": int(initial_experiments),
@@ -1678,6 +1640,7 @@ if st.session_state.get("optimization_running", False):
         st.session_state.optimization_running = False
 
         # Save results to CSV and metadata as before...
+        df_results = pd.DataFrame(experiment_data)
 
         # --- Compute Pareto front for saving ---
         if len(objectives) == 2 and not df_results.empty:

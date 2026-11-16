@@ -1,5 +1,6 @@
 from skopt import Optimizer
-from skopt.space import Space
+from skopt.space import Space, Categorical
+from core.campaigns.variables import clip_point
 
 
 class StepBayesianOptimizer:
@@ -11,6 +12,7 @@ class StepBayesianOptimizer:
             base_estimator=base_estimator,
             acq_func=acq_func,
             random_state=random_state,
+            acq_optimizer="sampling" if any(isinstance(d, Categorical) for d in variables) else "auto",
             # We manage the initial design externally (reuse + LHS/Random queue)
             n_initial_points=n_initial_points
         )
@@ -22,7 +24,7 @@ class StepBayesianOptimizer:
     def suggest(self):
         x = self._optimizer.ask()
         if self.suggest_bounds is not None:
-            x = [min(max(val, low), high) for val, (low, high) in zip(x, self.suggest_bounds)]
+            x = clip_point(x, self.suggest_bounds)
         return x
 
     def observe(self, x, y):

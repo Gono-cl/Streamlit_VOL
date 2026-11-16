@@ -1,4 +1,9 @@
 import streamlit as st
+from core.campaigns.variables import (
+    expanded_domains, optimizer_dimensions,
+    parameters_from_row, point_from_row, read_campaign_data, reference_point, variable_axis, variable_domains,
+)
+from core.campaigns.variable_ui import render_variable_form, render_reference_categories, restore_reference_categories
 from datetime import datetime
 import numpy as np
 import pandas as pd
@@ -7,7 +12,6 @@ import time
 import dill as pickle
 import os
 import json
-from skopt.space import Real, Categorical  # <-- Add this import
 from src.repro.planner import build_initialization_points
 from src.repro.repro_engine import DecisionLabel, ReplicatePattern, ReproducibilityEngine
 from core.optimization.bayesian_optimization import StepBayesianOptimizer
@@ -116,7 +120,7 @@ def _single_repro_seed_rows(repro_engine, param_names):
             continue
 
         try:
-            params = {name: float(record.point.values[name]) for name in param_names}
+            params = {name: record.point.values[name] for name in param_names}
         except Exception:
             continue
 
@@ -450,13 +454,14 @@ if resume_file != "None" and st.sidebar.button("Load Previous Run"):
     run_path = os.path.join(SAVE_DIR, resume_file)
     with open(os.path.join(run_path, "optimizer.pkl"), "rb") as f:
         st.session_state.optimizer = pickle.load(f)
-    df = pd.read_csv(os.path.join(run_path, "experiment_data.csv"))
     with open(os.path.join(run_path, "metadata.json"), "r") as f:
         metadata = json.load(f)
+    df = read_campaign_data(os.path.join(run_path, "experiment_data.csv"), metadata["variables"])
 
     st.session_state.experiment_data = df.to_dict("records")
     st.session_state.iteration = len(df)
-    st.session_state.variables = metadata["variables"]
+    st.session_state.variables = variables_as_tuples(metadata["variables"])
+    restore_reference_categories("single", metadata.get("reference_categories", {}))
     st.session_state.response_to_optimize = metadata["response"]
     st.session_state.initial_experiments = int(metadata.get("initial_experiments", st.session_state.get("initial_experiments", 5)))
     st.session_state.total_iterations = metadata["total_iterations"]
@@ -526,39 +531,7 @@ experiment_notes = st.text_area("Additional Notes")
 # --- Define Variables ---
 themed_section_header("variables", "Optimization Variables")
 
-if "variables" not in st.session_state:
-    st.session_state.variables = []
-
-with st.form(key="variable_form"):
-    col1, col2, col3, col4 = st.columns(4)
-    with col1:
-        variable_choices = list(VARIABLE_OPTIONS.keys()) + ["Custom..."]
-        display_name = st.selectbox("Variable Name", variable_choices)
-        if display_name == "Custom...":
-            var_name = st.text_input("Custom Variable ID", value="", help="Use lowercase snake_case, e.g. cofeed_concentration")
-        else:
-            var_name = VARIABLE_OPTIONS[display_name]  # Use internal variable name
-    with col2:
-        lower_bound = st.number_input("Lower Bound", value=0.0, format="%.4f")
-    with col3:
-        upper_bound = st.number_input("Upper Bound", value=1.0, format="%.4f")
-    with col4:
-        unit = st.text_input("Unit")
-
-    submitted = st.form_submit_button("Add Variable")
-    if submitted:
-        if var_name and lower_bound < upper_bound:
-            st.session_state.variables.append((var_name, lower_bound, upper_bound, unit))
-        else:
-            st.warning("Please enter a valid name and ensure lower < upper bound.")
-
-# --- Display Added Variables ---
-if st.session_state.variables:
-    st.markdown("### 📟 Added Variables")
-    for i, (name, low, high, unit) in enumerate(st.session_state.variables):
-        st.write(f"{i+1}. **{name}**: from {low} to {high} {unit}")
-else:
-    st.info("No variables added yet.")
+render_variable_form()
 
 # --- Optimization Settings ---
 themed_section_header("settings", "Optimization Settings")
@@ -659,6 +632,7 @@ if is_advanced_single:
                     if loaded_vars:
                         st.session_state.variables = loaded_vars
                     optimization = payload.get("optimization", {})
+                    restore_reference_categories("single", optimization.get("reference_categories", {}))
                     st.session_state.initial_experiments = int(optimization.get("initial_experiments", st.session_state.get("initial_experiments", 5)))
                     st.session_state.total_iterations = int(optimization.get("total_iterations", st.session_state.get("total_iterations", 20)))
                     loaded_response = optimization.get("response")
@@ -756,6 +730,7 @@ if is_advanced_single:
                 template_name=save_template_name,
                 variables=st.session_state.get("variables", []),
                 optimization={
+                    "reference_categories": st.session_state.get("single_reference_categories", {}),
                     "initial_experiments": int(initial_experiments),
                     "total_iterations": int(total_iterations),
                     "response": response_to_optimize,
@@ -818,15 +793,15 @@ if is_advanced_single:
                 try:
                     with open(meta_path, "r") as f:
                         meta = json.load(f)
-                    prev_vars = meta.get("variables", [])
+                    prev_vars = variables_as_tuples(meta.get("variables", []))
                     prev_resp = meta.get("response")
                     prev_names = [n for n, *_ in prev_vars]
                     if prev_names != curr_names or prev_resp != response_to_optimize:
                         continue
-                    df_prev = pd.read_csv(data_path)
+                    df_prev = read_campaign_data(data_path, prev_vars)
                     for idx, row in df_prev.iterrows():
                         try:
-                            xvals = [float(row[name]) for name in curr_names]
+                            xvals = point_from_row(row, st.session_state.variables, allow_new_categories=True)
                             yval = float(row.get(response_to_optimize, row.get("Measurement")))
                         except Exception:
                             continue
@@ -856,7 +831,7 @@ if is_advanced_single:
                     if not bool(r.get("Select", False)):
                         continue
                     try:
-                        params = {name: float(r[name]) for name in curr_names}
+                        params = parameters_from_row(r, st.session_state.variables, allow_new_categories=True)
                         resp_val = float(r.get(response_to_optimize))
                     except Exception:
                         continue
@@ -894,7 +869,7 @@ if is_advanced_single:
     if st.button("Preview Initial Design (Before Start)"):
         try:
             curr_names = [n for n, *_ in st.session_state.variables]
-            campaign_bounds = [(low, high) for _, low, high, _ in st.session_state.variables]
+            campaign_bounds = variable_domains(st.session_state.variables)
             rng = np.random.default_rng(random_seed)
 
             # Collect selected reused points if available (no need to press Apply)
@@ -905,7 +880,7 @@ if is_advanced_single:
                     if not bool(r.get("Select", False)):
                         continue
                     try:
-                        x = [float(r[name]) for name in curr_names]
+                        x = point_from_row(r, st.session_state.variables, allow_new_categories=True)
                     except Exception:
                         continue
                     preview_reused.append(x)
@@ -969,19 +944,15 @@ if is_advanced_single:
         st.dataframe(df_preview)
 
         # Per-variable spread plots
-        bounds = st.session_state.get("initial_design_preview_bounds") or [(low, high) for _, low, high, _ in st.session_state.variables]
+        bounds = st.session_state.get("initial_design_preview_bounds") or variable_domains(st.session_state.variables)
         var_cols = [n for n, *_ in st.session_state.variables]
         # Create a grid of small charts for each variable
         chart_rows = [st.columns(1) for _ in range((len(var_cols) + 1) // 1)]
         chart_placeholders = [col.empty() for row in chart_rows for col in row][:len(var_cols)]
-        for idx, ((name, low, high, _), placeholder) in enumerate(zip(st.session_state.variables, chart_placeholders)):
+        for idx, ((name, low, high, _, kind), placeholder) in enumerate(zip(st.session_state.variables, chart_placeholders)):
             try:
                 chart = alt.Chart(df_preview).mark_tick(size=50, thickness=2).encode(
-                    x=alt.X(
-                        f"{name}:Q",
-                        scale=alt.Scale(domain=[low, high], nice=False),
-                        axis=alt.Axis(title=name, tickCount=6, ticks=True, labels=True, grid=True, format=".3g")
-                    ),
+                    x=variable_axis((name, low, high, "", kind)),
                     color=alt.Color("Source:N", legend=alt.Legend(orient='top')),
                     tooltip=["Order:Q", "Source:N"] + [name]
                 ).properties(
@@ -1016,30 +987,21 @@ qc_col2.number_input(
     disabled=not bool(st.session_state.get("single_bo_qc_enabled", False)),
 )
 st.caption("QC sentinel runs are extra checks. They do not update the optimizer and do not count toward total iterations.")
+render_reference_categories("single")
 
 col_start, col_stop = st.columns(2)
 if col_start.button("▶ Start Optimization"):
+    if not st.session_state.variables:
+        st.error("Define at least one optimization variable before starting.")
+        st.stop()
+
     run_path = os.path.join(SAVE_DIR, experiment_name)
     os.makedirs(run_path, exist_ok=True)
     # --- Build model bounds (union of campaign bounds and selected reuse rows) ---
     curr_names = [name for name, *_ in st.session_state.variables]
-    campaign_bounds = [(low, high) for _, low, high, _ in st.session_state.variables]
-    model_bounds = campaign_bounds.copy()
-    reuse_df_preview = st.session_state.get("reuse_candidates")
-    if reuse_df_preview is not None and not reuse_df_preview.empty:
-        for j, name in enumerate(curr_names):
-            try:
-                mask = reuse_df_preview.get("Select", True)
-                col_vals = reuse_df_preview.loc[mask.astype(bool), name].astype(float)
-                if len(col_vals) > 0:
-                    low_c, high_c = campaign_bounds[j]
-                    model_low = float(min(low_c, col_vals.min()))
-                    model_high = float(max(high_c, col_vals.max()))
-                    model_bounds[j] = (model_low, model_high)
-            except Exception:
-                pass
-    # Create optimizer with model bounds; clip suggestions to campaign bounds
-    opt_vars = [Real(lb, ub, name=name) for (name, _l, _u, _u2), (lb, ub) in zip(st.session_state.variables, model_bounds)]
+    campaign_bounds = variable_domains(st.session_state.variables)
+    model_bounds = expanded_domains(st.session_state.variables, st.session_state.get("reuse_candidates"))
+    opt_vars = optimizer_dimensions(st.session_state.variables, model_bounds)
     st.session_state.optimizer = StepBayesianOptimizer(opt_vars, acq_func=acq_func, random_state=random_seed, suggest_bounds=campaign_bounds)
     st.session_state.experiment_data = []
     st.session_state.iteration = 0
@@ -1067,7 +1029,7 @@ if col_start.button("▶ Start Optimization"):
         gate_log_placeholder = st.empty()
         sys.stdout = StreamlitLogger(placeholder=gate_log_placeholder)
 
-        bounds_by_name = {name: (float(low), float(high)) for name, low, high, _ in st.session_state.variables}
+        bounds_by_name = dict(zip((v[0] for v in st.session_state.variables), variable_domains(st.session_state.variables)))
         method_name = "lhs" if st.session_state.get("single_repro_method", "LHS") == "LHS" else "corners_center"
         test_points = build_initialization_points(
             bounds=bounds_by_name,
@@ -1077,7 +1039,7 @@ if col_start.button("▶ Start Optimization"):
         )
         sentinel_point = None
         if st.session_state.get("single_repro_use_sentinel", True):
-            sentinel_point = {k: (low + high) / 2.0 for k, (low, high) in bounds_by_name.items()}
+            sentinel_point = reference_point(st.session_state.variables, st.session_state.get("single_reference_categories"))
 
         selected_patterns: list[ReplicatePattern] = []
         selected_pattern_labels = set(st.session_state.get("single_repro_patterns", []))
@@ -1159,7 +1121,7 @@ if col_start.button("▶ Start Optimization"):
                 pattern = str(metadata.get("pattern", ""))
                 role = str(metadata.get("replicate_role", ""))
                 repro_runtime["phase"] = phase
-                param_row = {str(k): float(v) for k, v in dict(point).items()}
+                param_row = dict(point)
                 row = {
                     "Run": run_no,
                     "Phase": phase,
@@ -1302,7 +1264,7 @@ if col_start.button("▶ Start Optimization"):
     for rec in seed_rows:
         params = rec.get("params", {})
         try:
-            x = [float(params[name]) for name in curr_names]
+            x = point_from_row(params, st.session_state.variables, allow_new_categories=True)
             y_val = float(rec.get("response"))
         except Exception:
             continue
@@ -1375,7 +1337,7 @@ if st.session_state.get("experiment_data"):
                 obj = st.session_state.response_to_optimize
                 df_fixed = edited_df.copy()
                 # Coerce numeric columns
-                for col in var_names + [obj]:
+                for col in [v[0] for v in st.session_state.variables if v[4] == "continuous"] + [obj]:
                     if col in df_fixed.columns:
                         df_fixed[col] = pd.to_numeric(df_fixed[col], errors='coerce')
                 # Sync Measurement to objective when present
@@ -1387,14 +1349,14 @@ if st.session_state.get("experiment_data"):
                 st.session_state.iteration = len(st.session_state.experiment_data)
 
                 # Rebuild optimizer from scratch and observe all edited rows
-                campaign_bounds = [(low, high) for _, low, high, _ in st.session_state.variables]
-                opt_vars = [Real(lb, ub, name=name) for (name, _l, _u, _u2), (lb, ub) in zip(st.session_state.variables, campaign_bounds)]
+                campaign_bounds = variable_domains(st.session_state.variables)
+                opt_vars = optimizer_dimensions(st.session_state.variables, campaign_bounds)
                 new_opt = StepBayesianOptimizer(opt_vars, acq_func=acq_func, random_state=random_seed, suggest_bounds=campaign_bounds)
 
-                for row in df_fixed.itertuples(index=False):
+                for _, row in df_fixed.iterrows():
                     try:
-                        x = [float(getattr(row, name)) for name in var_names]
-                        y = -float(getattr(row, obj))
+                        x = point_from_row(row, st.session_state.variables)
+                        y = -float(row[obj])
                         new_opt.observe(x, y)
                     except Exception:
                         # Skip rows with missing data
@@ -1444,10 +1406,7 @@ if st.session_state.get("optimization_running", False):
     planned_qc_runs = (total_iterations // bo_qc_every_n_runs) if bo_qc_enabled else 0
     planned_total_live_runs = int(total_iterations + planned_qc_runs)
     qc_history = list(st.session_state.get("single_bo_qc_history", []))
-    bo_qc_point = {
-        name: float((float(low) + float(high)) / 2.0)
-        for name, low, high, _ in st.session_state.variables
-    }
+    bo_qc_point = reference_point(st.session_state.variables, st.session_state.get("single_reference_categories"))
 
     results_chart = st.empty()
     scatter_rows = [st.columns(2) for _ in range((len(st.session_state.variables) + 1) // 2)]
@@ -1535,6 +1494,7 @@ if st.session_state.get("optimization_running", False):
             pickle.dump(optimizer, f)
         metadata = {
             "variables": st.session_state.variables,
+            "reference_categories": st.session_state.get("single_reference_categories", {}),
             "response": response_to_optimize,
             "initial_experiments": int(initial_experiments),
             "total_iterations": total_iterations,
@@ -1589,13 +1549,13 @@ if st.session_state.get("optimization_running", False):
         )
         results_chart.altair_chart(line, use_container_width=True)
 
-        for idx, (name, low, high, _) in enumerate(st.session_state.variables):
+        for idx, (name, low, high, _, kind) in enumerate(st.session_state.variables):
             df = df_results[[name, "Measurement"]]
             y_min = df["Measurement"].min()
             y_max = df["Measurement"].max()
             margin = (y_max - y_min) * 0.05 if y_max > y_min else 1
             chart = alt.Chart(df).mark_circle(size=60).encode(
-                x=alt.X(f"{name}:Q", scale=alt.Scale(domain=[low, high])),
+                x=variable_axis((name, low, high, "", kind)),
                 y=alt.Y("Measurement:Q", scale=alt.Scale(domain=[y_min - margin, y_max + margin]))
             ).properties(
                 height=350,

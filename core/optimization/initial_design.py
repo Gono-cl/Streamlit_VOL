@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import numpy as np
 
+from core.campaigns.variables import coerce_value, is_categorical
+
 
 def lhs_samples(bounds, n, rng):
     d = len(bounds)
@@ -13,23 +15,43 @@ def lhs_samples(bounds, n, rng):
     for j in range(d):
         perm = rng.permutation(n)
         lhs[:, j] = (perm + rng.random(n)) / n
-    for j, (low, high) in enumerate(bounds):
-        lhs[:, j] = low + lhs[:, j] * (high - low)
-    return [lhs[i, :].tolist() for i in range(n)]
+    return _unit_points(lhs, bounds)
+
+
+def _unit_points(unit_points, bounds):
+    points = []
+    for row in unit_points:
+        point = []
+        for value, domain in zip(row, bounds):
+            if is_categorical(domain):
+                point.append(domain[min(int(value * len(domain)), len(domain) - 1)])
+            else:
+                point.append(domain[0] + value * (domain[1] - domain[0]))
+        points.append(point)
+    return points
 
 
 def normalize_points(points, bounds):
+    """Continuous scaling plus equal-distance one-hot categorical coordinates."""
     norm = []
-    for x in points:
-        nx = []
-        for (val, (low, high)) in zip(x, bounds):
-            rng = high - low
-            if rng > 0:
-                nx.append((float(val) - low) / rng)
+    for point in points:
+        normalized = []
+        for value, domain in zip(point, bounds):
+            if is_categorical(domain):
+                # Reused observations can contain levels outside the campaign.
+                # They have equal distance to all levels currently allowed.
+                try:
+                    value = coerce_value(value, domain)
+                except ValueError:
+                    value = None
+                normalized.extend([float(value == level) / np.sqrt(2.0) for level in domain])
             else:
-                nx.append(0.5)
-        norm.append(nx)
-    return np.array(norm) if norm else np.empty((0, len(bounds)))
+                value = coerce_value(value, domain)
+                low, high = domain
+                normalized.append((value - low) / (high - low) if high > low else 0.5)
+        norm.append(normalized)
+    width = sum(len(d) if is_categorical(d) else 1 for d in bounds)
+    return np.array(norm) if norm else np.empty((0, width))
 
 
 def gap_aware_initial_points(bounds, n, rng, existing_points=None, method="LHS", pool_factor=10):
@@ -44,7 +66,8 @@ def gap_aware_initial_points(bounds, n, rng, existing_points=None, method="LHS",
     if method == "LHS":
         pool_real = lhs_samples(bounds, pool_n, rng)
     else:
-        pool_real = [[rng.uniform(low, high) for (low, high) in bounds] for _ in range(pool_n)]
+        pool_real = [[domain[int(rng.integers(len(domain)))] if is_categorical(domain)
+                      else rng.uniform(*domain) for domain in bounds] for _ in range(pool_n)]
     pool_norm = normalize_points(pool_real, bounds)
 
     existing_points = existing_points or []
@@ -102,12 +125,6 @@ def augmented_lhs_with_reuse(bounds, total_points, rng, reused_points=None, tria
             M[:, j] = (perm + rng.random(n)) / n
         return M
 
-    def _to_real(U):
-        R = np.zeros_like(U)
-        for j, (low, high) in enumerate(bounds):
-            R[:, j] = low + U[:, j] * (high - low)
-        return R
-
     reused_norm = normalize_points(reused_points, bounds)
 
     best_score = -np.inf
@@ -115,19 +132,21 @@ def augmented_lhs_with_reuse(bounds, total_points, rng, reused_points=None, tria
 
     for _ in range(max(1, trials)):
         U = _lhs_unit(m)
+        real_points = _unit_points(U, bounds)
+        normalized = normalize_points(real_points, bounds)
         unused = set(range(m))
         for rp in reused_norm:
             if not unused:
                 break
             un_idx = np.array(sorted(list(unused)))
-            diff = U[un_idx] - rp
+            diff = normalized[un_idx] - rp
             d2 = np.einsum("ij,ij->i", diff, diff)
             j = int(un_idx[int(np.argmin(d2))])
             unused.remove(j)
 
         if not unused and r < m:
             continue
-        new_rows_U = U[list(sorted(unused))]
+        new_rows_U = normalized[list(sorted(unused))]
         union = new_rows_U
         if reused_norm.shape[0] > 0:
             union = np.vstack([reused_norm, new_rows_U])
@@ -143,6 +162,6 @@ def augmented_lhs_with_reuse(bounds, total_points, rng, reused_points=None, tria
 
         if score > best_score:
             best_score = score
-            best_new_real = _to_real(new_rows_U).tolist()
+            best_new_real = [real_points[i] for i in sorted(unused)]
 
     return best_new_real
