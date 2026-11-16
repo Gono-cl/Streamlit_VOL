@@ -29,6 +29,8 @@ from core.hardware.mixins.ui_mixin import UIMixin
 from core.hardware.opc_communication import OPCClient
 from core.objectives import calculate_objectives
 from core.hardware.uvvis_measurement import measurement_settings
+from core.hardware.AMF_hardware.multiport_valve import MultiportValve
+from core.hardware.AMF_hardware.spm_pump import SPMPump
 
 
 class ExperimentRunner(
@@ -59,6 +61,30 @@ class ExperimentRunner(
         self.autosampler = AutoSampler(opc_client, vial_volume_ml=2.0) if use_autosampler else None
         self.csv_filename = csv_filename
         self.simulation_mode = simulation_mode  # Options: "off", "full", "hybrid"
+
+        # ------------------------------------------------------------
+        # AMF HARDWARE
+        # ------------------------------------------------------------
+
+        self.cell_valve = None
+        self.spm = None
+
+        if self.simulation_mode in ["off", "hybrid"]:
+
+            print("Initializing AMF hardware...")
+
+            self.cell_valve = MultiportValve(
+                auto_home=True,
+                max_port=12
+            )
+
+            self.spm = SPMPump(
+                auto_home=True,
+                syringe_volume=5000
+            )
+
+            print("AMF hardware initialized.")
+            
         self.process_adapter_name = process_adapter or DEFAULT_PROCESS_ADAPTER
         self.adapter_config = dict(adapter_config or {})
         self.process_adapter = create_process_adapter(self.process_adapter_name, config=self.adapter_config)

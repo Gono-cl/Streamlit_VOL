@@ -1,5 +1,10 @@
 from __future__ import annotations
+
+import csv
 import time
+from datetime import datetime
+from pathlib import Path
+import threading
 
 
 # ============================================================
@@ -9,17 +14,43 @@ import time
 FARADAY_CONSTANT = 96485.33212  # C/mol
 
 # Methylene blue chloride, anhydrous.
-# Change this if the actual material used is a hydrate or another form.
+# Change if the actual reagent is a hydrate or another form.
 MB_MW_G_MOL = 319.85
 
-# Fixed concentrated MB stock delivered by Pump 1
-MB_STOCK_CONCENTRATION_MG_L = 1000.0
+# Pump 1 concentrated MB stock
+MB_STOCK_CONCENTRATION_MG_L = 2000.0
 
 # Minimum desired total reaction flow
-MIN_TOTAL_FLOW_ML_MIN = 0.5
+MIN_TOTAL_FLOW_ML_MIN = 0.45
 
-# Used only to estimate how long to flush/fill the selected cell
-FILLING_MARGIN_FACTOR = 1.5
+
+# ============================================================
+# HYDRAULIC TIMING
+# ============================================================
+
+# Number of cell volumes used to ensure the selected cell
+# contains the new formulation before electrochemistry begins.
+PRE_ECHEM_CELL_VOLUMES = 2.0
+
+# Number of electrochemical cell residence times allowed
+# after current is switched on before considering the reactor
+# response established.
+STEADY_STATE_CELL_RESIDENCE_TIMES = 3.0
+
+# TODO:
+# Measure tubing/mixer volume between the mixing point
+# and the inlet of the electrochemical cell.
+UPSTREAM_DEAD_VOLUME_ML = 0.0
+
+# TODO:
+# Measure total volume between electrochemical cell outlet
+# and UV/Vis measurement point:
+#
+# outlet tubing
+# + gas/liquid separator
+# + tubing to UV/Vis
+# + relevant flow cell volume if desired
+DOWNSTREAM_DEAD_VOLUME_ML = 0.0
 
 
 # ============================================================
@@ -37,6 +68,7 @@ CELL_METADATA = {
         "bkk_channel": 1,
         "cell_port": 1,
     },
+
     "EC2": {
         "structure": "meandering",
         "area_cm2": 6.31,
@@ -47,8 +79,9 @@ CELL_METADATA = {
         "bkk_channel": 2,
         "cell_port": 2,
     },
+
     "EC3": {
-        "structure": "tangential", 
+        "structure": "tangential",
         "area_cm2": 4.85,
         "volume_uL": 123.38,
         "gap_mm": 0.254,
@@ -64,24 +97,26 @@ CELL_METADATA = {
 # ELECTROLYTE METADATA
 # ============================================================
 
-# For now, all electrolyte stocks are assumed to be 1.0 M.
-# This can easily be changed later.
+# SPM+ internal valve:
 #
-# SPM+:
-#   port 1 -> Na2SO4
-#   port 2 -> NaCl
-#   port 3 -> NaNO3
-#   port 4 -> delivery
+# port 1 -> Na2SO4
+# port 2 -> NaCl
+# port 3 -> NaNO3
+# port 4 -> reactor delivery
+#
+# Current stock concentration = 0.4 M
 
 ELECTROLYTE_METADATA = {
     "Na2SO4": {
         "spm_port": 1,
         "stock_concentration_M": 0.4,
     },
+
     "NaCl": {
         "spm_port": 2,
         "stock_concentration_M": 0.4,
     },
+
     "NaNO3": {
         "spm_port": 3,
         "stock_concentration_M": 0.4,
@@ -89,6 +124,61 @@ ELECTROLYTE_METADATA = {
 }
 
 SPM_DELIVERY_PORT = 4
+
+
+# ============================================================
+# SPM+ SETTINGS
+# ============================================================
+
+# IMPORTANT:
+# SPMPump class uses uL and uL/min.
+
+SPM_LOADING_FLOW_UL_MIN = 5000.0
+
+# Full 5 mL syringe
+SPM_LOAD_VOLUME_UL = 5000.0
+
+# Minimum practical flow of SPM+
+SPM_MIN_FLOW_UL_MIN = 50.0
+
+
+# ============================================================
+# HITECH ZANG PUMPS
+# ============================================================
+
+# Pump 1 = MB stock
+# Pump 2 = dilution water
+# Pump 3 = downstream analytical dilution water
+
+PUMP_MB_TAG = (
+    "Hitec_OPC_DA20_Server->E_CHEM:PUMP1.W1"
+)
+
+PUMP_WATER_TAG = (
+    "Hitec_OPC_DA20_Server->E_CHEM:PUMP2.W1"
+)
+
+PUMP_ANALYTICAL_DILUTION_TAG = (
+    "Hitec_OPC_DA20_Server->E_CHEM:PUMP3.W1"
+)
+
+
+# ============================================================
+# BKK CHANNEL TAGS
+# ============================================================
+
+BKK_CHANNEL_TAGS = {
+    1: "BKK_USER_DEFINE.CHANNEL1",
+    2: "BKK_USER_DEFINE.CHANNEL2",
+    3: "BKK_USER_DEFINE.CHANNEL3",
+}
+
+
+# ============================================================
+# LOGGING
+# ============================================================
+
+LOG_FILE = Path("MB_experiment_log.csv")
 
 
 # ============================================================
@@ -114,8 +204,8 @@ def _compute_operating_point(parameters):
     """
     Convert one BO proposal into executable process conditions.
 
-    Expected BO parameters
-    ----------------------
+    BO variables
+    ------------
     current_density
         mA/cm2
 
@@ -123,40 +213,55 @@ def _compute_operating_point(parameters):
         F/mol
 
     substrate_concentration
-        Final methylene blue concentration at reactor inlet, mg/L
+        Final MB concentration at cell inlet, mg/L
 
     electrolyte_concentration
-        Final electrolyte concentration at reactor inlet, mol/L
+        Final electrolyte concentration at cell inlet, mol/L
 
     cell
-        EC1, EC2 or EC3
+        EC1 / EC2 / EC3
 
     electrolyte
-        Na2SO4, NaCl or NaNO3
+        Na2SO4 / NaCl / NaNO3
 
 
-    Feed architecture
-    -----------------
-    Pump 1 = 1000 mg/L MB stock
+    Reaction feed architecture
+    --------------------------
+    Pump 1 = 2000 mg/L MB stock
     Pump 2 = dilution water
-    SPM+   = concentrated electrolyte stock
+    SPM+   = 0.4 M selected electrolyte stock
 
-    Pump 3 is NOT included here because it is used only for
-    analytical dilution before UV/Vis.
+    Pump 3 is downstream and is NOT included in reaction
+    formulation or reaction total flow.
     """
 
     # --------------------------------------------------------
     # Read BO parameters
     # --------------------------------------------------------
 
-    current_density_mA_cm2 = float(parameters["current_density"])
-    applied_charge_F_mol = float(parameters["applied_charge"])
+    current_density_mA_cm2 = float(
+        parameters["current_density"]
+    )
 
-    mb_target_mg_L = float(parameters["substrate_concentration"])
-    electrolyte_target_M = float(parameters["electrolyte_concentration"])
+    applied_charge_F_mol = float(
+        parameters["applied_charge"]
+    )
 
-    cell_name = str(parameters["cell"])
-    electrolyte_name = str(parameters["electrolyte"])
+    mb_target_mg_L = float(
+        parameters["substrate_concentration"]
+    )
+
+    electrolyte_target_M = float(
+        parameters["electrolyte_concentration"]
+    )
+
+    cell_name = str(
+        parameters["cell"]
+    )
+
+    electrolyte_name = str(
+        parameters["electrolyte"]
+    )
 
 
     # --------------------------------------------------------
@@ -172,7 +277,8 @@ def _compute_operating_point(parameters):
     if electrolyte_name not in ELECTROLYTE_METADATA:
         raise ValueError(
             f"Unknown electrolyte '{electrolyte_name}'. "
-            f"Available electrolytes: {list(ELECTROLYTE_METADATA)}"
+            f"Available electrolytes: "
+            f"{list(ELECTROLYTE_METADATA)}"
         )
 
 
@@ -208,22 +314,39 @@ def _compute_operating_point(parameters):
 
 
     # --------------------------------------------------------
-    # Load selected cell metadata
+    # Selected cell metadata
     # --------------------------------------------------------
 
     cell = CELL_METADATA[cell_name]
 
-    electrode_area_cm2 = float(cell["area_cm2"])
-    cell_volume_uL = float(cell["volume_uL"])
-    bkk_channel = int(cell["bkk_channel"])
-    cell_port = int(cell["cell_port"])
+    electrode_area_cm2 = float(
+        cell["area_cm2"]
+    )
+
+    cell_volume_uL = float(
+        cell["volume_uL"]
+    )
+
+    cell_volume_ml = (
+        cell_volume_uL / 1000.0
+    )
+
+    bkk_channel = int(
+        cell["bkk_channel"]
+    )
+
+    cell_port = int(
+        cell["cell_port"]
+    )
 
 
     # --------------------------------------------------------
-    # Load selected electrolyte metadata
+    # Selected electrolyte metadata
     # --------------------------------------------------------
 
-    electrolyte = ELECTROLYTE_METADATA[electrolyte_name]
+    electrolyte = ELECTROLYTE_METADATA[
+        electrolyte_name
+    ]
 
     electrolyte_stock_M = float(
         electrolyte["stock_concentration_M"]
@@ -241,7 +364,7 @@ def _compute_operating_point(parameters):
 
 
     # ========================================================
-    # 1. CURRENT DENSITY -> TOTAL CURRENT
+    # 1. CURRENT DENSITY -> CURRENT
     # ========================================================
 
     total_current_mA = (
@@ -269,14 +392,14 @@ def _compute_operating_point(parameters):
 
 
     # ========================================================
-    # 3. APPLIED CHARGE -> TOTAL REACTION FLOW
+    # 3. APPLIED CHARGE -> TOTAL FLOW
     # ========================================================
 
     # Q[mL/min] =
     #
     # I[A]
-    # ----------------------- * 60 * 1e6
-    # F[C/mol] * q[F/mol] * C[mM]
+    # ------------------------------------ * 60 * 1e6
+    # F[C/mol] * q[F/mol] * C_MB[mM]
 
     total_flow_ml_min = (
         (
@@ -294,26 +417,18 @@ def _compute_operating_point(parameters):
             "Computed total flow is <= 0 mL/min."
         )
 
-
-    # ========================================================
-    # 4. MINIMUM TOTAL FLOW CONSTRAINT
-    # ========================================================
-
     if total_flow_ml_min < MIN_TOTAL_FLOW_ML_MIN:
         raise ValueError(
             f"Computed total flow "
             f"({total_flow_ml_min:.3f} mL/min) "
-            f"is below the minimum allowed flow "
+            f"is below minimum allowed flow "
             f"({MIN_TOTAL_FLOW_ML_MIN:.3f} mL/min)."
         )
 
 
     # ========================================================
-    # 5. PUMP 1: MB STOCK FLOW
+    # 4. PUMP 1 — MB STOCK
     # ========================================================
-
-    # C_final =
-    # C_stock * Q_MB / Q_total
 
     flow_mb_ml_min = (
         total_flow_ml_min
@@ -323,11 +438,8 @@ def _compute_operating_point(parameters):
 
 
     # ========================================================
-    # 6. SPM+: ELECTROLYTE STOCK FLOW
+    # 5. SPM+ — ELECTROLYTE STOCK
     # ========================================================
-
-    # C_final =
-    # C_stock * Q_electrolyte / Q_total
 
     flow_electrolyte_ml_min = (
         total_flow_ml_min
@@ -335,9 +447,14 @@ def _compute_operating_point(parameters):
         / electrolyte_stock_M
     )
 
+    flow_electrolyte_uL_min = (
+        flow_electrolyte_ml_min
+        * 1000.0
+    )
+
 
     # ========================================================
-    # 7. PUMP 2: WATER FLOW
+    # 6. PUMP 2 — WATER
     # ========================================================
 
     flow_water_ml_min = (
@@ -347,9 +464,9 @@ def _compute_operating_point(parameters):
     )
 
 
-    # --------------------------------------------------------
-    # Check dilution feasibility
-    # --------------------------------------------------------
+    # ========================================================
+    # 7. FEASIBILITY CHECKS
+    # ========================================================
 
     if flow_mb_ml_min <= 0:
         raise ValueError(
@@ -364,23 +481,32 @@ def _compute_operating_point(parameters):
     if flow_water_ml_min < 0:
         raise ValueError(
             "Computed water flow is negative. "
-            "The requested MB and electrolyte concentrations "
-            "cannot be produced from the selected stock solutions."
+            "The requested concentrations cannot be produced "
+            "from the selected stock solutions."
+        )
+
+    if flow_electrolyte_uL_min < SPM_MIN_FLOW_UL_MIN:
+        raise ValueError(
+            f"SPM+ electrolyte flow "
+            f"({flow_electrolyte_uL_min:.1f} uL/min) "
+            f"is below practical minimum "
+            f"({SPM_MIN_FLOW_UL_MIN:.1f} uL/min)."
         )
 
 
     # ========================================================
-    # 8. CHECK MASS BALANCE
+    # 8. MASS BALANCE
     # ========================================================
 
-    calculated_total = (
+    calculated_total_flow = (
         flow_mb_ml_min
         + flow_water_ml_min
         + flow_electrolyte_ml_min
     )
 
     if abs(
-        calculated_total - total_flow_ml_min
+        calculated_total_flow
+        - total_flow_ml_min
     ) > 1e-9:
         raise RuntimeError(
             "Internal flow mass-balance error."
@@ -388,12 +514,8 @@ def _compute_operating_point(parameters):
 
 
     # ========================================================
-    # 9. CELL FILLING / FLUSH TIME
+    # 9. CELL RESIDENCE TIME
     # ========================================================
-
-    cell_volume_ml = (
-        cell_volume_uL / 1000.0
-    )
 
     residence_time_cell_s = (
         cell_volume_ml
@@ -401,19 +523,67 @@ def _compute_operating_point(parameters):
         * 60.0
     )
 
-    filling_time_cell_s = (
-        residence_time_cell_s
-        * FILLING_MARGIN_FACTOR
+
+    # ========================================================
+    # 10. PRE-ELECTROCHEMISTRY FLUSH TIME
+    # ========================================================
+
+    # Flush:
+    #
+    # upstream tubing/mixer volume
+    # +
+    # N cell volumes
+
+    pre_echem_flush_volume_ml = (
+        UPSTREAM_DEAD_VOLUME_ML
+        + PRE_ECHEM_CELL_VOLUMES
+        * cell_volume_ml
+    )
+
+    pre_echem_flush_time_s = (
+        pre_echem_flush_volume_ml
+        / total_flow_ml_min
+        * 60.0
     )
 
 
     # ========================================================
-    # RETURN COMPLETE OPERATING POINT
+    # 11. POST-CURRENT / UV-VIS WAIT
+    # ========================================================
+
+    downstream_transport_time_s = (
+        DOWNSTREAM_DEAD_VOLUME_ML
+        / total_flow_ml_min
+        * 60.0
+    )
+
+    electrochemical_stabilization_time_s = (
+        STEADY_STATE_CELL_RESIDENCE_TIMES
+        * residence_time_cell_s
+    )
+
+    measurement_ready_time_s = (
+        electrochemical_stabilization_time_s
+        + downstream_transport_time_s
+    )
+
+
+    # ========================================================
+    # 12. ESTIMATE SPM+ CAPACITY
+    # ========================================================
+
+    spm_available_time_min = (
+        SPM_LOAD_VOLUME_UL
+        / flow_electrolyte_uL_min
+    )
+
+
+    # ========================================================
+    # RETURN OPERATING POINT
     # ========================================================
 
     return {
-
-        # BO variables
+        # Requested BO variables
         "cell": cell_name,
         "electrolyte": electrolyte_name,
 
@@ -429,8 +599,9 @@ def _compute_operating_point(parameters):
         "electrolyte_target_M":
             electrolyte_target_M,
 
-
         # Cell metadata
+        "structure":
+            cell["structure"],
 
         "electrode_area_cm2":
             electrode_area_cm2,
@@ -438,12 +609,14 @@ def _compute_operating_point(parameters):
         "cell_volume_uL":
             cell_volume_uL,
 
+        "gap_mm":
+            cell["gap_mm"],
+
         "bkk_channel":
             bkk_channel,
 
         "cell_port":
             cell_port,
-
 
         # Electrolyte metadata
         "electrolyte_stock_M":
@@ -455,21 +628,18 @@ def _compute_operating_point(parameters):
         "spm_delivery_port":
             SPM_DELIVERY_PORT,
 
-
-        # Derived electrical variables
+        # Electrical
         "total_current_mA":
             total_current_mA,
 
         "total_current_A":
             total_current_A,
 
-
-        # Concentration conversion
+        # Concentration
         "mb_target_mM":
             mb_target_mM,
 
-
-        # Derived flow variables
+        # Flows
         "total_flow_ml_min":
             total_flow_ml_min,
 
@@ -482,59 +652,41 @@ def _compute_operating_point(parameters):
         "flow_electrolyte_ml_min":
             flow_electrolyte_ml_min,
 
+        "flow_electrolyte_uL_min":
+            flow_electrolyte_uL_min,
 
-        # Hydraulic information
+        # Hydraulics
         "residence_time_cell_s":
             residence_time_cell_s,
 
-        "filling_time_cell_s":
-            filling_time_cell_s,
+        "pre_echem_flush_volume_ml":
+            pre_echem_flush_volume_ml,
+
+        "pre_echem_flush_time_s":
+            pre_echem_flush_time_s,
+
+        "downstream_transport_time_s":
+            downstream_transport_time_s,
+
+        "electrochemical_stabilization_time_s":
+            electrochemical_stabilization_time_s,
+
+        "measurement_ready_time_s":
+            measurement_ready_time_s,
+
+        # SPM+
+        "spm_available_time_min":
+            spm_available_time_min,
     }
 
 
 # ============================================================
-# HARDWARE CONFIGURATION
-# ============================================================
-
-# Hitec Zang pumps
-#
-# Pump 1 = MB stock
-# Pump 2 = dilution water
-#
-# Previous protocols send these setpoints as uL/min,
-# therefore calculated mL/min is multiplied by 1000.
-
-PUMP_MB_TAG = "Hitec_OPC_DA20_Server->E_CHEM:PUMP1.W1"
-PUMP_WATER_TAG = "Hitec_OPC_DA20_Server->E_CHEM:PUMP2.W1"
-
-
-# SPM+
-#
-# Ports 1, 2, 3 = electrolyte stocks
-# Port 4         = reactor delivery
-
-SPM_DELIVERY_PORT = 4
-
-# Loading speed used only when filling the SPM syringe
-SPM_LOADING_FLOW_ML_MIN = 5.0
-
-# For now we can load a full 5 mL syringe.
-# IMPORTANT:
-# Confirm the volume unit expected by your SPMPump.pickup()
-# before running this in REAL mode.
-SPM_LOAD_VOLUME = 5.0
-
-
-# ============================================================
-# HARDWARE HELPERS
+# CELL SELECTION
 # ============================================================
 
 def _select_cell(runner, cell_port):
     """
-    Move the external AMF MultiportValve to the selected cell.
-
-    Expected:
-        runner.cell_valve = MultiportValve(...)
+    Move external AMF MultiportValve to selected cell.
     """
 
     if not hasattr(runner, "cell_valve"):
@@ -542,9 +694,10 @@ def _select_cell(runner, cell_port):
             "runner.cell_valve is not configured."
         )
 
-    valve = runner.cell_valve
+    runner.cell_valve.move_to(
+        cell_port
+    )
 
-    # Adapt to the method exposed by your MultiportValve wrapper.
     if hasattr(valve, "move_valve"):
         valve.move_valve(cell_port)
 
@@ -561,17 +714,62 @@ def _select_cell(runner, cell_port):
         )
 
 
-def _prepare_spm_electrolyte(runner, op):
+# ============================================================
+# BKK CHANNEL SELECTION
+# ============================================================
+
+def _select_bkk_channel(
+    runner,
+    selected_channel
+):
     """
-    Prepare the SPM+ for electrolyte delivery.
+    Select exactly one BKK output channel.
 
-    Sequence:
-        1. Select electrolyte stock port
-        2. Aspirate electrolyte into syringe
-        3. Switch internal valve to port 4
-        4. Set calculated electrolyte delivery flow
+    Selected channel = 1
+    Other channels    = 0
+    """
 
-    Actual dispensing is started afterwards.
+    if selected_channel not in BKK_CHANNEL_TAGS:
+        raise ValueError(
+            f"Invalid BKK channel: {selected_channel}"
+        )
+
+    for channel, tag in BKK_CHANNEL_TAGS.items():
+
+        value = (
+            1
+            if channel == selected_channel
+            else 0
+        )
+
+        runner.opc.write_value(
+            tag,
+            value
+        )
+
+    print(
+        f"BKK channel {selected_channel} selected."
+    )
+
+
+# ============================================================
+# SPM+ PREPARATION
+# ============================================================
+
+def _prepare_spm_electrolyte(
+    runner,
+    op
+):
+    """
+    Load selected electrolyte into SPM+.
+
+    Sequence
+    --------
+    1. Select electrolyte source port.
+    2. Set loading flow in uL/min.
+    3. Aspirate 5000 uL.
+    4. Switch to delivery port 4.
+    5. Set calculated delivery flow in uL/min.
     """
 
     if not hasattr(runner, "spm"):
@@ -581,32 +779,44 @@ def _prepare_spm_electrolyte(runner, op):
 
     spm = runner.spm
 
-    electrolyte_port = op["electrolyte_spm_port"]
-    electrolyte_flow = op["flow_electrolyte_ml_min"]
-
-    print(
-        f"SPM+: selecting electrolyte port "
-        f"{electrolyte_port}"
+    electrolyte_port = (
+        op["electrolyte_spm_port"]
     )
 
-    spm.move_valve(electrolyte_port)
+    electrolyte_flow_uL_min = (
+        op["flow_electrolyte_uL_min"]
+    )
 
     print(
-        f"SPM+: loading electrolyte at "
-        f"{SPM_LOADING_FLOW_ML_MIN:.3f} mL/min"
+        f"SPM+: selecting electrolyte source "
+        f"port {electrolyte_port}"
+    )
+
+    spm.move_valve(
+        electrolyte_port
+    )
+
+    print(
+        f"SPM+: loading at "
+        f"{SPM_LOADING_FLOW_UL_MIN:.0f} uL/min"
     )
 
     spm.set_flow_rate(
-        SPM_LOADING_FLOW_ML_MIN
-    )
-
-    spm.pickup(
-        SPM_LOAD_VOLUME
+        SPM_LOADING_FLOW_UL_MIN
     )
 
     print(
-        f"SPM+: switching to delivery port "
-        f"{SPM_DELIVERY_PORT}"
+        f"SPM+: aspirating "
+        f"{SPM_LOAD_VOLUME_UL:.0f} uL"
+    )
+
+    spm.pickup(
+        SPM_LOAD_VOLUME_UL
+    )
+
+    print(
+        f"SPM+: switching to delivery "
+        f"port {SPM_DELIVERY_PORT}"
     )
 
     spm.move_valve(
@@ -614,173 +824,428 @@ def _prepare_spm_electrolyte(runner, op):
     )
 
     print(
-        f"SPM+: electrolyte delivery flow = "
-        f"{electrolyte_flow:.4f} mL/min"
+        f"SPM+: delivery flow = "
+        f"{electrolyte_flow_uL_min:.1f} uL/min "
+        f"({op['flow_electrolyte_ml_min']:.4f} mL/min)"
     )
 
     spm.set_flow_rate(
-        electrolyte_flow
+        electrolyte_flow_uL_min
     )
 
+
+# ============================================================
+# START SPM+ DELIVERY
+# ============================================================
 
 def _start_spm_delivery(runner):
     """
-    Start electrolyte delivery from the loaded SPM+ syringe.
+    Start SPM+ electrolyte delivery in a separate thread.
 
-    For now this dispenses the loaded syringe volume.
-
-    Later we can replace this with refill-cycle logic if an
-    experiment requires more electrolyte than one syringe volume.
+    SPMPump.dispense() is blocking, so the dispensing command
+    must run independently while the main protocol continues.
     """
 
-    runner.spm.dispense(
-        SPM_LOAD_VOLUME
+    def _dispense():
+        try:
+            runner.spm.dispense(
+                SPM_LOAD_VOLUME_UL
+            )
+        except Exception as exc:
+            print(
+                f"SPM+ dispensing thread error: {exc}"
+            )
+
+    thread = threading.Thread(
+        target=_dispense,
+        daemon=True
     )
+
+    thread.start()
+
+    print(
+        "SPM+ dispensing started in background."
+    )
+
+    return thread
+
+
+# ============================================================
+# STOP SPM+
+# ============================================================
+
+def _stop_spm_delivery(runner):
+    """
+    Stop SPM+ immediately, leaving the remaining liquid
+    inside the syringe.
+    """
+
+    if runner.spm is None:
+        return
+
+    try:
+        runner.spm.hard_stop()
+
+        print(
+            "SPM+ electrolyte delivery stopped."
+        )
+
+    except Exception as exc:
+        print(
+            f"Warning: could not stop SPM+: {exc}"
+        )
+
+
+# ============================================================
+# SAFE SHUTDOWN
+# ============================================================
+
+def emergency_shutdown(runner):
+    """
+    Best-effort safe shutdown.
+
+    Called if hardware preparation fails and can also be
+    called by the runner after other experiment errors.
+    """
+
+    print("")
+    print("!!! SAFE SHUTDOWN STARTED !!!")
+
+    # Power supply OFF first
+    try:
+        runner.turn_off_power_supply()
+        print("Power supply OFF.")
+    except Exception as exc:
+        print(
+            f"Warning: power supply shutdown failed: {exc}"
+        )
+
+    # Pump 1 OFF
+    try:
+        runner.opc.write_value(
+            PUMP_MB_TAG,
+            0
+        )
+        print("Pump 1 stopped.")
+    except Exception as exc:
+        print(
+            f"Warning: Pump 1 stop failed: {exc}"
+        )
+
+    # Pump 2 OFF
+    try:
+        runner.opc.write_value(
+            PUMP_WATER_TAG,
+            0
+        )
+        print("Pump 2 stopped.")
+    except Exception as exc:
+        print(
+            f"Warning: Pump 2 stop failed: {exc}"
+        )
+
+    # Pump 3 OFF
+    try:
+        runner.opc.write_value(
+            PUMP_ANALYTICAL_DILUTION_TAG,
+            0
+        )
+        print("Pump 3 stopped.")
+    except Exception as exc:
+        print(
+            f"Warning: Pump 3 stop failed: {exc}"
+        )
+
+    # SPM+ stop
+    _stop_spm(
+        runner
+    )
+
+    print("!!! SAFE SHUTDOWN COMPLETE !!!")
+    print("")
+
+
+# ============================================================
+# LOGGING
+# ============================================================
+
+def _log_operating_point(
+    op,
+    status="prepared",
+    error_message=""
+):
+    """
+    Append one operating-point record to CSV.
+
+    Later the measurement and objective values can be added
+    through a second result logger or by extending this record.
+    """
+
+    record = {
+        "timestamp":
+            datetime.now().isoformat(),
+
+        "status":
+            status,
+
+        "error_message":
+            error_message,
+
+        "cell":
+            op.get("cell"),
+
+        "structure":
+            op.get("structure"),
+
+        "cell_port":
+            op.get("cell_port"),
+
+        "bkk_channel":
+            op.get("bkk_channel"),
+
+        "electrolyte":
+            op.get("electrolyte"),
+
+        "electrolyte_spm_port":
+            op.get("electrolyte_spm_port"),
+
+        "current_density_mA_cm2":
+            op.get("current_density_mA_cm2"),
+
+        "total_current_mA":
+            op.get("total_current_mA"),
+
+        "total_current_A":
+            op.get("total_current_A"),
+
+        "applied_charge_F_mol":
+            op.get("applied_charge_F_mol"),
+
+        "mb_target_mg_L":
+            op.get("mb_target_mg_L"),
+
+        "electrolyte_target_M":
+            op.get("electrolyte_target_M"),
+
+        "total_flow_ml_min":
+            op.get("total_flow_ml_min"),
+
+        "flow_mb_ml_min":
+            op.get("flow_mb_ml_min"),
+
+        "flow_water_ml_min":
+            op.get("flow_water_ml_min"),
+
+        "flow_electrolyte_ml_min":
+            op.get("flow_electrolyte_ml_min"),
+
+        "flow_electrolyte_uL_min":
+            op.get("flow_electrolyte_uL_min"),
+
+        "residence_time_cell_s":
+            op.get("residence_time_cell_s"),
+
+        "pre_echem_flush_time_s":
+            op.get("pre_echem_flush_time_s"),
+
+        "measurement_ready_time_s":
+            op.get("measurement_ready_time_s"),
+
+        "spm_available_time_min":
+            op.get("spm_available_time_min"),
+    }
+
+    file_exists = LOG_FILE.exists()
+
+    with LOG_FILE.open(
+        "a",
+        newline="",
+        encoding="utf-8"
+    ) as f:
+
+        writer = csv.DictWriter(
+            f,
+            fieldnames=record.keys()
+        )
+
+        if not file_exists:
+            writer.writeheader()
+
+        writer.writerow(
+            record
+        )
+
+
+# ============================================================
+# EXPERIMENT SUMMARY
+# ============================================================
+
+def _print_operating_point(op):
+
+    print("")
+    print("=" * 65)
+    print("METHYLENE BLUE ELECTROOXIDATION")
+    print("=" * 65)
+
+    print(
+        f"Cell                  = {op['cell']}"
+    )
+
+    print(
+        f"Structure             = {op['structure']}"
+    )
+
+    print(
+        f"Cell port             = {op['cell_port']}"
+    )
+
+    print(
+        f"Electrode area        = "
+        f"{op['electrode_area_cm2']:.3f} cm2"
+    )
+
+    print(
+        f"Cell volume           = "
+        f"{op['cell_volume_uL']:.2f} uL"
+    )
+
+    print(
+        f"Electrolyte           = "
+        f"{op['electrolyte']}"
+    )
+
+    print(
+        f"SPM source port       = "
+        f"{op['electrolyte_spm_port']}"
+    )
+
+    print(
+        f"BKK channel           = "
+        f"{op['bkk_channel']}"
+    )
+
+    print("")
+    print("--- ELECTROCHEMISTRY ---")
+
+    print(
+        f"Current density       = "
+        f"{op['current_density_mA_cm2']:.3f} mA/cm2"
+    )
+
+    print(
+        f"Total current         = "
+        f"{op['total_current_mA']:.3f} mA"
+    )
+
+    print(
+        f"Applied charge        = "
+        f"{op['applied_charge_F_mol']:.3f} F/mol"
+    )
+
+    print("")
+    print("--- CONCENTRATIONS ---")
+
+    print(
+        f"MB target             = "
+        f"{op['mb_target_mg_L']:.2f} mg/L"
+    )
+
+    print(
+        f"Electrolyte target    = "
+        f"{op['electrolyte_target_M']:.4f} M"
+    )
+
+    print("")
+    print("--- FLOWS ---")
+
+    print(
+        f"Total flow            = "
+        f"{op['total_flow_ml_min']:.4f} mL/min"
+    )
+
+    print(
+        f"Pump 1 MB             = "
+        f"{op['flow_mb_ml_min']:.4f} mL/min"
+    )
+
+    print(
+        f"Pump 2 water          = "
+        f"{op['flow_water_ml_min']:.4f} mL/min"
+    )
+
+    print(
+        f"SPM+ electrolyte      = "
+        f"{op['flow_electrolyte_ml_min']:.4f} mL/min "
+        f"({op['flow_electrolyte_uL_min']:.1f} uL/min)"
+    )
+
+    print("")
+    print("--- TIMING ---")
+
+    print(
+        f"Cell residence time   = "
+        f"{op['residence_time_cell_s']:.2f} s"
+    )
+
+    print(
+        f"Pre-echem flush time  = "
+        f"{op['pre_echem_flush_time_s']:.2f} s"
+    )
+
+    print(
+        f"Measurement wait      = "
+        f"{op['measurement_ready_time_s']:.2f} s"
+    )
+
+    print(
+        f"SPM capacity          = "
+        f"{op['spm_available_time_min']:.2f} min"
+    )
+
+    print("=" * 65)
 
 
 # ============================================================
 # HARDWARE PREPARATION
 # ============================================================
 
-def prepare_hardware(runner, parameters):
+def prepare_hardware(
+    runner,
+    parameters
+):
     """
-    Configure and start the MB electrochemical experiment.
+    Configure the MB electrochemical experiment.
 
-    The function:
-
-        1. Calculates the operating point
-        2. Prints all calculated conditions
-        3. Stops before hardware movement in simulation mode
-        4. Selects the electrochemical cell
-        5. Prepares the SPM+ electrolyte
-        6. Sets MB pump flow
-        7. Sets dilution-water pump flow
-        8. Starts electrolyte delivery
-        9. Waits for cell filling
-       10. Sets the electrochemical current
-
-    BKK channel selection will be added once its interface
-    is confirmed.
-
-    Pump 3 is intentionally excluded because it belongs to
-    the analytical dilution system downstream of the reactor.
+    Sequence
+    --------
+    1. Compute operating point.
+    2. Print and log conditions.
+    3. Exit before hardware movement in full simulation.
+    4. Ensure PSU OFF.
+    5. Select electrochemical cell.
+    6. Load selected electrolyte into SPM+.
+    7. Set Pump 1 MB flow.
+    8. Set Pump 2 water flow.
+    9. Start SPM+ electrolyte flow.
+    10. Flush upstream path + selected cell.
+    11. Select BKK channel.
+    12. Set current.
+    13. Turn PSU ON.
+    14. Wait until new electrochemical condition should
+        have reached UV/Vis.
     """
-
-    # ========================================================
-    # 1. CALCULATE OPERATING POINT
-    # ========================================================
 
     op = _compute_operating_point(
         parameters
     )
 
-
-    # ========================================================
-    # 2. PRINT EXPERIMENT SUMMARY
-    # ========================================================
-
-    print("")
-    print("=" * 60)
-    print("METHYLENE BLUE ELECTROOXIDATION")
-    print("=" * 60)
-
-    print(
-        f"Cell                 = "
-        f"{op['cell']}"
+    _print_operating_point(
+        op
     )
 
-    print(
-        f"Cell port            = "
-        f"{op['cell_port']}"
-    )
-
-    print(
-        f"Electrode area       = "
-        f"{op['electrode_area_cm2']:.3f} cm2"
-    )
-
-    print(
-        f"Cell volume          = "
-        f"{op['cell_volume_uL']:.2f} uL"
-    )
-
-    print(
-        f"Electrolyte          = "
-        f"{op['electrolyte']}"
-    )
-
-    print(
-        f"SPM electrolyte port = "
-        f"{op['electrolyte_spm_port']}"
-    )
-
-    print(
-        f"Current density      = "
-        f"{op['current_density_mA_cm2']:.3f} mA/cm2"
-    )
-
-    print(
-        f"Total current        = "
-        f"{op['total_current_mA']:.3f} mA"
-    )
-
-    print(
-        f"Applied charge       = "
-        f"{op['applied_charge_F_mol']:.3f} F/mol"
-    )
-
-    print(
-        f"MB target            = "
-        f"{op['mb_target_mg_L']:.2f} mg/L"
-    )
-
-    print(
-        f"Electrolyte target   = "
-        f"{op['electrolyte_target_M']:.4f} M"
-    )
-
-    print("")
-    print("--- FLOW CALCULATION ---")
-
-    print(
-        f"Total flow           = "
-        f"{op['total_flow_ml_min']:.4f} mL/min"
-    )
-
-    print(
-        f"Pump 1 - MB          = "
-        f"{op['flow_mb_ml_min']:.4f} mL/min"
-    )
-
-    print(
-        f"Pump 2 - water       = "
-        f"{op['flow_water_ml_min']:.4f} mL/min"
-    )
-
-    print(
-        f"SPM+ - electrolyte   = "
-        f"{op['flow_electrolyte_ml_min']:.4f} mL/min"
-    )
-
-    print("")
-    print("--- HYDRAULICS ---")
-
-    print(
-        f"Cell residence time  = "
-        f"{op['residence_time_cell_s']:.2f} s"
-    )
-
-    print(
-        f"Cell filling time    = "
-        f"{op['filling_time_cell_s']:.2f} s"
-    )
-
-    print("=" * 60)
-
-
-    # ========================================================
-    # 3. SIMULATION CHECK
-    # ========================================================
+    # --------------------------------------------------------
+    # Full simulation
+    # --------------------------------------------------------
 
     if runner.simulation_mode not in [
         "off",
@@ -792,165 +1257,300 @@ def prepare_hardware(runner, parameters):
             "hardware commands skipped."
         )
 
+        _log_operating_point(
+            op,
+            status="simulation"
+        )
+
         return op
 
 
-    # ========================================================
-    # 4. POWER SUPPLY MUST BE OFF
-    # ========================================================
+    # --------------------------------------------------------
+    # Real / hybrid hardware preparation
+    # --------------------------------------------------------
 
-    print(
-        "Ensuring power supply is OFF..."
-    )
+    try:
 
-    runner.turn_off_power_supply()
+        # ====================================================
+        # 1. POWER SUPPLY OFF
+        # ====================================================
 
+        print(
+            "Ensuring power supply is OFF..."
+        )
 
-    # ========================================================
-    # 5. SELECT CELL
-    # ========================================================
-
-    print(
-        f"Selecting {op['cell']} "
-        f"using MultiportValve "
-        f"port {op['cell_port']}..."
-    )
-
-    _select_cell(
-        runner,
-        op["cell_port"]
-    )
+        runner.turn_off_power_supply()
 
 
-    # ========================================================
-    # 6. PREPARE ELECTROLYTE IN SPM+
-    # ========================================================
+        # ====================================================
+        # 2. SELECT CELL
+        # ====================================================
 
-    _prepare_spm_electrolyte(
-        runner,
-        op
-    )
+        print(
+            f"Selecting {op['cell']} "
+            f"on valve port "
+            f"{op['cell_port']}..."
+        )
 
-
-    # ========================================================
-    # 7. SET PUMP 1 - MB
-    # ========================================================
-
-    pump1_uL_min = round(
-        op["flow_mb_ml_min"]
-        * 1000.0,
-        0
-    )
-
-    print(
-        f"Setting Pump 1 (MB) = "
-        f"{pump1_uL_min:.0f} uL/min"
-    )
-
-    runner.opc.write_value(
-        PUMP_MB_TAG,
-        pump1_uL_min
-    )
+        _select_cell(
+            runner,
+            op["cell_port"]
+        )
 
 
-    # ========================================================
-    # 8. SET PUMP 2 - WATER
-    # ========================================================
+        # ====================================================
+        # 3. PREPARE SPM+
+        # ====================================================
 
-    pump2_uL_min = round(
-        op["flow_water_ml_min"]
-        * 1000.0,
-        0
-    )
-
-    print(
-        f"Setting Pump 2 (water) = "
-        f"{pump2_uL_min:.0f} uL/min"
-    )
-
-    runner.opc.write_value(
-        PUMP_WATER_TAG,
-        pump2_uL_min
-    )
+        _prepare_spm_electrolyte(
+            runner,
+            op
+        )
 
 
-    # ========================================================
-    # 9. START SPM+ ELECTROLYTE DELIVERY
-    # ========================================================
+        # ====================================================
+        # 4. PUMP 1 — MB
+        # ====================================================
 
-    print(
-        "Starting SPM+ electrolyte delivery..."
-    )
+        pump1_uL_min = round(
+            op["flow_mb_ml_min"]
+            * 1000.0,
+            0
+        )
 
-    _start_spm_delivery(
+        print(
+            f"Setting Pump 1 MB = "
+            f"{pump1_uL_min:.0f} uL/min"
+        )
+
+        runner.opc.write_value(
+            PUMP_MB_TAG,
+            pump1_uL_min
+        )
+
+
+        # ====================================================
+        # 5. PUMP 2 — WATER
+        # ====================================================
+
+        pump2_uL_min = round(
+            op["flow_water_ml_min"]
+            * 1000.0,
+            0
+        )
+
+        print(
+            f"Setting Pump 2 water = "
+            f"{pump2_uL_min:.0f} uL/min"
+        )
+
+        runner.opc.write_value(
+            PUMP_WATER_TAG,
+            pump2_uL_min
+        )
+
+
+        # ====================================================
+        # 6. START ELECTROLYTE
+        # ====================================================
+
+        print(
+            "Starting SPM+ electrolyte delivery..."
+        )
+
+        _start_spm_delivery(
+            runner
+        )
+
+
+        # ====================================================
+        # 7. PRE-ELECTROCHEMISTRY FLUSH
+        # ====================================================
+
+        print(
+            f"Flushing upstream path and "
+            f"{PRE_ECHEM_CELL_VOLUMES:.1f} cell volumes "
+            f"for "
+            f"{op['pre_echem_flush_time_s']:.1f} s..."
+        )
+
+        time.sleep(
+            op["pre_echem_flush_time_s"]
+        )
+
+
+        # ====================================================
+        # 8. SELECT BKK CHANNEL
+        # ====================================================
+
+        _select_bkk_channel(
+            runner,
+            op["bkk_channel"]
+        )
+
+
+        # ====================================================
+        # 9. SET CURRENT
+        # ====================================================
+
+        print(
+            f"Setting current = "
+            f"{op['total_current_A']:.6f} A"
+        )
+
+        runner.set_current(
+            op["total_current_A"]
+        )
+
+
+        # ====================================================
+        # 10. POWER ON
+        # ====================================================
+
+        print(
+            "Turning power supply ON..."
+        )
+
+        runner.turn_on_power_supply()
+
+
+        # ====================================================
+        # 11. WAIT FOR ELECTROCHEMICAL RESPONSE
+        # ====================================================
+
+        print(
+            f"Waiting "
+            f"{op['measurement_ready_time_s']:.1f} s "
+            f"before UV/Vis measurement..."
+        )
+
+        time.sleep(
+            op["measurement_ready_time_s"]
+        )
+
+
+        # ====================================================
+        # 12. LOG SUCCESSFUL PREPARATION
+        # ====================================================
+
+        _log_operating_point(
+            op,
+            status="ready_for_measurement"
+        )
+
+        return op
+
+
+    except Exception as exc:
+
+        print(
+            f"ERROR during hardware preparation: {exc}"
+        )
+
+        _log_operating_point(
+            op,
+            status="hardware_error",
+            error_message=str(exc)
+        )
+
+        emergency_shutdown(
+            runner
+        )
+
+        raise
+
+
+# ============================================================
+# NORMAL SHUTDOWN / END OF EXPERIMENT
+# ============================================================
+
+def stop_pumps(
+    runner,
+    parameters=None
+):
+    """
+    Called at normal experiment completion.
+    """
+
+    if runner.simulation_mode not in [
+        "off",
+        "hybrid",
+    ]:
+
+        print(
+            "Simulation mode: "
+            "skipping hardware shutdown."
+        )
+
+        return
+
+    emergency_shutdown(
         runner
     )
 
 
-    # ========================================================
-    # 10. FILL SELECTED CELL
-    # ========================================================
+# ============================================================
+# AUTOSAMPLER / DOWNSTREAM FLOW INFORMATION
+# ============================================================
+
+def autosampler_flow_rate(
+    runner,
+    parameters
+):
+    """
+    Reaction flow reaching downstream analytical system.
+
+    Pump 3 analytical dilution is intentionally NOT included.
+    """
+
+    op = _compute_operating_point(
+        parameters
+    )
+
+    return float(
+        op["total_flow_ml_min"]
+    )
+
+
+# ============================================================
+# CLEANUP
+# ============================================================
+
+def cleanup(
+    runner,
+    parameters
+):
+    """
+    Placeholder.
+
+    Cleaning sequence still needs to be experimentally defined.
+
+    Likely future logic:
+
+    - PSU OFF
+    - stop reaction feeds
+    - discard remaining SPM electrolyte
+    - rinse SPM syringe / internal valve
+    - flush reaction mixer/tubing
+    - flush electrochemical cell
+    - prepare next electrolyte/cell
+
+    Do NOT return residual electrolyte to stock bottle
+    unless contamination risk has been experimentally excluded.
+    """
+
+    if runner.simulation_mode not in [
+        "off",
+        "hybrid",
+    ]:
+
+        print(
+            "Simulation mode: "
+            "skipping cleaning."
+        )
+
+        return
 
     print(
-        f"Filling {op['cell']} for "
-        f"{op['filling_time_cell_s']:.1f} seconds..."
+        "Cleaning protocol not yet defined."
     )
-
-    time.sleep(
-        op["filling_time_cell_s"]
-    )
-
-
-    # ========================================================
-    # 11. BKK CHANNEL SELECTION
-    # ========================================================
-
-    print(
-        f"BKK channel required: "
-        f"{op['bkk_channel']}"
-    )
-
-    # --------------------------------------------------------
-    # TODO:
-    #
-    # Add actual BKK channel-selection command here once the
-    # runner interface is confirmed.
-    #
-    # Example conceptual operation:
-    #
-    # runner.select_bkk_channel(
-    #     op["bkk_channel"]
-    # )
-    # --------------------------------------------------------
-
-
-    # ========================================================
-    # 12. SET CURRENT
-    # ========================================================
-
-    print(
-        f"Setting current = "
-        f"{op['total_current_A']:.6f} A"
-    )
-
-    runner.set_current(
-        op["total_current_A"]
-    )
-
-
-    # ========================================================
-    # 13. POWER ON
-    # ========================================================
-
-    print(
-        "Turning power supply ON..."
-    )
-
-    runner.turn_on_power_supply()
-
-
-    # ========================================================
-    # RETURN OPERATING POINT
-    # ========================================================
-
-    return op

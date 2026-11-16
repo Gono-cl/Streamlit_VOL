@@ -434,3 +434,18 @@ class SPMPump:
                     "Disconnect warning:",
                     exc
                 )
+    def hard_stop(self):
+
+        print("Stopping SPM pump...")
+
+        self.pump.hardStop()
+
+        print(
+            "Pump status:",
+            self.pump.getPumpStatus()
+        )
+
+        print(
+            "Plunger position:",
+            self.pump.getPlungerPosition()
+    )
