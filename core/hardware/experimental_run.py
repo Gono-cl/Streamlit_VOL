@@ -33,6 +33,15 @@ from core.hardware.AMF_hardware.multiport_valve import MultiportValve
 from core.hardware.AMF_hardware.spm_pump import SPMPump
 
 
+# ---------------------------------------------------------------------------
+# AMF LABVISION DISPLAY TAGS
+# ---------------------------------------------------------------------------
+
+SPM_FLOW_TAG = "AMF_PUMP_FLOW"
+SPM_INTERNAL_VALVE_TAG = "AMF_SPM_MULTIPORT"
+CELL_MULTIPORT_TAG = "AMF_MULTIPORT_VALVE"
+
+
 class ExperimentRunner(
     FlowCalculationsMixin,
     MeasurementMixin,
@@ -136,6 +145,79 @@ class ExperimentRunner(
         self.tray_pos_waste = 0
         self.tray_pos_collect = 1
         self.volume_to_collect = volume_to_collect  # Volume to collect in mL
+
+    # ---------------------------------------------------------------------------
+    #                          AMF HARDWARE HELPERS
+    # ---------------------------------------------------------------------------
+    def move_cell_valve(self, port: int):
+        """
+        Move the external AMF multiport valve and mirror the
+        reported final position to LabVision through OPC.
+        """
+        if self.cell_valve is None:
+            raise RuntimeError("AMF external multiport valve is not initialized.")
+
+        final_position = self.cell_valve.move_to(int(port))
+
+        self.opc.write_value(
+            CELL_MULTIPORT_TAG,
+            int(final_position),
+        )
+
+        return final_position
+
+    def move_spm_valve(self, port: int):
+        """
+        Move the SPM+ internal valve and mirror the reported
+        final position to LabVision through OPC.
+        """
+        if self.spm is None:
+            raise RuntimeError("AMF SPM+ pump is not initialized.")
+
+        final_position = self.spm.move_valve(int(port))
+
+        self.opc.write_value(
+            SPM_INTERNAL_VALVE_TAG,
+            int(final_position),
+        )
+
+        return final_position
+
+    def set_spm_flow(self, flow_uL_min: float):
+        """
+        Set the SPM+ flow rate in uL/min and mirror the setpoint
+        to LabVision through OPC.
+        """
+        if self.spm is None:
+            raise RuntimeError("AMF SPM+ pump is not initialized.")
+
+        flow_uL_min = float(flow_uL_min)
+
+        self.spm.set_flow_rate(
+            flow_uL_min
+        )
+
+        self.opc.write_value(
+            SPM_FLOW_TAG,
+            flow_uL_min,
+        )
+
+        return flow_uL_min
+
+    def stop_spm(self):
+        """
+        Stop SPM+ motion immediately and mirror zero flow to LabVision.
+        Remaining liquid stays inside the syringe.
+        """
+        if self.spm is None:
+            return
+
+        self.spm.hard_stop()
+
+        self.opc.write_value(
+            SPM_FLOW_TAG,
+            0.0,
+        )
 
     def _protocol_callable(self, function_name: str):
         if self.running_protocol_module is None:

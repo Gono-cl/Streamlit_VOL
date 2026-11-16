@@ -689,7 +689,7 @@ def _select_cell(runner, cell_port):
     Move external AMF MultiportValve to selected cell.
     """
 
-    if not hasattr(runner, "cell_valve"):
+    if not hasattr(runner, "cell_valve") or runner.cell_valve is None:
         raise RuntimeError(
             "runner.cell_valve is not configured."
         )
@@ -697,21 +697,6 @@ def _select_cell(runner, cell_port):
     runner.cell_valve.move_to(
         cell_port
     )
-
-    if hasattr(valve, "move_valve"):
-        valve.move_valve(cell_port)
-
-    elif hasattr(valve, "move"):
-        valve.move(cell_port)
-
-    elif hasattr(valve, "set_position"):
-        valve.set_position(cell_port)
-
-    else:
-        raise RuntimeError(
-            "MultiportValve object does not expose "
-            "move_valve(), move(), or set_position()."
-        )
 
 
 # ============================================================
@@ -957,7 +942,7 @@ def emergency_shutdown(runner):
         )
 
     # SPM+ stop
-    _stop_spm(
+    _stop_spm_delivery(
         runner
     )
 
@@ -1464,30 +1449,98 @@ def prepare_hardware(
 # NORMAL SHUTDOWN / END OF EXPERIMENT
 # ============================================================
 
-def stop_pumps(
-    runner,
-    parameters=None
-):
+def stop_pumps(runner, parameters):
     """
-    Called at normal experiment completion.
+    Safely stop electrochemistry and all active feed pumps
+    after the experiment.
+
+    Shutdown order:
+        1. Power supply OFF
+        2. SPM+ electrolyte delivery OFF
+        3. Pump 1 MB OFF
+        4. Pump 2 water OFF
+        5. Pump 3 analytical dilution OFF
     """
 
-    if runner.simulation_mode not in [
-        "off",
-        "hybrid",
-    ]:
+    # --------------------------------------------------------
+    # 1. POWER SUPPLY OFF
+    # --------------------------------------------------------
 
+    try:
+        runner.turn_off_power_supply()
+        print("Power supply OFF.")
+
+    except Exception as exc:
         print(
-            "Simulation mode: "
-            "skipping hardware shutdown."
+            f"Warning: power supply shutdown failed: {exc}"
         )
 
-        return
 
-    emergency_shutdown(
+    # --------------------------------------------------------
+    # 2. SPM+ OFF
+    # --------------------------------------------------------
+
+    _stop_spm_delivery(
         runner
     )
 
+
+    # --------------------------------------------------------
+    # 3. PUMP 1 — MB OFF
+    # --------------------------------------------------------
+
+    try:
+        runner.opc.write_value(
+            PUMP_MB_TAG,
+            0
+        )
+
+        print("Pump 1 MB stopped.")
+
+    except Exception as exc:
+        print(
+            f"Warning: Pump 1 stop failed: {exc}"
+        )
+
+
+    # --------------------------------------------------------
+    # 4. PUMP 2 — WATER OFF
+    # --------------------------------------------------------
+
+    try:
+        runner.opc.write_value(
+            PUMP_WATER_TAG,
+            0
+        )
+
+        print("Pump 2 water stopped.")
+
+    except Exception as exc:
+        print(
+            f"Warning: Pump 2 stop failed: {exc}"
+        )
+
+
+    # --------------------------------------------------------
+    # 5. PUMP 3 — ANALYTICAL DILUTION OFF
+    # --------------------------------------------------------
+
+    try:
+        runner.opc.write_value(
+            PUMP_ANALYTICAL_DILUTION_TAG,
+            0
+        )
+
+        print("Pump 3 analytical dilution stopped.")
+
+    except Exception as exc:
+        print(
+            f"Warning: Pump 3 stop failed: {exc}"
+        )
+
+    print(
+        "Experiment hardware stopped."
+    )
 
 # ============================================================
 # AUTOSAMPLER / DOWNSTREAM FLOW INFORMATION
