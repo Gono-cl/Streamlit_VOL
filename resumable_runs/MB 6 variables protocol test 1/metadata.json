@@ -1,0 +1,90 @@
+{
+    "variables": [
+        [
+            "current_density",
+            3.0,
+            6.0,
+            "mA/cm2",
+            "continuous"
+        ],
+        [
+            "applied_charge",
+            6.0,
+            10.0,
+            "F/mol",
+            "continuous"
+        ],
+        [
+            "substrate_concentration",
+            300.0,
+            600.0,
+            "mg/L",
+            "continuous"
+        ],
+        [
+            "electrolyte_concentration",
+            0.05,
+            0.2,
+            "M",
+            "continuous"
+        ],
+        [
+            "cell",
+            [
+                "EC1",
+                "EC2",
+                "EC3"
+            ],
+            null,
+            "",
+            "categorical"
+        ],
+        [
+            "electrolyte",
+            [
+                "Na2SO4",
+                "NaCl",
+                "NaNO3"
+            ],
+            null,
+            "",
+            "categorical"
+        ]
+    ],
+    "reference_categories": {
+        "cell": "EC1",
+        "electrolyte": "Na2SO4"
+    },
+    "response": "Yield",
+    "initial_experiments": 5,
+    "total_iterations": 20,
+    "opc_url": "http://em-nun:57080",
+    "simulation_mode": "hybrid",
+    "process_adapter": "echem_4pump",
+    "process_adapter_config": {},
+    "running_protocol_script": "MB_6_variables.py",
+    "measurement_source_prefix": "OpusOPCSvr.HP-CZC3484P17->",
+    "measurement_source_signal": "PDA - mM",
+    "acq_func": "EI",
+    "init_strategy": "Random",
+    "random_seed": 42,
+    "reused_runs": [],
+    "reused_count": 0,
+    "reproducibility": null,
+    "bo_qc_sentinel_enabled": false,
+    "bo_qc_sentinel_every_n_runs": 1,
+    "bo_qc_sentinel_count": 0,
+    "bo_qc_sentinel_history": [],
+    "measurement_backend": "uvvis",
+    "uvvis_config": {
+        "spectra_folder": "",
+        "file_pattern": "my_acquired_spectra_*.csv",
+        "calibration_file": "InlineAnalytics/calibration_model.json",
+        "concentration_unit": "mM",
+        "n_replicates": 5,
+        "replicate_interval": 2.0,
+        "cv_threshold": 5.0,
+        "max_extra_measurements": 10,
+        "spectrum_timeout": 30.0
+    }
+}
