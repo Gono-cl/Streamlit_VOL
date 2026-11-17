@@ -4,6 +4,8 @@ from core.campaigns.variables import (
     parameters_from_row, point_from_row, read_campaign_data, reference_point, variable_axis, variable_domains,
 )
 from core.campaigns.variable_ui import render_variable_form, render_reference_categories, restore_reference_categories
+from core.campaigns.setup_ui import render_campaign_setup
+from core.campaigns.setup import widget_state_updates
 from datetime import datetime
 import numpy as np
 import pandas as pd
@@ -24,16 +26,13 @@ from core.campaigns import (
     OPTIMIZER_ACQ_OPTIONS,
     SINGLE_OBJECTIVE_OPTIONS,
     VARIABLE_OPTIONS,
-    build_single_campaign_template,
-    list_campaign_templates,
-    load_campaign_template,
-    save_campaign_template,
     variables_as_tuples,
 )
 from core.utils.export_tools import export_to_csv, export_to_excel
 from core.utils import db_handler
 from core.hardware.opc_communication import OPCClient
-from core.hardware.experimental_run import ExperimentRunner
+from core.hardware.experimental_run import replace_experiment_runner
+from core.hardware.connections import campaign_connections, close_runner
 from core.hardware.measurement_ui import render_measurement_settings
 from core.hardware.uvvis_measurement import measurement_settings, measurement_session_updates
 from core.hardware.process_adapters import DEFAULT_PROCESS_ADAPTER
@@ -303,7 +302,7 @@ ui_mode_single = st.radio(
 )
 is_advanced_single = ui_mode_single == "Advanced"
 if not is_advanced_single:
-    st.caption("Quick mode: core setup + run controls only. Switch to Advanced for templates, reproducibility, and design tooling.")
+    st.caption("Quick mode: core setup + run controls only. Switch to Advanced for reproducibility and design tooling.")
 
 # --- Session defaults ---
 if "simulation_mode" not in st.session_state:
@@ -405,16 +404,17 @@ simulation_mode = st.sidebar.selectbox(
     options=sim_modes,
     index=sim_modes.index(sim_default),
     format_func=lambda x: sim_mode_label[x],
+    key="single_simulation_mode_select",
 )
 st.session_state.simulation_mode = simulation_mode
 
-opc_url = st.sidebar.text_input("🔌 OPC Server URL", value=st.session_state.get("opc_url", "http://em-nun:57080"))
+opc_url = st.sidebar.text_input("🔌 OPC Server URL", value=st.session_state.get("opc_url", "http://em-nun:57080"), key="single_opc_url_input")
 st.session_state.opc_url = opc_url
 
 render_measurement_settings()
 
 # --- Sidebar: Use Autosampler ---
-use_autosampler = st.sidebar.checkbox("Use Autosampler", value=bool(st.session_state.get("use_autosampler", False)))
+use_autosampler = st.sidebar.checkbox("Use Autosampler", value=bool(st.session_state.get("use_autosampler", False)), key="single_use_autosampler_input")
 st.session_state.use_autosampler = use_autosampler
 
 volume_to_collect = st.sidebar.number_input(
@@ -422,7 +422,8 @@ volume_to_collect = st.sidebar.number_input(
     min_value=0.0,
     max_value=6.0,
     value=float(st.session_state.get("volume_to_collect", 3.0)),
-    step=0.5
+    step=0.5,
+    key="single_volume_to_collect_input",
 )
 st.session_state.volume_to_collect = volume_to_collect
 
@@ -489,7 +490,9 @@ if resume_file != "None" and st.sidebar.button("Load Previous Run"):
     st.session_state.single_bo_qc_every_n_runs = int(metadata.get("bo_qc_sentinel_every_n_runs", st.session_state.get("single_bo_qc_every_n_runs", 5)))
     st.session_state.single_bo_qc_count = int(metadata.get("bo_qc_sentinel_count", st.session_state.get("single_bo_qc_count", 0)))
     st.session_state.single_bo_qc_history = list(metadata.get("bo_qc_sentinel_history", st.session_state.get("single_bo_qc_history", [])))
-    st.session_state.runner = ExperimentRunner(
+    st.session_state.optimization_running = False
+    st.session_state.runner = replace_experiment_runner(
+        st.session_state.get("runner"),
         OPCClient(metadata["opc_url"]),
         "experiment_log.csv",
         simulation_mode=metadata["simulation_mode"],
@@ -513,11 +516,14 @@ if resume_file != "None" and st.sidebar.button("Load Previous Run"):
         st.info(f"📋 Loaded pending parameters for experiment {len(df) + 1}")
     else:
         st.session_state.pending_next_params = None
+    st.session_state.simulation_mode = metadata.get("simulation_mode", st.session_state.simulation_mode)
+    st.session_state.opc_url = metadata.get("opc_url", st.session_state.opc_url)
+    _queue_single_deferred_updates(**widget_state_updates("single", st.session_state))
     st.rerun()
 
 # --- Experiment Metadata ---
 themed_section_header("metadata", "Experiment Metadata")
-experiment_name = st.text_input("Experiment Name", value=st.session_state.get("run_name", datetime.now().strftime("run_%Y%m%d_%H%M%S")))
+experiment_name = st.text_input("Experiment Name", value=st.session_state.get("run_name", datetime.now().strftime("run_%Y%m%d_%H%M%S")), key="single_campaign_name")
 st.session_state.run_name = experiment_name
 # Sanitize for filesystem safety and keep it consistent throughout the session
 safe_name = sanitize_filename(st.session_state.run_name)
@@ -525,8 +531,10 @@ if safe_name != st.session_state.run_name:
     st.info(f"Adjusted run name to '{safe_name}' for filesystem compatibility.")
 st.session_state.run_name = safe_name
 experiment_name = safe_name
-experiment_date = st.date_input("Experiment Date", datetime.today())
-experiment_notes = st.text_area("Additional Notes")
+experiment_date = st.date_input("Experiment Date", st.session_state.get("experiment_date", datetime.today()), key="single_campaign_date")
+experiment_notes = st.text_area("Additional Notes", value=st.session_state.get("experiment_notes", ""), key="single_campaign_notes")
+st.session_state.experiment_date = experiment_date
+st.session_state.experiment_notes = experiment_notes
 
 # --- Define Variables ---
 themed_section_header("variables", "Optimization Variables")
@@ -541,9 +549,9 @@ total_default = int(st.session_state.get("total_iterations", 20))
 response_default = st.session_state.get("response_to_optimize", SINGLE_OBJECTIVE_OPTIONS[0])
 if response_default not in SINGLE_OBJECTIVE_OPTIONS:
     response_default = SINGLE_OBJECTIVE_OPTIONS[0]
-initial_experiments = col5.number_input("Initialization Experiments", min_value=1, max_value=100, value=init_exp_default)
-total_iterations = col6.number_input("Total Iterations", min_value=1, max_value=100, value=total_default)
-response_to_optimize = col7.selectbox("Response to Optimize", SINGLE_OBJECTIVE_OPTIONS, index=SINGLE_OBJECTIVE_OPTIONS.index(response_default))
+initial_experiments = col5.number_input("Initialization Experiments", min_value=1, max_value=100, value=init_exp_default, key="single_initial_experiments_input")
+total_iterations = col6.number_input("Total Iterations", min_value=1, max_value=100, value=total_default, key="single_total_iterations_input")
+response_to_optimize = col7.selectbox("Response to Optimize", SINGLE_OBJECTIVE_OPTIONS, index=SINGLE_OBJECTIVE_OPTIONS.index(response_default), key="single_response_select")
 st.session_state.initial_experiments = int(initial_experiments)
 st.session_state.total_iterations = total_iterations
 st.session_state.response_to_optimize = response_to_optimize
@@ -558,9 +566,9 @@ if init_default not in INIT_STRATEGY_OPTIONS:
 seed_default = int(st.session_state.get("random_seed", 42))
 if is_advanced_single:
     col_a, col_b, col_c = st.columns(3)
-    acq_func = col_a.selectbox("Acquisition Function", OPTIMIZER_ACQ_OPTIONS, index=OPTIMIZER_ACQ_OPTIONS.index(acq_default))
-    init_strategy = col_b.selectbox("Init Strategy", INIT_STRATEGY_OPTIONS, index=INIT_STRATEGY_OPTIONS.index(init_default))
-    random_seed = int(col_c.number_input("Random Seed", min_value=0, max_value=2147483647, value=seed_default, step=1))
+    acq_func = col_a.selectbox("Acquisition Function", OPTIMIZER_ACQ_OPTIONS, index=OPTIMIZER_ACQ_OPTIONS.index(acq_default), key="single_acq_func_select")
+    init_strategy = col_b.selectbox("Init Strategy", INIT_STRATEGY_OPTIONS, index=INIT_STRATEGY_OPTIONS.index(init_default), key="single_init_strategy_select")
+    random_seed = int(col_c.number_input("Random Seed", min_value=0, max_value=2147483647, value=seed_default, step=1, key="single_random_seed_input"))
 else:
     acq_func = acq_default
     init_strategy = init_default
@@ -612,168 +620,6 @@ if is_advanced_single:
 else:
     st.caption("Reproducibility controls are hidden in Quick mode. Switch to Advanced to view status.")
 if is_advanced_single:
-    # Campaign templates
-    themed_section_header("templates", "Campaign Templates")
-    single_templates = list_campaign_templates(mode="single")
-    selected_template = st.selectbox("Template", options=["None"] + single_templates, key="single_template_select")
-    col_tpl_load, col_tpl_save = st.columns([1, 1])
-    with col_tpl_load:
-        if st.button("Load Template"):
-            if selected_template == "None":
-                st.warning("Please choose a template to load.")
-            else:
-                payload = load_campaign_template(selected_template)
-                if not payload:
-                    st.error("Failed to load template.")
-                elif payload.get("mode") != "single":
-                    st.error("Selected template is not a single-objective campaign.")
-                else:
-                    loaded_vars = variables_as_tuples(payload.get("variables", []))
-                    if loaded_vars:
-                        st.session_state.variables = loaded_vars
-                    optimization = payload.get("optimization", {})
-                    restore_reference_categories("single", optimization.get("reference_categories", {}))
-                    st.session_state.initial_experiments = int(optimization.get("initial_experiments", st.session_state.get("initial_experiments", 5)))
-                    st.session_state.total_iterations = int(optimization.get("total_iterations", st.session_state.get("total_iterations", 20)))
-                    loaded_response = optimization.get("response")
-                    if loaded_response in SINGLE_OBJECTIVE_OPTIONS:
-                        st.session_state.response_to_optimize = loaded_response
-                    loaded_acq = optimization.get("acq_func")
-                    if loaded_acq in OPTIMIZER_ACQ_OPTIONS:
-                        st.session_state.acq_func = loaded_acq
-                    loaded_init = optimization.get("init_strategy")
-                    if loaded_init in INIT_STRATEGY_OPTIONS:
-                        st.session_state.init_strategy = loaded_init
-                    st.session_state.random_seed = int(optimization.get("random_seed", st.session_state.get("random_seed", 42)))
-                    st.session_state.single_bo_qc_enabled = bool(
-                        optimization.get("bo_qc_sentinel_enabled", st.session_state.get("single_bo_qc_enabled", False))
-                    )
-                    st.session_state.single_bo_qc_every_n_runs = int(
-                        optimization.get("bo_qc_sentinel_every_n_runs", st.session_state.get("single_bo_qc_every_n_runs", 5))
-                    )
-                    repro_cfg = optimization.get("reproducibility", {})
-                    if isinstance(repro_cfg, dict):
-                        st.session_state.single_repro_enabled = bool(repro_cfg.get("enabled", st.session_state.get("single_repro_enabled", False)))
-                        st.session_state.single_repro_method = str(repro_cfg.get("method", st.session_state.get("single_repro_method", "LHS")))
-                        st.session_state.single_repro_n_points = int(repro_cfg.get("n_points", st.session_state.get("single_repro_n_points", 8)))
-                        st.session_state.single_repro_patterns = list(repro_cfg.get("patterns", st.session_state.get("single_repro_patterns", list(REPRO_PATTERN_LABELS[:2]))))
-                        st.session_state.single_repro_cyclic_repeats = int(
-                            repro_cfg.get("cyclic_repeats", st.session_state.get("single_repro_cyclic_repeats", 3))
-                        )
-                        st.session_state.single_repro_use_sentinel = bool(repro_cfg.get("use_sentinel", st.session_state.get("single_repro_use_sentinel", True)))
-                        st.session_state.single_repro_sentinel_every = int(repro_cfg.get("sentinel_every_n_runs", st.session_state.get("single_repro_sentinel_every", 5)))
-                        st.session_state.single_repro_escalate_cleaning = bool(repro_cfg.get("escalate_cleaning", st.session_state.get("single_repro_escalate_cleaning", True)))
-                        st.session_state.single_repro_max_cleaning = int(repro_cfg.get("max_cleaning_level", st.session_state.get("single_repro_max_cleaning", 2)))
-                        st.session_state.single_repro_block_on_fail = bool(repro_cfg.get("block_on_fail", st.session_state.get("single_repro_block_on_fail", True)))
-                        st.session_state.single_repro_outlier_repeat_enabled = bool(
-                            repro_cfg.get("outlier_repeat_enabled", st.session_state.get("single_repro_outlier_repeat_enabled", False))
-                        )
-                        st.session_state.single_repro_outlier_pair_rsd_pct = float(
-                            repro_cfg.get("outlier_pair_rsd_pct", st.session_state.get("single_repro_outlier_pair_rsd_pct", 5.0))
-                        )
-                        st.session_state.single_repro_outlier_gap_pct = float(
-                            repro_cfg.get("outlier_gap_pct", st.session_state.get("single_repro_outlier_gap_pct", 10.0))
-                        )
-                        st.session_state.single_repro_outlier_downgrade_conditional = bool(
-                            repro_cfg.get(
-                                "outlier_downgrade_conditional",
-                                st.session_state.get("single_repro_outlier_downgrade_conditional", True),
-                            )
-                        )
-                        for _widget_key in [
-                            "single_repro_enabled_widget",
-                            "single_repro_method_select",
-                            "single_repro_n_points_input",
-                            "single_repro_patterns_select",
-                            "single_repro_use_sentinel_widget",
-                            "single_repro_sentinel_every_input",
-                            "single_repro_escalate_cleaning_widget",
-                            "single_repro_max_cleaning_input",
-                            "single_repro_block_on_fail_widget",
-                            "single_repro_outlier_repeat_enabled_widget",
-                            "single_repro_outlier_pair_rsd_pct_widget",
-                            "single_repro_outlier_gap_pct_widget",
-                            "single_repro_outlier_downgrade_conditional_widget",
-                        ]:
-                            st.session_state.pop(_widget_key, None)
-                    hardware = payload.get("hardware", {})
-                    if hardware:
-                        st.session_state.simulation_mode = hardware.get("simulation_mode", st.session_state.get("simulation_mode", "off"))
-                        st.session_state.opc_url = hardware.get("opc_url", st.session_state.get("opc_url", "http://em-nun:57080"))
-                        st.session_state.use_autosampler = bool(hardware.get("use_autosampler", st.session_state.get("use_autosampler", False)))
-                        st.session_state.volume_to_collect = float(hardware.get("volume_to_collect", st.session_state.get("volume_to_collect", 3.0)))
-                        st.session_state.process_adapter = hardware.get("process_adapter", st.session_state.get("process_adapter", DEFAULT_PROCESS_ADAPTER))
-                        st.session_state.process_adapter_config = hardware.get("process_adapter_config", st.session_state.get("process_adapter_config", {}))
-                        st.session_state.running_protocol_script = hardware.get("running_protocol_script", st.session_state.get("running_protocol_script"))
-                        _queue_single_deferred_updates(
-                            measurement_source_prefix=hardware.get(
-                            "measurement_source_prefix",
-                            st.session_state.get("measurement_source_prefix", "OpusOPCSvr.HP-CZC3484P17->"),
-                            ),
-                            measurement_source_signal=hardware.get(
-                            "measurement_source_signal",
-                            st.session_state.get("measurement_source_signal", "PDA - mM"),
-                            ),
-                            **measurement_session_updates(hardware),
-                        )
-                    st.success(f"Loaded template: {selected_template}")
-                    st.rerun()
-
-    with col_tpl_save:
-        save_template_name = st.text_input(
-            "Template name",
-            value=st.session_state.get("single_template_name", experiment_name),
-            key="single_template_name",
-        )
-        if st.button("Save Current Template"):
-            template_payload = build_single_campaign_template(
-                template_name=save_template_name,
-                variables=st.session_state.get("variables", []),
-                optimization={
-                    "reference_categories": st.session_state.get("single_reference_categories", {}),
-                    "initial_experiments": int(initial_experiments),
-                    "total_iterations": int(total_iterations),
-                    "response": response_to_optimize,
-                    "acq_func": acq_func,
-                    "init_strategy": init_strategy,
-                    "random_seed": int(random_seed),
-                    "bo_qc_sentinel_enabled": bool(st.session_state.get("single_bo_qc_enabled", False)),
-                    "bo_qc_sentinel_every_n_runs": int(st.session_state.get("single_bo_qc_every_n_runs", 5)),
-                    "reproducibility": {
-                        "enabled": bool(st.session_state.get("single_repro_enabled", False)),
-                        "method": st.session_state.get("single_repro_method", "LHS"),
-                        "n_points": int(st.session_state.get("single_repro_n_points", 8)),
-                        "patterns": list(st.session_state.get("single_repro_patterns", list(REPRO_PATTERN_LABELS[:2]))),
-                        "cyclic_repeats": int(st.session_state.get("single_repro_cyclic_repeats", 3)),
-                        "use_sentinel": bool(st.session_state.get("single_repro_use_sentinel", True)),
-                        "sentinel_every_n_runs": int(st.session_state.get("single_repro_sentinel_every", 5)),
-                        "escalate_cleaning": bool(st.session_state.get("single_repro_escalate_cleaning", True)),
-                        "max_cleaning_level": int(st.session_state.get("single_repro_max_cleaning", 2)),
-                        "block_on_fail": bool(st.session_state.get("single_repro_block_on_fail", True)),
-                        "outlier_repeat_enabled": bool(st.session_state.get("single_repro_outlier_repeat_enabled", False)),
-                        "outlier_pair_rsd_pct": float(st.session_state.get("single_repro_outlier_pair_rsd_pct", 5.0)),
-                        "outlier_gap_pct": float(st.session_state.get("single_repro_outlier_gap_pct", 10.0)),
-                        "outlier_downgrade_conditional": bool(
-                            st.session_state.get("single_repro_outlier_downgrade_conditional", True)
-                        ),
-                    },
-                },
-                hardware={
-                    "simulation_mode": simulation_mode,
-                    "opc_url": opc_url,
-                    "use_autosampler": bool(st.session_state.get("use_autosampler", False)),
-                    "volume_to_collect": float(st.session_state.get("volume_to_collect", 3.0)),
-                    "process_adapter": st.session_state.get("process_adapter", DEFAULT_PROCESS_ADAPTER),
-                    "process_adapter_config": st.session_state.get("process_adapter_config", {}),
-                    "running_protocol_script": st.session_state.get("running_protocol_script"),
-                    "measurement_source_prefix": st.session_state.get("measurement_source_prefix", "OpusOPCSvr.HP-CZC3484P17->"),
-                    "measurement_source_signal": st.session_state.get("measurement_source_signal", "PDA - mM"),
-                    **measurement_settings(st.session_state),
-                },
-            )
-            path = save_campaign_template(save_template_name, template_payload)
-            st.success(f"Template saved: {path}")
-
     # Reuse previous campaigns as initial data
     themed_section_header("reuse", "Reuse Previous Campaigns (Init)")
     available_runs = [d for d in os.listdir(SAVE_DIR) if os.path.isdir(os.path.join(SAVE_DIR, d))]
@@ -967,7 +813,7 @@ if is_advanced_single:
 
 else:
     reuse_runs = []
-    st.caption("Templates, reuse, and initial-design preview are hidden in Quick mode.")
+    st.caption("Reuse and initial-design preview are hidden in Quick mode.")
 
 # --- Run & Stop Buttons ---
 themed_section_header("run", "Run Control")
@@ -989,10 +835,13 @@ qc_col2.number_input(
 st.caption("QC sentinel runs are extra checks. They do not update the optimizer and do not count toward total iterations.")
 render_reference_categories("single")
 
+render_campaign_setup("single", experiment_name, experiment_date, experiment_notes)
+
 col_start, col_stop = st.columns(2)
 if col_start.button("▶ Start Optimization"):
     if not st.session_state.variables:
         st.error("Define at least one optimization variable before starting.")
+        close_runner(st.session_state.get("runner"))
         st.stop()
 
     run_path = os.path.join(SAVE_DIR, experiment_name)
@@ -1005,7 +854,9 @@ if col_start.button("▶ Start Optimization"):
     st.session_state.optimizer = StepBayesianOptimizer(opt_vars, acq_func=acq_func, random_state=random_seed, suggest_bounds=campaign_bounds)
     st.session_state.experiment_data = []
     st.session_state.iteration = 0
-    st.session_state.runner = ExperimentRunner(
+    st.session_state.optimization_running = False
+    st.session_state.runner = replace_experiment_runner(
+        st.session_state.get("runner"),
         OPCClient(opc_url),
         "experiment_log.csv",
         simulation_mode=simulation_mode,
@@ -1242,6 +1093,7 @@ if col_start.button("▶ Start Optimization"):
                 if st.session_state.get("single_repro_block_on_fail", True):
                     st.session_state.optimization_running = False
                     st.error("Optimization start blocked by reproducibility gate.")
+                    close_runner(st.session_state.get("runner"))
                     st.stop()
         else:
             st.warning("Reproducibility gate enabled, but no replicate patterns or sentinel are configured. Gate skipped.")
@@ -1384,6 +1236,7 @@ if st.session_state.get("experiment_data"):
 
 if col_stop.button("🛑 Stop Optimization"):
     st.session_state.optimization_running = False
+    close_runner(st.session_state.get("runner"))
     st.warning("🛑 Optimization manually stopped.")
 
 # --- Optimization Loop ---
@@ -1442,183 +1295,185 @@ if st.session_state.get("optimization_running", False):
 
     _render_single_qc_chart()
 
-    while iteration < total_iterations and st.session_state.optimization_running:
-        # Check if we have pending parameters from a previous resume
-        if st.session_state.get("pending_next_params") is not None:
-            x = st.session_state.pending_next_params
-            st.session_state.pending_next_params = None  # Clear after use
-        # Use any queued initial points next
-        elif st.session_state.get("initial_queue"):
-            x = st.session_state.initial_queue.pop(0)
-        else:
-            x = optimizer.suggest()
-        
-        params = {name: val for (name, *_), val in zip(st.session_state.variables, x)}
-        run_serial = int(iteration + 1 + bo_qc_count)
-        try:
-            result = runner.run_experiment(
-                params,
-                experiment_number=run_serial,
-                total_iterations=total_iterations,
-                objectives=[response_to_optimize],
-                status_title=f"Optimization Experiment {iteration + 1} of {total_iterations}",
-                status_note=f"Live run {run_serial} of ~{planned_total_live_runs} (includes QC runs).",
-            )
-        except Exception as exc:
-            st.session_state.optimization_running = False
-            st.error(f"Optimization run failed at iteration {iteration + 1}.")
-            try:
-                runner.save_full_measurements_to_csv(experiment_name)
-            except Exception as log_error:
-                print(f"Could not save failed measurement readings: {log_error}")
-            st.exception(exc)
-            break
-        y = -result[response_to_optimize]
-        optimizer.observe(x, y)
-
-        row = {
-            "Experiment #": iteration + 1,
-            "Timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            **params,
-            "Measurement": -y,
-            response_to_optimize: result[response_to_optimize],
-            **runner.measurement_result_fields(),
-        }
-        experiment_data.append(row)
-        df_results = pd.DataFrame(experiment_data)
-        raw_csv_path = runner.save_full_measurements_to_csv(experiment_name)
-
-        os.makedirs(run_path, exist_ok=True)
-        df_results.to_csv(os.path.join(run_path, "experiment_data.csv"), index=False)
-        with open(os.path.join(run_path, "optimizer.pkl"), "wb") as f:
-            pickle.dump(optimizer, f)
-        metadata = {
-            "variables": st.session_state.variables,
-            "reference_categories": st.session_state.get("single_reference_categories", {}),
-            "response": response_to_optimize,
-            "initial_experiments": int(initial_experiments),
-            "total_iterations": total_iterations,
-            "opc_url": opc_url,
-            "simulation_mode": simulation_mode,
-            "process_adapter": st.session_state.get("process_adapter", DEFAULT_PROCESS_ADAPTER),
-            "process_adapter_config": st.session_state.get("process_adapter_config", {}),
-            "running_protocol_script": st.session_state.get("running_protocol_script"),
-            "measurement_source_prefix": st.session_state.get("measurement_source_prefix", "OpusOPCSvr.HP-CZC3484P17->"),
-            "measurement_source_signal": st.session_state.get("measurement_source_signal", "PDA - mM"),
-            "acq_func": acq_func,
-            "init_strategy": init_strategy,
-            "random_seed": random_seed,
-            "reused_runs": reuse_runs,
-            "reused_count": st.session_state.get("reused_count", 0),
-            "reproducibility": st.session_state.get("single_repro_report"),
-            "bo_qc_sentinel_enabled": bool(bo_qc_enabled),
-            "bo_qc_sentinel_every_n_runs": int(bo_qc_every_n_runs),
-            "bo_qc_sentinel_count": int(bo_qc_count),
-            "bo_qc_sentinel_history": list(qc_history),
-            **measurement_settings(runner.__dict__),
-        }
-        with open(os.path.join(run_path, "metadata.json"), "w") as f:
-            json.dump(metadata, f, indent=4)
-        
-        # Pre-generate and save next parameters for potential resume
-        if iteration + 1 < total_iterations:
-            if st.session_state.get("initial_queue"):
-                next_x = st.session_state.initial_queue[0]  # Peek at next queued point
+    with campaign_connections(runner):
+        while iteration < total_iterations and st.session_state.optimization_running:
+            # Check if we have pending parameters from a previous resume
+            if st.session_state.get("pending_next_params") is not None:
+                x = st.session_state.pending_next_params
+                st.session_state.pending_next_params = None  # Clear after use
+            # Use any queued initial points next
+            elif st.session_state.get("initial_queue"):
+                x = st.session_state.initial_queue.pop(0)
             else:
-                next_x = optimizer.suggest()  # Generate next suggestion
-            with open(os.path.join(run_path, "pending_next_params.json"), "w") as f:
-                json.dump(next_x, f)
-        else:
-            # Remove pending params file if this is the last iteration
-            pending_file = os.path.join(run_path, "pending_next_params.json")
-            if os.path.exists(pending_file):
-                os.remove(pending_file)
-
-        # Progress line chart with non-zero baseline for better contrast
-        y_vals = df_results[response_to_optimize]
-        y_min = y_vals.min()
-        y_max = y_vals.max()
-        margin = (y_max - y_min) * 0.05 if y_max > y_min else 1
-        line = alt.Chart(df_results).mark_line(point=True).encode(
-            x=alt.X("Experiment #:Q"),
-            y=alt.Y(f"{response_to_optimize}:Q", scale=alt.Scale(domain=[y_min - margin, y_max + margin])),
-            tooltip=["Experiment #", response_to_optimize]
-        ).properties(
-            height=300,
-            title=alt.TitleParams(text=f"{response_to_optimize} vs Experiment #", anchor="middle")
-        )
-        results_chart.altair_chart(line, use_container_width=True)
-
-        for idx, (name, low, high, _, kind) in enumerate(st.session_state.variables):
-            df = df_results[[name, "Measurement"]]
-            y_min = df["Measurement"].min()
-            y_max = df["Measurement"].max()
-            margin = (y_max - y_min) * 0.05 if y_max > y_min else 1
-            chart = alt.Chart(df).mark_circle(size=60).encode(
-                x=variable_axis((name, low, high, "", kind)),
-                y=alt.Y("Measurement:Q", scale=alt.Scale(domain=[y_min - margin, y_max + margin]))
-            ).properties(
-                height=350,
-                title=alt.TitleParams(text=f"{name} vs Measurement", anchor="middle")
-            )
-            scatter_placeholders[idx].altair_chart(chart, use_container_width=True)
-
-        iteration += 1
-        st.session_state.iteration = iteration
-        st.session_state.experiment_data = experiment_data
-
-        if bo_qc_enabled and iteration > 0 and iteration % bo_qc_every_n_runs == 0 and st.session_state.optimization_running:
-            qc_serial = int(iteration + 1 + bo_qc_count)
+                x = optimizer.suggest()
+        
+            params = {name: val for (name, *_), val in zip(st.session_state.variables, x)}
+            run_serial = int(iteration + 1 + bo_qc_count)
             try:
-                qc_result = runner.run_experiment(
-                    bo_qc_point,
-                    experiment_number=qc_serial,
+                result = runner.run_experiment(
+                    params,
+                    experiment_number=run_serial,
                     total_iterations=total_iterations,
                     objectives=[response_to_optimize],
-                    status_title=f"QC Sentinel {bo_qc_count + 1} (after optimization experiment {iteration})",
-                    status_note=f"Live run {qc_serial} of ~{planned_total_live_runs}. This QC run does not update the optimizer.",
+                    status_title=f"Optimization Experiment {iteration + 1} of {total_iterations}",
+                    status_note=f"Live run {run_serial} of ~{planned_total_live_runs} (includes QC runs).",
                 )
-                qc_value = np.nan
-                if isinstance(qc_result, dict):
-                    raw_qc = qc_result.get(response_to_optimize)
-                    if raw_qc is None and qc_result:
-                        raw_qc = next(iter(qc_result.values()))
-                    try:
-                        qc_value = float(raw_qc)
-                    except Exception:
-                        qc_value = np.nan
-                qc_history.append(
-                    {
-                        "qc_run": int(bo_qc_count + 1),
-                        "after_experiment": int(iteration),
-                        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                        "value": qc_value,
-                        "status": "Done",
-                    }
-                )
-                bo_qc_count += 1
-                st.session_state.single_bo_qc_count = bo_qc_count
-                st.session_state.single_bo_qc_history = list(qc_history)
             except Exception as exc:
-                qc_history.append(
-                    {
-                        "qc_run": int(bo_qc_count + 1),
-                        "after_experiment": int(iteration),
-                        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                        "value": np.nan,
-                        "status": f"Failed: {exc}",
-                    }
+                st.session_state.optimization_running = False
+                st.error(f"Optimization run failed at iteration {iteration + 1}.")
+                try:
+                    runner.save_full_measurements_to_csv(experiment_name)
+                except Exception as log_error:
+                    print(f"Could not save failed measurement readings: {log_error}")
+                st.exception(exc)
+                break
+            y = -result[response_to_optimize]
+            optimizer.observe(x, y)
+
+            row = {
+                "Experiment #": iteration + 1,
+                "Timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                **params,
+                "Measurement": -y,
+                response_to_optimize: result[response_to_optimize],
+                **runner.measurement_result_fields(),
+            }
+            experiment_data.append(row)
+            df_results = pd.DataFrame(experiment_data)
+            raw_csv_path = runner.save_full_measurements_to_csv(experiment_name)
+
+            os.makedirs(run_path, exist_ok=True)
+            df_results.to_csv(os.path.join(run_path, "experiment_data.csv"), index=False)
+            with open(os.path.join(run_path, "optimizer.pkl"), "wb") as f:
+                pickle.dump(optimizer, f)
+            metadata = {
+                "variables": st.session_state.variables,
+                "reference_categories": st.session_state.get("single_reference_categories", {}),
+                "response": response_to_optimize,
+                "initial_experiments": int(initial_experiments),
+                "total_iterations": total_iterations,
+                "opc_url": opc_url,
+                "simulation_mode": simulation_mode,
+                "process_adapter": st.session_state.get("process_adapter", DEFAULT_PROCESS_ADAPTER),
+                "process_adapter_config": st.session_state.get("process_adapter_config", {}),
+                "running_protocol_script": st.session_state.get("running_protocol_script"),
+                "measurement_source_prefix": st.session_state.get("measurement_source_prefix", "OpusOPCSvr.HP-CZC3484P17->"),
+                "measurement_source_signal": st.session_state.get("measurement_source_signal", "PDA - mM"),
+                "acq_func": acq_func,
+                "init_strategy": init_strategy,
+                "random_seed": random_seed,
+                "reused_runs": reuse_runs,
+                "reused_count": st.session_state.get("reused_count", 0),
+                "reproducibility": st.session_state.get("single_repro_report"),
+                "bo_qc_sentinel_enabled": bool(bo_qc_enabled),
+                "bo_qc_sentinel_every_n_runs": int(bo_qc_every_n_runs),
+                "bo_qc_sentinel_count": int(bo_qc_count),
+                "bo_qc_sentinel_history": list(qc_history),
+                **measurement_settings(runner.__dict__),
+            }
+            with open(os.path.join(run_path, "metadata.json"), "w") as f:
+                json.dump(metadata, f, indent=4)
+        
+            # Pre-generate and save next parameters for potential resume
+            if iteration + 1 < total_iterations:
+                if st.session_state.get("initial_queue"):
+                    next_x = st.session_state.initial_queue[0]  # Peek at next queued point
+                else:
+                    next_x = optimizer.suggest()  # Generate next suggestion
+                with open(os.path.join(run_path, "pending_next_params.json"), "w") as f:
+                    json.dump(next_x, f)
+            else:
+                # Remove pending params file if this is the last iteration
+                pending_file = os.path.join(run_path, "pending_next_params.json")
+                if os.path.exists(pending_file):
+                    os.remove(pending_file)
+
+            # Progress line chart with non-zero baseline for better contrast
+            y_vals = df_results[response_to_optimize]
+            y_min = y_vals.min()
+            y_max = y_vals.max()
+            margin = (y_max - y_min) * 0.05 if y_max > y_min else 1
+            line = alt.Chart(df_results).mark_line(point=True).encode(
+                x=alt.X("Experiment #:Q"),
+                y=alt.Y(f"{response_to_optimize}:Q", scale=alt.Scale(domain=[y_min - margin, y_max + margin])),
+                tooltip=["Experiment #", response_to_optimize]
+            ).properties(
+                height=300,
+                title=alt.TitleParams(text=f"{response_to_optimize} vs Experiment #", anchor="middle")
+            )
+            results_chart.altair_chart(line, use_container_width=True)
+
+            for idx, (name, low, high, _, kind) in enumerate(st.session_state.variables):
+                df = df_results[[name, "Measurement"]]
+                y_min = df["Measurement"].min()
+                y_max = df["Measurement"].max()
+                margin = (y_max - y_min) * 0.05 if y_max > y_min else 1
+                chart = alt.Chart(df).mark_circle(size=60).encode(
+                    x=variable_axis((name, low, high, "", kind)),
+                    y=alt.Y("Measurement:Q", scale=alt.Scale(domain=[y_min - margin, y_max + margin]))
+                ).properties(
+                    height=350,
+                    title=alt.TitleParams(text=f"{name} vs Measurement", anchor="middle")
                 )
-                st.session_state.single_bo_qc_history = list(qc_history)
-                st.warning(f"QC sentinel run failed after experiment {iteration}: {exc}")
+                scatter_placeholders[idx].altair_chart(chart, use_container_width=True)
 
-        metadata["bo_qc_sentinel_count"] = int(bo_qc_count)
-        metadata["bo_qc_sentinel_history"] = list(qc_history)
-        with open(os.path.join(run_path, "metadata.json"), "w") as f:
-            json.dump(metadata, f, indent=4)
-        _render_single_qc_chart()
+            iteration += 1
+            st.session_state.iteration = iteration
+            st.session_state.experiment_data = experiment_data
 
-        time.sleep(1)
+            if bo_qc_enabled and iteration > 0 and iteration % bo_qc_every_n_runs == 0 and st.session_state.optimization_running:
+                qc_serial = int(iteration + 1 + bo_qc_count)
+                try:
+                    qc_result = runner.run_experiment(
+                        bo_qc_point,
+                        experiment_number=qc_serial,
+                        total_iterations=total_iterations,
+                        objectives=[response_to_optimize],
+                        status_title=f"QC Sentinel {bo_qc_count + 1} (after optimization experiment {iteration})",
+                        status_note=f"Live run {qc_serial} of ~{planned_total_live_runs}. This QC run does not update the optimizer.",
+                    )
+                    qc_value = np.nan
+                    if isinstance(qc_result, dict):
+                        raw_qc = qc_result.get(response_to_optimize)
+                        if raw_qc is None and qc_result:
+                            raw_qc = next(iter(qc_result.values()))
+                        try:
+                            qc_value = float(raw_qc)
+                        except Exception:
+                            qc_value = np.nan
+                    qc_history.append(
+                        {
+                            "qc_run": int(bo_qc_count + 1),
+                            "after_experiment": int(iteration),
+                            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                            "value": qc_value,
+                            "status": "Done",
+                        }
+                    )
+                    bo_qc_count += 1
+                    st.session_state.single_bo_qc_count = bo_qc_count
+                    st.session_state.single_bo_qc_history = list(qc_history)
+                except Exception as exc:
+                    qc_history.append(
+                        {
+                            "qc_run": int(bo_qc_count + 1),
+                            "after_experiment": int(iteration),
+                            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                            "value": np.nan,
+                            "status": f"Failed: {exc}",
+                        }
+                    )
+                    st.session_state.single_bo_qc_history = list(qc_history)
+                    st.warning(f"QC sentinel run failed after experiment {iteration}: {exc}")
+                    st.session_state.optimization_running = False
+
+            metadata["bo_qc_sentinel_count"] = int(bo_qc_count)
+            metadata["bo_qc_sentinel_history"] = list(qc_history)
+            with open(os.path.join(run_path, "metadata.json"), "w") as f:
+                json.dump(metadata, f, indent=4)
+            _render_single_qc_chart()
+
+            time.sleep(1)
 
     if experiment_data and iteration == total_iterations:
         df_results = pd.DataFrame(experiment_data)

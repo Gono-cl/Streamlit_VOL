@@ -4,6 +4,8 @@ from core.campaigns.variables import (
     parameters_from_row, point_from_row, read_campaign_data, reference_point, variable_axis, variable_domains,
 )
 from core.campaigns.variable_ui import render_variable_form, render_reference_categories, restore_reference_categories
+from core.campaigns.setup_ui import render_campaign_setup
+from core.campaigns.setup import widget_state_updates
 from datetime import datetime
 import numpy as np
 import pandas as pd
@@ -19,16 +21,13 @@ from core.campaigns import (
     MULTI_OBJECTIVE_OPTIONS,
     OPTIMIZER_ACQ_OPTIONS,
     VARIABLE_OPTIONS,
-    build_multi_campaign_template,
-    list_campaign_templates,
-    load_campaign_template,
-    save_campaign_template,
     variables_as_tuples,
 )
 from core.utils.export_tools import export_to_csv, export_to_excel
 from core.utils import db_handler
 from core.hardware.opc_communication import OPCClient
-from core.hardware.experimental_run import ExperimentRunner
+from core.hardware.experimental_run import replace_experiment_runner
+from core.hardware.connections import campaign_connections, close_runner
 from core.hardware.measurement_ui import render_measurement_settings
 from core.hardware.uvvis_measurement import measurement_settings, measurement_session_updates
 from core.hardware.process_adapters import DEFAULT_PROCESS_ADAPTER
@@ -315,7 +314,7 @@ ui_mode_multi = st.radio(
 )
 is_advanced_multi = ui_mode_multi == "Advanced"
 if not is_advanced_multi:
-    st.caption("Quick mode: core setup + run controls only. Switch to Advanced for templates, reproducibility, and design tooling.")
+    st.caption("Quick mode: core setup + run controls only. Switch to Advanced for reproducibility and design tooling.")
 
 # --- Session defaults ---
 if "simulation_mode" not in st.session_state:
@@ -419,15 +418,16 @@ simulation_mode = st.sidebar.selectbox(
     options=sim_modes,
     index=sim_modes.index(sim_default),
     format_func=lambda x: sim_mode_label[x],
+    key="multi_simulation_mode_select",
 )
-opc_url = st.sidebar.text_input("🔌 OPC Server URL", value=st.session_state.get("opc_url", "http://em-nun:57080"))
+opc_url = st.sidebar.text_input("🔌 OPC Server URL", value=st.session_state.get("opc_url", "http://em-nun:57080"), key="multi_opc_url_input")
 st.session_state.simulation_mode = simulation_mode
 st.session_state.opc_url = opc_url
 
 render_measurement_settings()
 
 # --- Sidebar: Use Autosampler ---
-use_autosampler = st.sidebar.checkbox("Use Autosampler", value=bool(st.session_state.get("use_autosampler", False)))
+use_autosampler = st.sidebar.checkbox("Use Autosampler", value=bool(st.session_state.get("use_autosampler", False)), key="multi_use_autosampler_input")
 st.session_state.use_autosampler = use_autosampler
 
 volume_to_collect = st.sidebar.number_input(
@@ -435,7 +435,8 @@ volume_to_collect = st.sidebar.number_input(
     min_value=0.0,
     max_value=6.0,
     value=float(st.session_state.get("volume_to_collect", 3.0)),
-    step=0.5
+    step=0.5,
+    key="multi_volume_to_collect_input",
 )
 st.session_state.volume_to_collect = volume_to_collect
 
@@ -515,7 +516,9 @@ if resume_file != "None" and st.sidebar.button("Load Previous Run"):
 
     # --- Re-initialize OPC client and runner ---
     st.session_state.opc_client = OPCClient(st.session_state.opc_url)
-    st.session_state.runner = ExperimentRunner(
+    st.session_state.optimization_running = False
+    st.session_state.runner = replace_experiment_runner(
+        st.session_state.get("runner"),
         st.session_state.opc_client,
         "multi_objective_log.csv",
         simulation_mode=st.session_state.simulation_mode,
@@ -528,15 +531,21 @@ if resume_file != "None" and st.sidebar.button("Load Previous Run"):
         measurement_source_signal=loaded_measurement_signal,
         **measurement_settings(metadata),
     )
+    st.session_state.optimization_running = True
 
     st.success(f"Loaded run: {resume_file}")
+    st.session_state.simulation_mode = metadata.get("simulation_mode", st.session_state.simulation_mode)
+    st.session_state.opc_url = metadata.get("opc_url", st.session_state.opc_url)
+    _queue_multi_deferred_updates(**widget_state_updates("multi", st.session_state))
     st.rerun()
 
 # --- Experiment Metadata ---
 themed_section_header("metadata", "Experiment Metadata")
-experiment_name = st.text_input("Experiment Name", value=st.session_state.get("run_name", ""))
-experiment_date = st.date_input("Experiment Date", datetime.today())
-experiment_notes = st.text_area("Additional Notes")
+experiment_name = st.text_input("Experiment Name", value=st.session_state.get("run_name", ""), key="multi_campaign_name")
+experiment_date = st.date_input("Experiment Date", st.session_state.get("experiment_date", datetime.today()), key="multi_campaign_date")
+experiment_notes = st.text_area("Additional Notes", value=st.session_state.get("experiment_notes", ""), key="multi_campaign_notes")
+st.session_state.experiment_date = experiment_date
+st.session_state.experiment_notes = experiment_notes
 
 # --- Define Variables ---
 themed_section_header("variables", "Optimization Variables")
@@ -548,8 +557,8 @@ themed_section_header("settings", "Optimization Settings")
 col5, col6 = st.columns(2)
 init_exp_default = int(st.session_state.get("initial_experiments", 5))
 total_default = int(st.session_state.get("total_iterations", 20))
-initial_experiments = col5.number_input("Initialization Experiments", min_value=1, max_value=100, value=init_exp_default)
-total_iterations = col6.number_input("Total Iterations", min_value=1, max_value=100, value=total_default)
+initial_experiments = col5.number_input("Initialization Experiments", min_value=1, max_value=100, value=init_exp_default, key="multi_initial_experiments_input")
+total_iterations = col6.number_input("Total Iterations", min_value=1, max_value=100, value=total_default, key="multi_total_iterations_input")
 st.session_state.initial_experiments = int(initial_experiments)
 st.session_state.total_iterations = int(total_iterations)
 init_options = INIT_STRATEGY_OPTIONS
@@ -563,9 +572,9 @@ if acq_default not in acq_options:
     acq_default = acq_options[0]
 if is_advanced_multi:
     col7, col8, col9 = st.columns(3)
-    init_strategy = col7.selectbox("Init Strategy", init_options, index=init_options.index(init_default))
-    random_seed = int(col8.number_input("Random Seed", min_value=0, max_value=2147483647, value=seed_default, step=1))
-    acq_func = col9.selectbox("Acquisition Function", acq_options, index=acq_options.index(acq_default))
+    init_strategy = col7.selectbox("Init Strategy", init_options, index=init_options.index(init_default), key="multi_init_strategy_select")
+    random_seed = int(col8.number_input("Random Seed", min_value=0, max_value=2147483647, value=seed_default, step=1, key="multi_random_seed_input"))
+    acq_func = col9.selectbox("Acquisition Function", acq_options, index=acq_options.index(acq_default), key="multi_acq_func_select")
 else:
     init_strategy = init_default
     random_seed = seed_default
@@ -574,7 +583,7 @@ st.session_state.init_strategy = init_strategy
 st.session_state.random_seed = random_seed
 st.session_state.acq_func = acq_func
 objective_defaults = [obj for obj in st.session_state.get("objectives", []) if obj in MULTI_OBJECTIVE_OPTIONS]
-objectives = st.multiselect("🎯 Select Objectives to Optimize", MULTI_OBJECTIVE_OPTIONS, default=objective_defaults)
+objectives = st.multiselect("🎯 Select Objectives to Optimize", MULTI_OBJECTIVE_OPTIONS, default=objective_defaults, key="multi_objectives_select")
 st.session_state.objectives = objectives
 
 st.markdown("### Select Maximize or Minimize Objective")
@@ -632,178 +641,6 @@ if is_advanced_multi:
 else:
     st.caption("Reproducibility controls are hidden in Quick mode. Switch to Advanced to view status.")
 if is_advanced_multi:
-    # Campaign templates
-    themed_section_header("templates", "Campaign Templates")
-    multi_templates = list_campaign_templates(mode="multi")
-    selected_template = st.selectbox("Template", options=["None"] + multi_templates, key="multi_template_select")
-    col_tpl_load, col_tpl_save = st.columns([1, 1])
-    with col_tpl_load:
-        if st.button("Load Template"):
-            if selected_template == "None":
-                st.warning("Please choose a template to load.")
-            else:
-                payload = load_campaign_template(selected_template)
-                if not payload:
-                    st.error("Failed to load template.")
-                elif payload.get("mode") != "multi":
-                    st.error("Selected template is not a multi-objective campaign.")
-                else:
-                    loaded_vars = variables_as_tuples(payload.get("variables", []))
-                    if loaded_vars:
-                        st.session_state.variables = loaded_vars
-                    optimization = payload.get("optimization", {})
-                    restore_reference_categories("multi", optimization.get("reference_categories", {}))
-                    st.session_state.initial_experiments = int(optimization.get("initial_experiments", st.session_state.get("initial_experiments", 5)))
-                    st.session_state.total_iterations = int(optimization.get("total_iterations", st.session_state.get("total_iterations", 20)))
-                    loaded_objectives = optimization.get("objectives", [])
-                    st.session_state.objectives = [o for o in loaded_objectives if o in MULTI_OBJECTIVE_OPTIONS]
-                    loaded_acq = optimization.get("acq_func")
-                    if loaded_acq in OPTIMIZER_ACQ_OPTIONS:
-                        st.session_state.acq_func = loaded_acq
-                    loaded_init = optimization.get("init_strategy")
-                    if loaded_init in INIT_STRATEGY_OPTIONS:
-                        st.session_state.init_strategy = loaded_init
-                    st.session_state.random_seed = int(optimization.get("random_seed", st.session_state.get("random_seed", 42)))
-                    st.session_state.multi_bo_qc_enabled = bool(
-                        optimization.get("bo_qc_sentinel_enabled", st.session_state.get("multi_bo_qc_enabled", False))
-                    )
-                    st.session_state.multi_bo_qc_every_n_runs = int(
-                        optimization.get("bo_qc_sentinel_every_n_runs", st.session_state.get("multi_bo_qc_every_n_runs", 5))
-                    )
-                    repro_cfg = optimization.get("reproducibility", {})
-                    if isinstance(repro_cfg, dict):
-                        st.session_state.multi_repro_enabled = bool(repro_cfg.get("enabled", st.session_state.get("multi_repro_enabled", False)))
-                        st.session_state.multi_repro_method = str(repro_cfg.get("method", st.session_state.get("multi_repro_method", "LHS")))
-                        st.session_state.multi_repro_n_points = int(repro_cfg.get("n_points", st.session_state.get("multi_repro_n_points", 8)))
-                        st.session_state.multi_repro_patterns = list(repro_cfg.get("patterns", st.session_state.get("multi_repro_patterns", list(REPRO_PATTERN_LABELS[:2]))))
-                        st.session_state.multi_repro_cyclic_repeats = int(
-                            repro_cfg.get("cyclic_repeats", st.session_state.get("multi_repro_cyclic_repeats", 3))
-                        )
-                        st.session_state.multi_repro_use_sentinel = bool(repro_cfg.get("use_sentinel", st.session_state.get("multi_repro_use_sentinel", True)))
-                        st.session_state.multi_repro_sentinel_every = int(repro_cfg.get("sentinel_every_n_runs", st.session_state.get("multi_repro_sentinel_every", 5)))
-                        st.session_state.multi_repro_escalate_cleaning = bool(repro_cfg.get("escalate_cleaning", st.session_state.get("multi_repro_escalate_cleaning", True)))
-                        st.session_state.multi_repro_max_cleaning = int(repro_cfg.get("max_cleaning_level", st.session_state.get("multi_repro_max_cleaning", 2)))
-                        st.session_state.multi_repro_block_on_fail = bool(repro_cfg.get("block_on_fail", st.session_state.get("multi_repro_block_on_fail", True)))
-                        st.session_state.multi_repro_objective = str(repro_cfg.get("objective", st.session_state.get("multi_repro_objective", "")))
-                        st.session_state.multi_repro_outlier_repeat_enabled = bool(
-                            repro_cfg.get("outlier_repeat_enabled", st.session_state.get("multi_repro_outlier_repeat_enabled", False))
-                        )
-                        st.session_state.multi_repro_outlier_pair_rsd_pct = float(
-                            repro_cfg.get("outlier_pair_rsd_pct", st.session_state.get("multi_repro_outlier_pair_rsd_pct", 5.0))
-                        )
-                        st.session_state.multi_repro_outlier_gap_pct = float(
-                            repro_cfg.get("outlier_gap_pct", st.session_state.get("multi_repro_outlier_gap_pct", 10.0))
-                        )
-                        st.session_state.multi_repro_outlier_downgrade_conditional = bool(
-                            repro_cfg.get(
-                                "outlier_downgrade_conditional",
-                                st.session_state.get("multi_repro_outlier_downgrade_conditional", True),
-                            )
-                        )
-                        for _widget_key in [
-                            "multi_repro_enabled_widget",
-                            "multi_repro_method_select",
-                            "multi_repro_n_points_input",
-                            "multi_repro_patterns_select",
-                            "multi_repro_use_sentinel_widget",
-                            "multi_repro_sentinel_every_input",
-                            "multi_repro_objective_select",
-                            "multi_repro_escalate_cleaning_widget",
-                            "multi_repro_max_cleaning_input",
-                            "multi_repro_block_on_fail_widget",
-                            "multi_repro_outlier_repeat_enabled_widget",
-                            "multi_repro_outlier_pair_rsd_pct_widget",
-                            "multi_repro_outlier_gap_pct_widget",
-                            "multi_repro_outlier_downgrade_conditional_widget",
-                        ]:
-                            st.session_state.pop(_widget_key, None)
-                    loaded_dirs = optimization.get("objective_directions", {})
-                    for obj_name, direction in loaded_dirs.items():
-                        if direction in ("maximize", "minimize"):
-                            st.session_state[f"{obj_name}_direction"] = direction
-                    hardware = payload.get("hardware", {})
-                    if hardware:
-                        st.session_state.simulation_mode = hardware.get("simulation_mode", st.session_state.get("simulation_mode", "off"))
-                        st.session_state.opc_url = hardware.get("opc_url", st.session_state.get("opc_url", "http://em-nun:57080"))
-                        st.session_state.use_autosampler = bool(hardware.get("use_autosampler", st.session_state.get("use_autosampler", False)))
-                        st.session_state.volume_to_collect = float(hardware.get("volume_to_collect", st.session_state.get("volume_to_collect", 3.0)))
-                        st.session_state.process_adapter = hardware.get("process_adapter", st.session_state.get("process_adapter", DEFAULT_PROCESS_ADAPTER))
-                        st.session_state.process_adapter_config = hardware.get("process_adapter_config", st.session_state.get("process_adapter_config", {}))
-                        st.session_state.running_protocol_script = hardware.get("running_protocol_script", st.session_state.get("running_protocol_script"))
-                        _queue_multi_deferred_updates(
-                            measurement_source_prefix=hardware.get(
-                                "measurement_source_prefix",
-                                st.session_state.get("measurement_source_prefix", "OpusOPCSvr.HP-CZC3484P17->"),
-                            ),
-                            measurement_source_signal=hardware.get(
-                                "measurement_source_signal",
-                                st.session_state.get("measurement_source_signal", "PDA - mM"),
-                            ),
-                            **measurement_session_updates(hardware),
-                        )
-                    st.success(f"Loaded template: {selected_template}")
-                    st.rerun()
-
-    with col_tpl_save:
-        save_template_name = st.text_input(
-            "Template name",
-            value=st.session_state.get("multi_template_name", experiment_name or "multi_campaign"),
-            key="multi_template_name",
-        )
-        if st.button("Save Current Template"):
-            template_payload = build_multi_campaign_template(
-                template_name=save_template_name,
-                variables=st.session_state.get("variables", []),
-                optimization={
-                    "reference_categories": st.session_state.get("multi_reference_categories", {}),
-                    "initial_experiments": int(initial_experiments),
-                    "total_iterations": int(total_iterations),
-                    "objectives": list(objectives),
-                    "objective_directions": {
-                        obj_name: st.session_state.get(f"{obj_name}_direction", "maximize")
-                        for obj_name in objectives
-                    },
-                    "acq_func": acq_func,
-                    "init_strategy": init_strategy,
-                    "random_seed": int(random_seed),
-                    "bo_qc_sentinel_enabled": bool(st.session_state.get("multi_bo_qc_enabled", False)),
-                    "bo_qc_sentinel_every_n_runs": int(st.session_state.get("multi_bo_qc_every_n_runs", 5)),
-                    "reproducibility": {
-                        "enabled": bool(st.session_state.get("multi_repro_enabled", False)),
-                        "method": st.session_state.get("multi_repro_method", "LHS"),
-                        "n_points": int(st.session_state.get("multi_repro_n_points", 8)),
-                        "patterns": list(st.session_state.get("multi_repro_patterns", list(REPRO_PATTERN_LABELS[:2]))),
-                        "cyclic_repeats": int(st.session_state.get("multi_repro_cyclic_repeats", 3)),
-                        "use_sentinel": bool(st.session_state.get("multi_repro_use_sentinel", True)),
-                        "sentinel_every_n_runs": int(st.session_state.get("multi_repro_sentinel_every", 5)),
-                        "escalate_cleaning": bool(st.session_state.get("multi_repro_escalate_cleaning", True)),
-                        "max_cleaning_level": int(st.session_state.get("multi_repro_max_cleaning", 2)),
-                        "block_on_fail": bool(st.session_state.get("multi_repro_block_on_fail", True)),
-                        "objective": st.session_state.get("multi_repro_objective", ""),
-                        "outlier_repeat_enabled": bool(st.session_state.get("multi_repro_outlier_repeat_enabled", False)),
-                        "outlier_pair_rsd_pct": float(st.session_state.get("multi_repro_outlier_pair_rsd_pct", 5.0)),
-                        "outlier_gap_pct": float(st.session_state.get("multi_repro_outlier_gap_pct", 10.0)),
-                        "outlier_downgrade_conditional": bool(
-                            st.session_state.get("multi_repro_outlier_downgrade_conditional", True)
-                        ),
-                    },
-                },
-                hardware={
-                    "simulation_mode": simulation_mode,
-                    "opc_url": opc_url,
-                    "use_autosampler": bool(st.session_state.get("use_autosampler", False)),
-                    "volume_to_collect": float(st.session_state.get("volume_to_collect", 3.0)),
-                    "process_adapter": st.session_state.get("process_adapter", DEFAULT_PROCESS_ADAPTER),
-                    "process_adapter_config": st.session_state.get("process_adapter_config", {}),
-                    "running_protocol_script": st.session_state.get("running_protocol_script"),
-                    "measurement_source_prefix": st.session_state.get("measurement_source_prefix", "OpusOPCSvr.HP-CZC3484P17->"),
-                    "measurement_source_signal": st.session_state.get("measurement_source_signal", "PDA - mM"),
-                    **measurement_settings(st.session_state),
-                },
-            )
-            path = save_campaign_template(save_template_name, template_payload)
-            st.success(f"Template saved: {path}")
-
     # Reuse previous multi-objective campaigns
     themed_section_header("reuse", "Reuse Previous Campaigns (Init)")
     available_mo = [d for d in os.listdir(SAVE_DIR) if os.path.isdir(os.path.join(SAVE_DIR, d))]
@@ -987,7 +824,7 @@ if is_advanced_multi:
 
 else:
     reuse_runs = []
-    st.caption("Templates, reuse, and initial-design preview are hidden in Quick mode.")
+    st.caption("Reuse and initial-design preview are hidden in Quick mode.")
 themed_section_header("run", "Run Control")
 st.markdown(
     "Would you like to use sentinel as a QC during optimization? "
@@ -1005,6 +842,8 @@ qc_col2.number_input(
 )
 st.caption("QC sentinel runs are extra checks. They do not update the optimizer and do not count toward total iterations.")
 render_reference_categories("multi")
+
+render_campaign_setup("multi", experiment_name, experiment_date, experiment_notes)
 col_actions_left, col_actions_right = st.columns([1, 1])
 start_clicked = col_actions_left.button("▶️ Start Optimization")
 stop_clicked = col_actions_right.button("🛑 Stop Optimization")
@@ -1013,10 +852,12 @@ if stop_clicked:
         st.session_state.stop_requested = True
         st.warning("Stop requested. The optimization will halt after the current iteration.")
     else:
+        close_runner(st.session_state.get("runner"))
         st.info("No optimization is currently running.")
 if start_clicked:
     if not st.session_state.variables:
         st.error("Define at least one optimization variable before starting.")
+        close_runner(st.session_state.get("runner"))
         st.stop()
 
     if len(objectives) < 2:
@@ -1028,7 +869,9 @@ if start_clicked:
         st.session_state.simulation_mode = simulation_mode
         st.session_state.opc_url = opc_url
         st.session_state.opc_client = OPCClient(st.session_state.opc_url)
-        st.session_state.runner = ExperimentRunner(
+        st.session_state.optimization_running = False
+        st.session_state.runner = replace_experiment_runner(
+            st.session_state.get("runner"),
             st.session_state.opc_client,
             "multi_objective_log.csv",
             simulation_mode=st.session_state.simulation_mode,
@@ -1041,6 +884,7 @@ if start_clicked:
             measurement_source_signal=st.session_state.get("measurement_source_signal"),
             **measurement_settings(st.session_state),
         )
+        st.session_state.optimization_running = True
         st.session_state.multi_repro_report = None
         st.session_state.multi_bo_qc_count = 0
         st.session_state.multi_bo_qc_history = []
@@ -1057,6 +901,7 @@ if start_clicked:
             if not repro_objective:
                 st.error("Reproducibility gate is enabled, but no metric objective is selected.")
                 st.session_state.optimization_running = False
+                close_runner(st.session_state.get("runner"))
                 st.stop()
 
             bounds_by_name = dict(zip((v[0] for v in st.session_state.variables), variable_domains(st.session_state.variables)))
@@ -1279,6 +1124,7 @@ if start_clicked:
                     if st.session_state.get("multi_repro_block_on_fail", True):
                         st.session_state.optimization_running = False
                         st.error("Optimization start blocked by reproducibility gate.")
+                        close_runner(st.session_state.get("runner"))
                         st.stop()
             else:
                 st.warning("Reproducibility gate enabled, but no replicate patterns or sentinel are configured. Gate skipped.")
@@ -1446,194 +1292,197 @@ if st.session_state.get("optimization_running", False):
 
     _render_multi_qc_chart()
 
-    while iteration < total_iterations:
-        if st.session_state.get("stop_requested", False):
-            st.warning("Experiment stopped by user.")
-            st.session_state.optimization_running = False
-            st.session_state.stop_requested = False
-            break
+    with campaign_connections(runner):
+        while iteration < total_iterations and st.session_state.get("optimization_running", False):
+            if st.session_state.get("stop_requested", False):
+                st.warning("Experiment stopped by user.")
+                st.session_state.optimization_running = False
+                st.session_state.stop_requested = False
+                break
 
-        # Use queued initial points first, else ask and clip to campaign bounds
-        if st.session_state.get("initial_queue"):
-            x = st.session_state.initial_queue.pop(0)
-        else:
-            x = optimizer.ask()
-            # Clip to campaign bounds to enforce current limits
-            campaign_bounds = variable_domains(st.session_state.variables)
-            x = clip_point(x, campaign_bounds)
-        params = {name: val for (name, *_), val in zip(st.session_state.variables, x)}
-        run_serial = int(iteration + 1 + bo_qc_count)
-        try:
-            result = runner.run_experiment(
-                params,
-                experiment_number=run_serial,
-                total_iterations=total_iterations,
-                objectives=objectives,
-                directions=objective_directions,
-                status_title=f"Optimization Experiment {iteration + 1} of {total_iterations}",
-                status_note=f"Live run {run_serial} of ~{planned_total_live_runs} (includes QC runs).",
-            )
-        except Exception as exc:
-            st.session_state.optimization_running = False
-            st.error(f"Optimization run failed at iteration {iteration + 1}.")
+            # Use queued initial points first, else ask and clip to campaign bounds
+            if st.session_state.get("initial_queue"):
+                x = st.session_state.initial_queue.pop(0)
+            else:
+                x = optimizer.ask()
+                # Clip to campaign bounds to enforce current limits
+                campaign_bounds = variable_domains(st.session_state.variables)
+                x = clip_point(x, campaign_bounds)
+            params = {name: val for (name, *_), val in zip(st.session_state.variables, x)}
+            run_serial = int(iteration + 1 + bo_qc_count)
             try:
-                runner.save_full_measurements_to_csv(experiment_name)
-            except Exception as log_error:
-                print(f"Could not save failed measurement readings: {log_error}")
-            st.exception(exc)
-            break
-        y_multi = [-result[obj] for obj in objectives]
-
-        if not isinstance(y_multi, list) or len(y_multi) != len(objectives):
-            st.error(f"Mismatch: expected {len(objectives)} objectives but got {len(y_multi)} in result.")
-            st.stop()
-
-        optimizer.tell(x, y_multi)
-
-        row = {
-            "Experiment #": iteration + 1,
-            "Timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            **params,
-            **{f"{obj}": result[obj] for obj in objectives},
-            **runner.measurement_result_fields(),
-        }
-        experiment_data.append(row)
-        df_results = pd.DataFrame(experiment_data)
-        raw_csv_path = runner.save_full_measurements_to_csv(experiment_name)
-
-        # --- Update charts inside the loop ---
-
-        if len(objectives) == 2 and not df_results.empty:
-            obj_x, obj_y = objectives[0], objectives[1]
-            df_results_plot = df_results.copy()
-            for obj in objectives:
-                if st.session_state.get(f"{obj}_direction", "maximize") == "minimize":
-                    df_results_plot[obj] = -df_results_plot[obj]
-            df_pareto_calc = df_results.copy()
-            for obj in objectives:
-                if st.session_state.get(f"{obj}_direction", "maximize") == "minimize":
-                    df_pareto_calc[obj] = -df_pareto_calc[obj]
-
-            pareto_df = df_pareto_calc[[obj_x, obj_y]].copy().sort_values(by=obj_x, ascending=False)
-            pareto_front_indices = []
-            best_so_far = -np.inf
-            for idx, row_ in pareto_df.iterrows():
-                if row_[obj_y] > best_so_far:
-                    pareto_front_indices.append(idx)
-                    best_so_far = row_[obj_y]
-            pareto_front_df = df_results_plot.loc[pareto_front_indices]
-
-            x_vals = df_results_plot[obj_x]
-            y_vals = df_results_plot[obj_y]
-            x_range = x_vals.max() - x_vals.min()
-            y_range = y_vals.max() - y_vals.min()
-            x_buffer = x_range * 0.05 if x_range > 0 else 1
-            y_buffer = y_range * 0.05 if y_range > 0 else 1
-            x_min = x_vals.min() - x_buffer
-            x_max = x_vals.max() + x_buffer
-            y_min = y_vals.min() - y_buffer
-            y_max = y_vals.max() + y_buffer
-
-            chart = alt.Chart(df_results_plot).mark_circle(size=60).encode(
-                x=alt.X(f"{obj_x}:Q", title=obj_x, scale=alt.Scale(domain=[x_min, x_max])),
-                y=alt.Y(f"{obj_y}:Q", title=obj_y, scale=alt.Scale(domain=[y_min, y_max])),
-                tooltip=list(df_results.columns)).interactive()
-            pareto_line = alt.Chart(pareto_front_df).mark_line(color="red").encode(
-                x=alt.X(f"{obj_x}:Q"), y=alt.Y(f"{obj_y}:Q"))
-
-            pareto_chart_placeholder.altair_chart(chart + pareto_line, use_container_width=True)
-        elif len(objectives) > 2:
-            pareto_chart_placeholder.info("ℹ️ Pareto plot available only for 2 objectives at a time.")
-
-        iteration += 1
-        st.session_state.iteration = iteration
-        st.session_state.experiment_data = experiment_data
-
-        if bo_qc_enabled and iteration > 0 and iteration % bo_qc_every_n_runs == 0 and st.session_state.optimization_running:
-            qc_serial = int(iteration + 1 + bo_qc_count)
-            try:
-                qc_result = runner.run_experiment(
-                    bo_qc_point,
-                    experiment_number=qc_serial,
+                result = runner.run_experiment(
+                    params,
+                    experiment_number=run_serial,
                     total_iterations=total_iterations,
                     objectives=objectives,
                     directions=objective_directions,
-                    status_title=f"QC Sentinel {bo_qc_count + 1} (after optimization experiment {iteration})",
-                    status_note=f"Live run {qc_serial} of ~{planned_total_live_runs}. This QC run does not update the optimizer.",
+                    status_title=f"Optimization Experiment {iteration + 1} of {total_iterations}",
+                    status_note=f"Live run {run_serial} of ~{planned_total_live_runs} (includes QC runs).",
                 )
-                qc_row = {
-                    "qc_run": int(bo_qc_count + 1),
-                    "after_experiment": int(iteration),
-                    "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    "status": "Done",
-                }
-                for obj in objectives:
-                    raw_qc = None
-                    if isinstance(qc_result, dict):
-                        raw_qc = qc_result.get(obj)
-                    try:
-                        qc_row[obj] = float(raw_qc) if raw_qc is not None else np.nan
-                    except Exception:
-                        qc_row[obj] = np.nan
-                qc_history.append(qc_row)
-                bo_qc_count += 1
-                st.session_state.multi_bo_qc_count = bo_qc_count
-                st.session_state.multi_bo_qc_history = list(qc_history)
             except Exception as exc:
-                qc_row = {
-                    "qc_run": int(bo_qc_count + 1),
-                    "after_experiment": int(iteration),
-                    "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    "status": f"Failed: {exc}",
-                }
+                st.session_state.optimization_running = False
+                st.error(f"Optimization run failed at iteration {iteration + 1}.")
+                try:
+                    runner.save_full_measurements_to_csv(experiment_name)
+                except Exception as log_error:
+                    print(f"Could not save failed measurement readings: {log_error}")
+                st.exception(exc)
+                break
+            y_multi = [-result[obj] for obj in objectives]
+
+            if not isinstance(y_multi, list) or len(y_multi) != len(objectives):
+                st.error(f"Mismatch: expected {len(objectives)} objectives but got {len(y_multi)} in result.")
+                close_runner(st.session_state.get("runner"))
+                st.stop()
+
+            optimizer.tell(x, y_multi)
+
+            row = {
+                "Experiment #": iteration + 1,
+                "Timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                **params,
+                **{f"{obj}": result[obj] for obj in objectives},
+                **runner.measurement_result_fields(),
+            }
+            experiment_data.append(row)
+            df_results = pd.DataFrame(experiment_data)
+            raw_csv_path = runner.save_full_measurements_to_csv(experiment_name)
+
+            # --- Update charts inside the loop ---
+
+            if len(objectives) == 2 and not df_results.empty:
+                obj_x, obj_y = objectives[0], objectives[1]
+                df_results_plot = df_results.copy()
                 for obj in objectives:
-                    qc_row[obj] = np.nan
-                qc_history.append(qc_row)
-                st.session_state.multi_bo_qc_history = list(qc_history)
-                st.warning(f"QC sentinel run failed after experiment {iteration}: {exc}")
+                    if st.session_state.get(f"{obj}_direction", "maximize") == "minimize":
+                        df_results_plot[obj] = -df_results_plot[obj]
+                df_pareto_calc = df_results.copy()
+                for obj in objectives:
+                    if st.session_state.get(f"{obj}_direction", "maximize") == "minimize":
+                        df_pareto_calc[obj] = -df_pareto_calc[obj]
 
-        progress_bar.progress(iteration / total_iterations)
-        _render_multi_qc_chart()
-        time.sleep(0.5)
+                pareto_df = df_pareto_calc[[obj_x, obj_y]].copy().sort_values(by=obj_x, ascending=False)
+                pareto_front_indices = []
+                best_so_far = -np.inf
+                for idx, row_ in pareto_df.iterrows():
+                    if row_[obj_y] > best_so_far:
+                        pareto_front_indices.append(idx)
+                        best_so_far = row_[obj_y]
+                pareto_front_df = df_results_plot.loc[pareto_front_indices]
 
-        # --- Save after each iteration ---
-        run_name = experiment_name.strip() if experiment_name.strip() else "multiobjective_experiment"
-        run_path = os.path.join(SAVE_DIR, run_name)
-        os.makedirs(run_path, exist_ok=True)
-        df_results.to_csv(os.path.join(run_path, "experiment_data.csv"), index=False)
-        with open(os.path.join(run_path, "optimizer.pkl"), "wb") as f:
-            pickle.dump(optimizer, f)
-        metadata = {
-            "variables": st.session_state.variables,
-            "reference_categories": st.session_state.get("multi_reference_categories", {}),
-            "objectives": objectives,
-            "objective_directions": {obj: st.session_state.get(f"{obj}_direction", "maximize") for obj in objectives},
-            "initial_experiments": int(initial_experiments),
-            "total_iterations": total_iterations,
-            "experiment_name": experiment_name,
-            "experiment_notes": experiment_notes,
-            "experiment_date": str(experiment_date),
-            "simulation_mode": st.session_state.simulation_mode,
-            "opc_url": st.session_state.opc_url,
-            "process_adapter": st.session_state.get("process_adapter", DEFAULT_PROCESS_ADAPTER),
-            "process_adapter_config": st.session_state.get("process_adapter_config", {}),
-            "running_protocol_script": st.session_state.get("running_protocol_script"),
-            "measurement_source_prefix": st.session_state.get("measurement_source_prefix", "OpusOPCSvr.HP-CZC3484P17->"),
-            "measurement_source_signal": st.session_state.get("measurement_source_signal", "PDA - mM"),
-            "init_strategy": init_strategy,
-            "random_seed": random_seed,
-            "acq_func": acq_func,
-            "reused_runs": reuse_runs,
-            "reused_count": st.session_state.get("reused_count", 0),
-            "reproducibility": st.session_state.get("multi_repro_report"),
-            "bo_qc_sentinel_enabled": bool(bo_qc_enabled),
-            "bo_qc_sentinel_every_n_runs": int(bo_qc_every_n_runs),
-            "bo_qc_sentinel_count": int(bo_qc_count),
-            "bo_qc_sentinel_history": list(qc_history),
-            **measurement_settings(runner.__dict__),
-        }
-        with open(os.path.join(run_path, "metadata.json"), "w") as f:
-            json.dump(metadata, f, indent=4)
+                x_vals = df_results_plot[obj_x]
+                y_vals = df_results_plot[obj_y]
+                x_range = x_vals.max() - x_vals.min()
+                y_range = y_vals.max() - y_vals.min()
+                x_buffer = x_range * 0.05 if x_range > 0 else 1
+                y_buffer = y_range * 0.05 if y_range > 0 else 1
+                x_min = x_vals.min() - x_buffer
+                x_max = x_vals.max() + x_buffer
+                y_min = y_vals.min() - y_buffer
+                y_max = y_vals.max() + y_buffer
+
+                chart = alt.Chart(df_results_plot).mark_circle(size=60).encode(
+                    x=alt.X(f"{obj_x}:Q", title=obj_x, scale=alt.Scale(domain=[x_min, x_max])),
+                    y=alt.Y(f"{obj_y}:Q", title=obj_y, scale=alt.Scale(domain=[y_min, y_max])),
+                    tooltip=list(df_results.columns)).interactive()
+                pareto_line = alt.Chart(pareto_front_df).mark_line(color="red").encode(
+                    x=alt.X(f"{obj_x}:Q"), y=alt.Y(f"{obj_y}:Q"))
+
+                pareto_chart_placeholder.altair_chart(chart + pareto_line, use_container_width=True)
+            elif len(objectives) > 2:
+                pareto_chart_placeholder.info("ℹ️ Pareto plot available only for 2 objectives at a time.")
+
+            iteration += 1
+            st.session_state.iteration = iteration
+            st.session_state.experiment_data = experiment_data
+
+            if bo_qc_enabled and iteration > 0 and iteration % bo_qc_every_n_runs == 0 and st.session_state.optimization_running:
+                qc_serial = int(iteration + 1 + bo_qc_count)
+                try:
+                    qc_result = runner.run_experiment(
+                        bo_qc_point,
+                        experiment_number=qc_serial,
+                        total_iterations=total_iterations,
+                        objectives=objectives,
+                        directions=objective_directions,
+                        status_title=f"QC Sentinel {bo_qc_count + 1} (after optimization experiment {iteration})",
+                        status_note=f"Live run {qc_serial} of ~{planned_total_live_runs}. This QC run does not update the optimizer.",
+                    )
+                    qc_row = {
+                        "qc_run": int(bo_qc_count + 1),
+                        "after_experiment": int(iteration),
+                        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        "status": "Done",
+                    }
+                    for obj in objectives:
+                        raw_qc = None
+                        if isinstance(qc_result, dict):
+                            raw_qc = qc_result.get(obj)
+                        try:
+                            qc_row[obj] = float(raw_qc) if raw_qc is not None else np.nan
+                        except Exception:
+                            qc_row[obj] = np.nan
+                    qc_history.append(qc_row)
+                    bo_qc_count += 1
+                    st.session_state.multi_bo_qc_count = bo_qc_count
+                    st.session_state.multi_bo_qc_history = list(qc_history)
+                except Exception as exc:
+                    qc_row = {
+                        "qc_run": int(bo_qc_count + 1),
+                        "after_experiment": int(iteration),
+                        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        "status": f"Failed: {exc}",
+                    }
+                    for obj in objectives:
+                        qc_row[obj] = np.nan
+                    qc_history.append(qc_row)
+                    st.session_state.multi_bo_qc_history = list(qc_history)
+                    st.warning(f"QC sentinel run failed after experiment {iteration}: {exc}")
+                    st.session_state.optimization_running = False
+
+            progress_bar.progress(iteration / total_iterations)
+            _render_multi_qc_chart()
+            time.sleep(0.5)
+
+            # --- Save after each iteration ---
+            run_name = experiment_name.strip() if experiment_name.strip() else "multiobjective_experiment"
+            run_path = os.path.join(SAVE_DIR, run_name)
+            os.makedirs(run_path, exist_ok=True)
+            df_results.to_csv(os.path.join(run_path, "experiment_data.csv"), index=False)
+            with open(os.path.join(run_path, "optimizer.pkl"), "wb") as f:
+                pickle.dump(optimizer, f)
+            metadata = {
+                "variables": st.session_state.variables,
+                "reference_categories": st.session_state.get("multi_reference_categories", {}),
+                "objectives": objectives,
+                "objective_directions": {obj: st.session_state.get(f"{obj}_direction", "maximize") for obj in objectives},
+                "initial_experiments": int(initial_experiments),
+                "total_iterations": total_iterations,
+                "experiment_name": experiment_name,
+                "experiment_notes": experiment_notes,
+                "experiment_date": str(experiment_date),
+                "simulation_mode": st.session_state.simulation_mode,
+                "opc_url": st.session_state.opc_url,
+                "process_adapter": st.session_state.get("process_adapter", DEFAULT_PROCESS_ADAPTER),
+                "process_adapter_config": st.session_state.get("process_adapter_config", {}),
+                "running_protocol_script": st.session_state.get("running_protocol_script"),
+                "measurement_source_prefix": st.session_state.get("measurement_source_prefix", "OpusOPCSvr.HP-CZC3484P17->"),
+                "measurement_source_signal": st.session_state.get("measurement_source_signal", "PDA - mM"),
+                "init_strategy": init_strategy,
+                "random_seed": random_seed,
+                "acq_func": acq_func,
+                "reused_runs": reuse_runs,
+                "reused_count": st.session_state.get("reused_count", 0),
+                "reproducibility": st.session_state.get("multi_repro_report"),
+                "bo_qc_sentinel_enabled": bool(bo_qc_enabled),
+                "bo_qc_sentinel_every_n_runs": int(bo_qc_every_n_runs),
+                "bo_qc_sentinel_count": int(bo_qc_count),
+                "bo_qc_sentinel_history": list(qc_history),
+                **measurement_settings(runner.__dict__),
+            }
+            with open(os.path.join(run_path, "metadata.json"), "w") as f:
+                json.dump(metadata, f, indent=4)
 
     if iteration == total_iterations:
         st.success("✅ Multi-objective Optimization Complete!")

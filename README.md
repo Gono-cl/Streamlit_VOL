@@ -56,7 +56,15 @@ The application opens in a browser. Use the sidebar to navigate between pages.
 4. Configure the execution mode and protocol. Optionally load a template, reuse previous results, or enable reproducibility checks.
 5. Start the run and monitor its progress. Saved runs can be resumed, and results can be reviewed or exported through the application.
 
-The optimization pages offer **Quick** and **Advanced** views. Advanced mode exposes additional configuration, template, data-reuse, and initial-design preview tools.
+The optimization pages offer **Quick** and **Advanced** views. Advanced mode exposes additional configuration, data-reuse, and initial-design preview tools.
+
+### Save and load a campaign setup
+
+**Save Campaign Setup** is available in both views, before any experiment has been run. Enter a setup name to save the current variables, objectives and directions, optimization settings, execution configuration, and campaign name, date, and notes.
+
+Saved setups remain available after restarting VOL. Select one under **Saved Campaign Setup** and click **Load Campaign Setup** to restore the form. Loading prepares a fresh campaign with no experiment results; it does not connect to hardware or start optimization. Press **Start Optimization** when ready.
+
+Existing campaign templates are also listed as saved setups. To continue a run that already has results, use the separate saved-run resume controls.
 
 ### Variable types
 

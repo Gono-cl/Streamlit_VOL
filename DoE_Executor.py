@@ -9,7 +9,8 @@ import pandas as pd
 import streamlit as st
 
 from core.campaigns import MULTI_OBJECTIVE_OPTIONS, SINGLE_OBJECTIVE_OPTIONS
-from core.hardware.experimental_run import ExperimentRunner
+from core.hardware.experimental_run import replace_experiment_runner
+from core.hardware.connections import campaign_connections, close_runner
 from core.hardware.measurement_ui import render_measurement_settings
 from core.hardware.uvvis_measurement import measurement_settings, measurement_session_updates
 from core.hardware.opc_communication import OPCClient
@@ -605,7 +606,9 @@ if col_start.button("Start From Pending", key="doe_exec_start"):
         if not pending_idx:
             st.info("No pending rows found.")
         else:
-            st.session_state.doe_exec_runner = ExperimentRunner(
+            st.session_state.doe_exec_running = False
+            st.session_state.doe_exec_runner = replace_experiment_runner(
+                st.session_state.get("doe_exec_runner"),
                 OPCClient(st.session_state.opc_url),
                 "doe_executor_log.csv",
                 simulation_mode=st.session_state.simulation_mode,
@@ -618,6 +621,7 @@ if col_start.button("Start From Pending", key="doe_exec_start"):
                 measurement_source_signal=st.session_state.get("measurement_source_signal"),
                 **measurement_settings(st.session_state),
             )
+            st.session_state.doe_exec_running = True
             st.session_state.doe_exec_queue = pending_idx
             st.session_state.doe_exec_running = True
             st.session_state.doe_exec_stop_requested = False
@@ -634,7 +638,9 @@ if col_resume.button("Resume All Open", key="doe_exec_resume_open"):
     elif missing_required_cols:
         st.error("Add all required running-protocol parameter columns before starting.")
     else:
-        st.session_state.doe_exec_runner = ExperimentRunner(
+        st.session_state.doe_exec_running = False
+        st.session_state.doe_exec_runner = replace_experiment_runner(
+            st.session_state.get("doe_exec_runner"),
             OPCClient(st.session_state.opc_url),
             "doe_executor_log.csv",
             simulation_mode=st.session_state.simulation_mode,
@@ -647,6 +653,7 @@ if col_resume.button("Resume All Open", key="doe_exec_resume_open"):
             measurement_source_signal=st.session_state.get("measurement_source_signal"),
             **measurement_settings(st.session_state),
         )
+        st.session_state.doe_exec_running = True
         st.session_state.doe_exec_queue = open_idx
         st.session_state.doe_exec_running = True
         st.session_state.doe_exec_stop_requested = False
@@ -663,7 +670,9 @@ if col_retry.button("Retry Failed", key="doe_exec_retry_failed"):
     elif missing_required_cols:
         st.error("Add all required running-protocol parameter columns before starting.")
     else:
-        st.session_state.doe_exec_runner = ExperimentRunner(
+        st.session_state.doe_exec_running = False
+        st.session_state.doe_exec_runner = replace_experiment_runner(
+            st.session_state.get("doe_exec_runner"),
             OPCClient(st.session_state.opc_url),
             "doe_executor_log.csv",
             simulation_mode=st.session_state.simulation_mode,
@@ -676,6 +685,7 @@ if col_retry.button("Retry Failed", key="doe_exec_retry_failed"):
             measurement_source_signal=st.session_state.get("measurement_source_signal"),
             **measurement_settings(st.session_state),
         )
+        st.session_state.doe_exec_running = True
         st.session_state.doe_exec_queue = failed_idx
         st.session_state.doe_exec_running = True
         st.session_state.doe_exec_stop_requested = False
@@ -684,6 +694,7 @@ if col_retry.button("Retry Failed", key="doe_exec_retry_failed"):
 if col_stop.button("Stop", key="doe_exec_stop"):
     st.session_state.doe_exec_stop_requested = True
     st.session_state.doe_exec_running = False
+    close_runner(st.session_state.get("doe_exec_runner"))
     st.warning("Stop requested.")
 
 # Execution loop
@@ -711,82 +722,84 @@ if st.session_state.get("doe_exec_running", False):
         progress = st.progress(0.0)
         total_rows = len(plan_df) if len(plan_df) > 0 else 1
 
-        while queue and st.session_state.get("doe_exec_running", False):
-            if st.session_state.get("doe_exec_stop_requested", False):
-                break
-
-            row_idx = queue.pop(0)
-            if row_idx not in plan_df.index:
-                continue
-
-            plan_df.at[row_idx, "__status"] = "running"
-            plan_df.at[row_idx, "__error"] = ""
-
-            params = {}
-            conversion_error = None
-            for col in param_cols:
-                try:
-                    value = plan_df.at[row_idx, col]
-                    if pd.isna(value):
-                        raise ValueError("missing value")
-                    params[col] = float(value)
-                except Exception:
-                    conversion_error = f"Column '{col}' is not numeric at row {int(row_idx) + 1}."
+        with campaign_connections(runner):
+            while queue and st.session_state.get("doe_exec_running", False):
+                if st.session_state.get("doe_exec_stop_requested", False):
                     break
 
-            if conversion_error:
-                plan_df.at[row_idx, "__status"] = "failed"
-                plan_df.at[row_idx, "__error"] = conversion_error
-            else:
-                done_so_far = int((plan_df["__status"] == "done").sum())
-                try:
-                    result = runner.run_experiment(
-                        params,
-                        experiment_number=done_so_far + 1,
-                        total_iterations=total_rows,
-                        objectives=objectives,
-                    )
-                    row_payload = {
-                        "Experiment #": len(results) + 1,
-                        "Source Row": int(row_idx) + 1,
-                        "Timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    }
-                    row_payload.update(runner.measurement_result_fields())
-                    for col in plan_df.columns:
-                        if col.startswith("__"):
-                            continue
-                        row_payload[col] = plan_df.at[row_idx, col]
-                    for obj in objectives:
-                        row_payload[obj] = result.get(obj)
-                    row_payload["Status"] = "done"
-                    results.append(row_payload)
-                    plan_df.at[row_idx, "__status"] = "done"
-                    plan_df.at[row_idx, "__error"] = ""
-                except Exception as exc:
+                row_idx = queue.pop(0)
+                if row_idx not in plan_df.index:
+                    continue
+
+                plan_df.at[row_idx, "__status"] = "running"
+                plan_df.at[row_idx, "__error"] = ""
+
+                params = {}
+                conversion_error = None
+                for col in param_cols:
+                    try:
+                        value = plan_df.at[row_idx, col]
+                        if pd.isna(value):
+                            raise ValueError("missing value")
+                        params[col] = float(value)
+                    except Exception:
+                        conversion_error = f"Column '{col}' is not numeric at row {int(row_idx) + 1}."
+                        break
+
+                if conversion_error:
                     plan_df.at[row_idx, "__status"] = "failed"
-                    plan_df.at[row_idx, "__error"] = str(exc)
+                    plan_df.at[row_idx, "__error"] = conversion_error
+                else:
+                    done_so_far = int((plan_df["__status"] == "done").sum())
+                    try:
+                        result = runner.run_experiment(
+                            params,
+                            experiment_number=done_so_far + 1,
+                            total_iterations=total_rows,
+                            objectives=objectives,
+                        )
+                        row_payload = {
+                            "Experiment #": len(results) + 1,
+                            "Source Row": int(row_idx) + 1,
+                            "Timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        }
+                        row_payload.update(runner.measurement_result_fields())
+                        for col in plan_df.columns:
+                            if col.startswith("__"):
+                                continue
+                            row_payload[col] = plan_df.at[row_idx, col]
+                        for obj in objectives:
+                            row_payload[obj] = result.get(obj)
+                        row_payload["Status"] = "done"
+                        results.append(row_payload)
+                        plan_df.at[row_idx, "__status"] = "done"
+                        plan_df.at[row_idx, "__error"] = ""
+                    except Exception as exc:
+                        plan_df.at[row_idx, "__status"] = "failed"
+                        plan_df.at[row_idx, "__error"] = str(exc)
+                        st.session_state.doe_exec_running = False
 
-            try:
-                runner.save_full_measurements_to_csv(run_name)
-            except Exception:
-                pass
+                try:
+                    runner.save_full_measurements_to_csv(run_name)
+                except Exception:
+                    pass
 
-            metadata = make_metadata(
-                run_name=run_name,
-                notes=st.session_state.get("doe_exec_notes", ""),
-                run_date=st.session_state.get("doe_exec_date"),
-                param_cols=param_cols,
-                objectives=objectives,
-                measurement_config=measurement_settings(runner.__dict__),
-            )
-            persist_run_state(run_path, plan_df, pd.DataFrame(results), metadata)
+                metadata = make_metadata(
+                    run_name=run_name,
+                    notes=st.session_state.get("doe_exec_notes", ""),
+                    run_date=st.session_state.get("doe_exec_date"),
+                    param_cols=param_cols,
+                    objectives=objectives,
+                    measurement_config=measurement_settings(runner.__dict__),
+                )
+                persist_run_state(run_path, plan_df, pd.DataFrame(results), metadata)
 
-            st.session_state.doe_exec_plan_df = plan_df
-            st.session_state.doe_exec_results = results
-            st.session_state.doe_exec_queue = queue
+                st.session_state.doe_exec_plan_df = plan_df
+                st.session_state.doe_exec_results = results
+                st.session_state.doe_exec_queue = queue
 
-            progress.progress(float((plan_df["__status"] == "done").sum()) / float(total_rows))
-            time.sleep(0.2)
+                progress.progress(float((plan_df["__status"] == "done").sum()) / float(total_rows))
+                time.sleep(0.2)
 
         st.session_state.doe_exec_running = False
         st.session_state.doe_exec_stop_requested = False
@@ -798,6 +811,9 @@ if st.session_state.get("doe_exec_running", False):
             )
         else:
             st.success(f"Execution complete. done: {final_counts['done']}.")
+
+if not st.session_state.get("doe_exec_running", False):
+    close_runner(st.session_state.get("doe_exec_runner"))
 
 # Results and exports
 if st.session_state.get("doe_exec_results"):

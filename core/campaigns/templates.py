@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from .variables import normalize_variable
 import os
+import tempfile
 from pathlib import Path
 
 
@@ -86,8 +87,24 @@ def save_campaign_template(template_name: str, template_data: dict, base_dir: st
     payload["schema_version"] = int(payload.get("schema_version", SCHEMA_VERSION))
     payload["name"] = payload.get("name", safe_name)
     path = _template_path(safe_name, base_dir=base_dir)
-    with path.open("w", encoding="utf-8") as f:
-        json.dump(payload, f, indent=2)
+    if path.exists():
+        existing = load_campaign_template(safe_name, base_dir=base_dir)
+        if not isinstance(existing, dict):
+            raise ValueError("The existing saved setup is invalid. Choose a different name.")
+        if existing.get("mode") != payload.get("mode"):
+            raise ValueError("A setup for another campaign type already uses this name. Choose a different name.")
+    temporary_path = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent,
+                                         prefix=path.name + ".", suffix=".tmp", delete=False) as f:
+            temporary_path = Path(f.name)
+            json.dump(payload, f, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(temporary_path, path)
+    finally:
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
     return str(path)
 
 

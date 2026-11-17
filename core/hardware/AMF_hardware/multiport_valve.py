@@ -14,10 +14,16 @@ class MultiportValve:
 
         self.max_port = max_port
 
-        self.connect()
-
-        if auto_home:
-            self.ensure_homed()
+        try:
+            self.connect()
+            if auto_home:
+                self.ensure_homed()
+        except BaseException:
+            try:
+                self.disconnect()
+            except Exception as close_error:
+                print(f"Valve disconnection after initialization error also failed: {close_error}")
+            raise
 
 
     def connect(self):
@@ -304,20 +310,11 @@ class MultiportValve:
 
 
     def disconnect(self):
-
-        if self.valve is not None:
-
-            try:
-
-                self.valve.disconnect()
-
-                print(
-                    "Valve disconnected."
-                )
-
-            except Exception as exc:
-
-                print(
-                    "Disconnect warning:",
-                    exc
-                )
+        if self.valve is None:
+            return
+        self.valve.disconnect()
+        if getattr(self.valve, "connected", False) is True:
+            raise RuntimeError("Valve serial connection is still open after disconnect.")
+        self.valve = None
+        self.device = None
+        print("Valve disconnected.")

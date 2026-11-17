@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import csv
+import math
 import time
 from datetime import datetime
 from pathlib import Path
-import threading
 
 
 # ============================================================
@@ -103,6 +103,7 @@ CELL_METADATA = {
 # port 2 -> NaCl
 # port 3 -> NaNO3
 # port 4 -> reactor delivery
+# port 5 -> waste (verify the physical connection before running)
 #
 # Current stock concentration = 0.4 M
 
@@ -124,6 +125,7 @@ ELECTROLYTE_METADATA = {
 }
 
 SPM_DELIVERY_PORT = 4
+SPM_WASTE_PORT = 5
 
 
 # ============================================================
@@ -137,6 +139,13 @@ SPM_LOADING_FLOW_UL_MIN = 5000.0
 
 # Full 5 mL syringe
 SPM_LOAD_VOLUME_UL = 5000.0
+
+# On a change of stock solution, or when the contents are unknown, discard
+# the residual volume and rinse twice with 1 mL of the incoming electrolyte.
+# These values may also be overridden with spm_* keys in the adapter config.
+SPM_RINSE_VOLUME_UL = 1000.0
+SPM_RINSE_CYCLES = 2
+SPM_DISCARD_FLOW_UL_MIN = 5000.0
 
 # Minimum practical flow of SPM+
 SPM_MIN_FLOW_UL_MIN = 50.0
@@ -741,82 +750,84 @@ def _select_bkk_channel(
 # SPM+ PREPARATION
 # ============================================================
 
-def _prepare_spm_electrolyte(
-    runner,
-    op
-):
-    """
-    Load selected electrolyte into SPM+.
+def _invalidate_spm_contents(runner):
+    # Contents are deliberately kept only on the live runner. A new/resumed
+    # runner must not infer the physical syringe contents from saved results.
+    runner._mb_spm_contents = None
 
-    Sequence
-    --------
-    1. Select electrolyte source port.
-    2. Set loading flow in uL/min.
-    3. Aspirate 5000 uL.
-    4. Switch to delivery port 4.
-    5. Set calculated delivery flow in uL/min.
-    """
 
-    if not hasattr(runner, "spm"):
-        raise RuntimeError(
-            "runner.spm is not configured."
-        )
+def _spm_refill_settings(runner, spm):
+    config = getattr(runner, "adapter_config", {}) or {}
+    waste = config.get("spm_waste_port", SPM_WASTE_PORT)
+    cycles = config.get("spm_rinse_cycles", SPM_RINSE_CYCLES)
+    rinse = float(config.get("spm_rinse_volume_uL", SPM_RINSE_VOLUME_UL))
+    target = float(SPM_LOAD_VOLUME_UL)
+    capacity = float(spm.syringe_volume)
+    if isinstance(waste, bool) or not isinstance(waste, int) or waste < 1:
+        raise ValueError("SPM waste port must be a positive integer.")
+    source_ports = {data["spm_port"] for data in ELECTROLYTE_METADATA.values()}
+    if waste == SPM_DELIVERY_PORT or waste in source_ports:
+        raise ValueError("SPM waste must use a separate port from electrolyte sources and reactor delivery.")
+    if isinstance(cycles, bool) or not isinstance(cycles, int) or cycles < 1:
+        raise ValueError("Configure at least one SPM rinse cycle before changing electrolyte.")
+    if not math.isfinite(capacity) or not math.isfinite(target) or not 0 < target <= capacity:
+        raise ValueError("SPM fill target must fit within the configured syringe capacity.")
+    if not math.isfinite(rinse) or not 0 < rinse <= capacity:
+        raise ValueError("SPM rinse volume must be positive and fit within the syringe.")
+    return waste, rinse, cycles, target
 
-    spm = runner.spm
 
-    electrolyte_port = (
-        op["electrolyte_spm_port"]
-    )
+def _prepare_spm_electrolyte(runner, op):
+    """Top up a known stock solution; empty/rinse before every change or reset."""
+    spm = getattr(runner, "spm", None)
+    if spm is None:
+        raise RuntimeError("runner.spm is not configured.")
 
-    electrolyte_flow_uL_min = (
-        op["flow_electrolyte_uL_min"]
-    )
+    try:
+        waste, rinse, cycles, target = _spm_refill_settings(runner, spm)
+        if getattr(runner, "_mb_spm_delivery_active", False):
+            _stop_spm_delivery(runner)
+        state = spm.get_syringe_state()
+        # A different source or stock concentration also requires a changeover.
+        identity = (op["electrolyte"], float(op["electrolyte_stock_M"]), op["electrolyte_spm_port"])
+        previous = getattr(runner, "_mb_spm_contents", None)
+        remaining = state["volume_uL"]
+        _invalidate_spm_contents(runner)
 
-    print(
-        f"SPM+: selecting electrolyte source "
-        f"port {electrolyte_port}"
-    )
+        if previous == identity:
+            print(
+                f"SPM+: retaining {identity[0]} ({identity[1]:g} M stock); "
+                f"{remaining:.2f} µL remains, topping up to {target:.0f} µL."
+            )
+            if remaining > target + state["tolerance_uL"]:
+                raise RuntimeError("SPM contains more than the fill target; reset it via waste before reuse.")
+        else:
+            reason = "contents unknown" if previous is None else f"changing stock from {previous[0]} to {identity[0]}"
+            print(f"SPM+: {reason}; emptying through waste port {waste}.")
+            spm.move_valve(waste)
+            spm.set_flow_rate(SPM_DISCARD_FLOW_UL_MIN)
+            spm.move_to_volume(0.0)
+            for cycle in range(1, cycles + 1):
+                print(f"SPM+: rinse {cycle}/{cycles}, {rinse:.0f} µL of incoming {identity[0]} to waste.")
+                spm.move_valve(identity[2])
+                spm.set_flow_rate(SPM_LOADING_FLOW_UL_MIN)
+                spm.move_to_volume(rinse)
+                spm.move_valve(waste)
+                spm.set_flow_rate(SPM_DISCARD_FLOW_UL_MIN)
+                spm.move_to_volume(0.0)
 
-    spm.move_valve(
-        electrolyte_port
-    )
-
-    print(
-        f"SPM+: loading at "
-        f"{SPM_LOADING_FLOW_UL_MIN:.0f} uL/min"
-    )
-
-    spm.set_flow_rate(
-        SPM_LOADING_FLOW_UL_MIN
-    )
-
-    print(
-        f"SPM+: aspirating "
-        f"{SPM_LOAD_VOLUME_UL:.0f} uL"
-    )
-
-    spm.pickup(
-        SPM_LOAD_VOLUME_UL
-    )
-
-    print(
-        f"SPM+: switching to delivery "
-        f"port {SPM_DELIVERY_PORT}"
-    )
-
-    spm.move_valve(
-        SPM_DELIVERY_PORT
-    )
-
-    print(
-        f"SPM+: delivery flow = "
-        f"{electrolyte_flow_uL_min:.1f} uL/min "
-        f"({op['flow_electrolyte_ml_min']:.4f} mL/min)"
-    )
-
-    spm.set_flow_rate(
-        electrolyte_flow_uL_min
-    )
+        spm.move_valve(identity[2])
+        spm.set_flow_rate(SPM_LOADING_FLOW_UL_MIN)
+        # Absolute target: a partly full syringe receives only the missing volume.
+        spm.move_to_volume(target)
+        spm.move_valve(SPM_DELIVERY_PORT)
+        spm.set_flow_rate(op["flow_electrolyte_uL_min"])
+        runner._mb_spm_contents = identity
+        runner._mb_spm_delivery_active = False
+        print(f"SPM+: ready with {target:.0f} µL of {identity[0]}; delivery flow {op['flow_electrolyte_uL_min']:.1f} µL/min.")
+    except Exception:
+        _invalidate_spm_contents(runner)
+        raise
 
 
 # ============================================================
@@ -824,61 +835,47 @@ def _prepare_spm_electrolyte(
 # ============================================================
 
 def _start_spm_delivery(runner):
-    """
-    Start SPM+ electrolyte delivery in a separate thread.
-
-    SPMPump.dispense() is blocking, so the dispensing command
-    must run independently while the main protocol continues.
-    """
-
-    def _dispense():
-        try:
-            runner.spm.dispense(
-                SPM_LOAD_VOLUME_UL
-            )
-        except Exception as exc:
-            print(
-                f"SPM+ dispensing thread error: {exc}"
-            )
-
-    thread = threading.Thread(
-        target=_dispense,
-        daemon=True
-    )
-
-    thread.start()
-
-    print(
-        "SPM+ dispensing started in background."
-    )
-
-    return thread
+    """Use the SDK's nonblocking movement; keep all serial access on one thread."""
+    if getattr(runner, "_mb_spm_delivery_active", False):
+        raise RuntimeError("SPM delivery is already active.")
+    if getattr(runner, "_mb_spm_contents", None) is None:
+        raise RuntimeError("SPM contents are unknown; prepare the electrolyte before delivery.")
+    try:
+        state = runner.spm.get_syringe_state()
+        if state["volume_uL"] <= state["tolerance_uL"]:
+            raise RuntimeError("SPM syringe is empty; delivery cannot start.")
+        runner._mb_spm_delivery_active = True
+        runner.spm.move_to_volume(0.0, block=False)
+        print("SPM+ electrolyte delivery started (nonblocking command).")
+    except Exception:
+        _invalidate_spm_contents(runner)
+        raise
 
 
 # ============================================================
 # STOP SPM+
 # ============================================================
 
-def _stop_spm_delivery(runner):
+def _stop_spm_delivery(runner, best_effort=False):
     """
     Stop SPM+ immediately, leaving the remaining liquid
     inside the syringe.
     """
 
-    if runner.spm is None:
+    if getattr(runner, "spm", None) is None:
         return
 
     try:
-        runner.spm.hard_stop()
-
-        print(
-            "SPM+ electrolyte delivery stopped."
-        )
+        state = runner.spm.hard_stop()
+        runner._mb_spm_delivery_active = False
+        print(f"SPM+ electrolyte delivery stopped; {state['volume_uL']:.2f} µL retained.")
+        return state
 
     except Exception as exc:
-        print(
-            f"Warning: could not stop SPM+: {exc}"
-        )
+        _invalidate_spm_contents(runner)
+        print(f"Warning: could not verify SPM+ stop: {exc}")
+        if not best_effort:
+            raise RuntimeError("SPM stop/status could not be verified; refill is blocked.") from exc
 
 
 # ============================================================
@@ -893,6 +890,7 @@ def emergency_shutdown(runner):
     called by the runner after other experiment errors.
     """
 
+    _invalidate_spm_contents(runner)
     print("")
     print("!!! SAFE SHUTDOWN STARTED !!!")
 
@@ -943,10 +941,10 @@ def emergency_shutdown(runner):
 
     # SPM+ stop
     _stop_spm_delivery(
-        runner
+        runner, best_effort=True
     )
 
-    print("!!! SAFE SHUTDOWN COMPLETE !!!")
+    print("!!! SAFE SHUTDOWN ATTEMPT COMPLETE — CHECK ANY WARNINGS ABOVE !!!")
     print("")
 
 
@@ -1428,15 +1426,15 @@ def prepare_hardware(
 
     except Exception as exc:
 
+        _invalidate_spm_contents(runner)
         print(
             f"ERROR during hardware preparation: {exc}"
         )
 
-        _log_operating_point(
-            op,
-            status="hardware_error",
-            error_message=str(exc)
-        )
+        try:
+            _log_operating_point(op, status="hardware_error", error_message=str(exc))
+        except Exception as log_error:
+            print(f"Could not log preparation error: {log_error}")
 
         emergency_shutdown(
             runner
@@ -1462,6 +1460,9 @@ def stop_pumps(runner, parameters):
         5. Pump 3 analytical dilution OFF
     """
 
+    if runner.simulation_mode not in ("off", "hybrid"):
+        return
+
     # --------------------------------------------------------
     # 1. POWER SUPPLY OFF
     # --------------------------------------------------------
@@ -1480,9 +1481,12 @@ def stop_pumps(runner, parameters):
     # 2. SPM+ OFF
     # --------------------------------------------------------
 
-    _stop_spm_delivery(
-        runner
-    )
+    spm_error = None
+    try:
+        _stop_spm_delivery(runner)
+    except Exception as exc:
+        # Continue shutting down the other feeds, then propagate this fault.
+        spm_error = exc
 
 
     # --------------------------------------------------------
@@ -1538,9 +1542,9 @@ def stop_pumps(runner, parameters):
             f"Warning: Pump 3 stop failed: {exc}"
         )
 
-    print(
-        "Experiment hardware stopped."
-    )
+    if spm_error is not None:
+        raise RuntimeError("Feed shutdown attempted, but SPM status is uncertain; next refill is blocked.") from spm_error
+    print("Experiment hardware stopped; remaining SPM electrolyte retained for the next experiment.")
 
 # ============================================================
 # AUTOSAMPLER / DOWNSTREAM FLOW INFORMATION
@@ -1574,19 +1578,9 @@ def cleanup(
     parameters
 ):
     """
-    Placeholder.
-
-    Cleaning sequence still needs to be experimentally defined.
-
-    Likely future logic:
-
-    - PSU OFF
-    - stop reaction feeds
-    - discard remaining SPM electrolyte
-    - rinse SPM syringe / internal valve
-    - flush reaction mixer/tubing
-    - flush electrochemical cell
-    - prepare next electrolyte/cell
+    Retain stopped syringe contents. _prepare_spm_electrolyte handles the
+    syringe changeover when the next stock electrolyte is known. Cleaning
+    of the mixer, downstream tubing, and cell remains undefined.
 
     Do NOT return residual electrolyte to stock bottle
     unless contamination risk has been experimentally excluded.
@@ -1605,5 +1599,6 @@ def cleanup(
         return
 
     print(
-        "Cleaning protocol not yet defined."
+        "SPM syringe changeover is handled before the next experiment; "
+        "downstream cleaning is not yet defined."
     )

@@ -31,15 +31,16 @@ from core.objectives import calculate_objectives
 from core.hardware.uvvis_measurement import measurement_settings
 from core.hardware.AMF_hardware.multiport_valve import MultiportValve
 from core.hardware.AMF_hardware.spm_pump import SPMPump
+from core.hardware.connections import close_runner, disconnect_devices, disconnect_on_error
 
 
 # ---------------------------------------------------------------------------
 # AMF LABVISION DISPLAY TAGS
 # ---------------------------------------------------------------------------
 
-SPM_FLOW_TAG = "AMF_PUMP_FLOW"
-SPM_INTERNAL_VALVE_TAG = "AMF_SPM_MULTIPORT"
-CELL_MULTIPORT_TAG = "AMF_MULTIPORT_VALVE"
+SPM_FLOW_TAG = "Hitec_OPC_DA20_Server->E_CHEM:AMF_PUMP_FLOW"
+SPM_INTERNAL_VALVE_TAG = "Hitec_OPC_DA20_Server->E_CHEM:AMF_SPM_MULTIPORT"
+CELL_MULTIPORT_TAG = "Hitec_OPC_DA20_Server->E_CHEM:AMF_MULTIPORT_VALVE"
 
 
 class ExperimentRunner(
@@ -49,6 +50,7 @@ class ExperimentRunner(
     UIMixin,
     EchemMixin,
 ):
+    @disconnect_on_error
     def __init__(
         self,
         opc_client: OPCClient,
@@ -65,6 +67,7 @@ class ExperimentRunner(
         measurement_backend: str = "opc",
         uvvis_config: dict | None = None,
     ):
+        self._closed = False
         self.opc = opc_client
         self.use_autosampler = use_autosampler
         self.autosampler = AutoSampler(opc_client, vial_volume_ml=2.0) if use_autosampler else None
@@ -88,7 +91,9 @@ class ExperimentRunner(
             )
 
             self.spm = SPMPump(
-                auto_home=True,
+                # Homing can move unknown liquid and the internal valve. Require
+                # established device initialization before the protocol refills.
+                auto_home=False,
                 syringe_volume=5000
             )
 
@@ -145,6 +150,14 @@ class ExperimentRunner(
         self.tray_pos_waste = 0
         self.tray_pos_collect = 1
         self.volume_to_collect = volume_to_collect  # Volume to collect in mL
+
+    @property
+    def closed(self):
+        return getattr(self, "_closed", False)
+
+    def close(self):
+        """Release USB/serial handles after the experiment's stop/cleanup path."""
+        disconnect_devices(self)
 
     # ---------------------------------------------------------------------------
     #                          AMF HARDWARE HELPERS
@@ -324,6 +337,7 @@ class ExperimentRunner(
     # ---------------------------------------------------------------------------
     #                          RUNNING EXPERIMENT
     # ---------------------------------------------------------------------------
+    @disconnect_on_error
     def run_experiment(
         self,
         parameters,
@@ -334,6 +348,8 @@ class ExperimentRunner(
         status_title=None,
         status_note=None,
     ):
+        if self.closed:
+            raise RuntimeError("This runner is disconnected. Start or resume the campaign to reconnect.")
         should_display = status_title is not None or (
             experiment_number is not None and total_iterations is not None
         )
@@ -441,3 +457,9 @@ class ExperimentRunner(
         print(f"Full measurement log saved to {filename}")
         self.full_measurement_log.clear()
         return filename
+
+
+def replace_experiment_runner(previous_runner, *args, **kwargs):
+    """Release the old runner before new device discovery attempts to open its ports."""
+    close_runner(previous_runner)
+    return ExperimentRunner(*args, **kwargs)
