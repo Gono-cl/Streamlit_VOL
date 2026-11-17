@@ -8,10 +8,11 @@ class OPCClient:
         """Initialize OPC Client with the given server URL."""
         self.server_url = server_url
 
-    def read_value(self, item):
+    def read_value(self, item, *, timeout=None):
         """Reads a value from the OPC server."""
         try:
-            response = requests.get(f"{self.server_url}/read?item={item}")
+            request_options = {} if timeout is None else {"timeout": timeout}
+            response = requests.get(f"{self.server_url}/read?item={item}", **request_options)
             response.raise_for_status()
             data = json.loads(response.text)
             return data.get("data", [{}])[0].get("Value", None)
@@ -19,15 +20,18 @@ class OPCClient:
             print(f"Error reading from OPC: {e}")
             return None
 
-    def write_value(self, item, value):
+    def write_value(self, item, value, *, timeout=None):
         """Writes a value to the OPC server."""
         try:
             value_str = str(round(value,4)).replace(".",",")
-            response = requests.get(f"{self.server_url}/write?item={item}&value={value_str}")
+            request_options = {} if timeout is None else {"timeout": timeout}
+            response = requests.get(f"{self.server_url}/write?item={item}&value={value_str}", **request_options)
             response.raise_for_status()
             print(f"Successfully wrote {value_str} to {item}")
+            return True
         except requests.exceptions.RequestException as e:
             print(f"Error writing to OPC: {e}")
+            return False
 
     def check_connection(self, test_item):
         """Checks if the OPC server is reachable."""

@@ -4,10 +4,10 @@ import contextlib
 import io
 import math
 import unittest
-from types import SimpleNamespace
 from unittest.mock import Mock, call, patch
 
 from core.hardware.AMF_hardware.spm_pump import SPMPump
+from core.hardware.experimental_run import ExperimentRunner
 from running_protocols import MB_6_variables as protocol
 
 
@@ -34,6 +34,11 @@ class FakeAMF:
         self.home_noop = False
         self.home_never_complete = False
         self.home_started = False
+        self.connected = True
+
+    def disconnect(self):
+        self.connected = False
+        self.events.append(("disconnect",))
 
     @property
     def volume(self):
@@ -139,12 +144,28 @@ def make_pump(volume=0.0, resolution=0):
 
 def make_runner(volume=0.0, resolution=0, initialized=True):
     pump, sdk = make_pump(volume, resolution)
-    runner = SimpleNamespace(
-        spm=pump, simulation_mode="hybrid", adapter_config={},
-        opc=Mock(), cell_valve=Mock(), turn_off_power_supply=Mock(),
-        turn_on_power_supply=Mock(), set_current=Mock(),
-        _mb_spm_initialized=initialized,
-    )
+    # Exercise the production USB/OPC helpers against the in-memory AMF device.
+    # Bypass __init__ so no hardware discovery or serial connection is possible.
+    runner = ExperimentRunner.__new__(ExperimentRunner)
+    runner.spm = pump
+    runner.simulation_mode = "hybrid"
+    runner.adapter_config = {}
+    runner.opc = Mock()
+    values = dict(protocol.POWER_OFF_TAGS)
+
+    def write_value(tag, value, **kwargs):
+        values[tag] = value
+        return True
+
+    runner.opc.values = values
+    runner.opc.write_value.side_effect = write_value
+    runner.opc.read_value.side_effect = lambda tag, **kwargs: values.get(tag)
+    runner.cell_valve = Mock()
+    runner.cell_valve.move_to.side_effect = lambda port: port
+    runner.turn_off_power_supply = Mock(side_effect=lambda: values.update(dict(protocol.POWER_OFF_TAGS)))
+    runner.turn_on_power_supply = Mock(side_effect=lambda: values.update({tag: 1 - value for tag, value in protocol.POWER_OFF_TAGS}))
+    runner.set_current = Mock()
+    runner._mb_spm_initialized = initialized
     return runner, sdk
 
 
@@ -485,7 +506,8 @@ class ElectrolyteRefillTests(QuietTest):
         self.assertEqual(sdk.moves[-1][0:2], (4, 0))
         sdk.consume(1800)
         protocol.stop_pumps(runner, {})
-        protocol.cleanup(runner, {})
+        with patch.object(protocol.time, "sleep"):
+            protocol.cleanup(runner, {})
         self.assertFalse(runner._mb_spm_delivery_active)
         self.assertEqual(runner._mb_spm_contents, identity(op))
         self.assertAlmostEqual(sdk.volume, 3200)
@@ -522,14 +544,14 @@ class ElectrolyteRefillTests(QuietTest):
             "substrate_concentration": 100, "electrolyte_concentration": 0.05,
             "cell": "EC1", "electrolyte": "Na2SO4",
         }
-        home = runner.spm.home_to_waste
+        home = runner.home_spm_to_waste
 
         def checked_home(**kwargs):
             runner.turn_off_power_supply.assert_called()
             return home(**kwargs)
 
         with patch.object(protocol, "_log_operating_point"), patch.object(
-            runner.spm, "home_to_waste", side_effect=checked_home
+            runner, "home_spm_to_waste", side_effect=checked_home
         ):
             with self.assertRaisesRegex(RuntimeError, "Homing failed"):
                 protocol.prepare_hardware(runner, params)
@@ -578,8 +600,9 @@ class ElectrolyteRefillTests(QuietTest):
         self.assertIsNone(runner._mb_spm_contents)
         runner.turn_off_power_supply.assert_called_once()
         runner.opc.write_value.assert_has_calls([
-            call(protocol.PUMP_MB_TAG, 0), call(protocol.PUMP_WATER_TAG, 0),
-            call(protocol.PUMP_ANALYTICAL_DILUTION_TAG, 0),
+            call(protocol.PUMP_MB_TAG, 0, timeout=protocol.OPC_CONTROL_TIMEOUT_S),
+            call(protocol.PUMP_WATER_TAG, 0, timeout=protocol.OPC_CONTROL_TIMEOUT_S),
+            call(protocol.PUMP_ANALYTICAL_DILUTION_TAG, 0, timeout=protocol.OPC_CONTROL_TIMEOUT_S),
         ])
 
     def test_emergency_shutdown_is_best_effort_and_invalidates_stock_identity(self):

@@ -9,6 +9,7 @@ Single_Objective.py and Multi_Objective.py.
 from __future__ import annotations
 
 import csv
+import math
 import os
 import time
 from collections.abc import Mapping
@@ -41,6 +42,7 @@ from core.hardware.connections import close_runner, disconnect_devices, disconne
 SPM_FLOW_TAG = "Hitec_OPC_DA20_Server->E_CHEM:AMF_PUMP_FLOW"
 SPM_INTERNAL_VALVE_TAG = "Hitec_OPC_DA20_Server->E_CHEM:AMF_SPM_MULTIPORT"
 CELL_MULTIPORT_TAG = "Hitec_OPC_DA20_Server->E_CHEM:AMF_MULTIPORT_VALVE"
+AMF_DISPLAY_TIMEOUT_S = 1.0
 
 
 class ExperimentRunner(
@@ -114,6 +116,7 @@ class ExperimentRunner(
         self.uvvis_config = settings["uvvis_config"]
         self._uvvis_measurement = None
         self.last_measurement_result = None
+        self._experiment_completed = False
         if self.running_protocol_script:
             try:
                 self.running_protocol_module = load_protocol_module(self.running_protocol_script)
@@ -162,6 +165,20 @@ class ExperimentRunner(
     # ---------------------------------------------------------------------------
     #                          AMF HARDWARE HELPERS
     # ---------------------------------------------------------------------------
+
+    def _write_amf_display(self, tag, value):
+        """Display-only writes must not interrupt USB motion or shutdown."""
+        if self.simulation_mode not in ("off", "hybrid"):
+            return False
+        try:
+            if self.opc.write_value(tag, value, timeout=AMF_DISPLAY_TIMEOUT_S) is False:
+                print(f"Warning: AMF display update failed for {tag}; USB control continues.")
+                return False
+        except Exception as exc:
+            print(f"Warning: AMF display update failed for {tag}: {exc}; USB control continues.")
+            return False
+        return True
+
     def move_cell_valve(self, port: int):
         """
         Move the external AMF multiport valve and mirror the
@@ -172,7 +189,7 @@ class ExperimentRunner(
 
         final_position = self.cell_valve.move_to(int(port))
 
-        self.opc.write_value(
+        self._write_amf_display(
             CELL_MULTIPORT_TAG,
             int(final_position),
         )
@@ -189,7 +206,7 @@ class ExperimentRunner(
 
         final_position = self.spm.move_valve(int(port))
 
-        self.opc.write_value(
+        self._write_amf_display(
             SPM_INTERNAL_VALVE_TAG,
             int(final_position),
         )
@@ -198,24 +215,56 @@ class ExperimentRunner(
 
     def set_spm_flow(self, flow_uL_min: float):
         """
-        Set the SPM+ flow rate in uL/min and mirror the setpoint
-        to LabVision through OPC.
+        Configure SPM speed in uL/min. LabVision shows this speed only during
+        commanded motion; an idle syringe is displayed as zero flow.
         """
         if self.spm is None:
             raise RuntimeError("AMF SPM+ pump is not initialized.")
 
         flow_uL_min = float(flow_uL_min)
 
-        self.spm.set_flow_rate(
+        actual_flow = self.spm.set_flow_rate(
             flow_uL_min
         )
+        self._spm_flow_uL_min = actual_flow
+        active = bool(getattr(self, "_spm_motion_active", False))
+        if not active:
+            self.spm.get_syringe_state()  # Confirm idle before displaying zero.
+        self._write_amf_display(SPM_FLOW_TAG, actual_flow if active else 0.0)
+        return actual_flow
 
-        self.opc.write_value(
-            SPM_FLOW_TAG,
-            flow_uL_min,
-        )
+    def home_spm_to_waste(self, waste_port):
+        """Mirror the verified idle state and valve position after homing."""
+        if self.spm is None:
+            raise RuntimeError("AMF SPM+ pump is not initialized.")
+        state = self.spm.home_to_waste(waste_port=waste_port)
+        self._spm_motion_active = False
+        self._spm_flow_uL_min = None  # Homing may reset the configured speed.
+        self._write_amf_display(SPM_INTERNAL_VALVE_TAG, state["valve_position"])
+        self._write_amf_display(SPM_FLOW_TAG, 0.0)
+        return state
 
-        return flow_uL_min
+    def move_spm_to_volume(self, volume_uL, block=True):
+        """Mirror syringe filling/dispensing without changing the USB sequence.
+
+        Flow is the device's configured motion rate, not a flow-sensor reading.
+        A failed command/uncertain stop must not falsely report zero flow.
+        """
+        if self.spm is None:
+            raise RuntimeError("AMF SPM+ pump is not initialized.")
+        flow = getattr(self, "_spm_flow_uL_min", None)
+        if flow is None or not math.isfinite(flow) or flow <= 0:
+            raise RuntimeError("Configure the SPM flow before moving the syringe.")
+
+        def motion_started(moving):
+            self._spm_motion_active = moving
+            self._write_amf_display(SPM_FLOW_TAG, flow if moving else 0.0)
+
+        state = self.spm.move_to_volume(volume_uL, block=block, on_started=motion_started)
+        if block:
+            self._spm_motion_active = False
+            self._write_amf_display(SPM_FLOW_TAG, 0.0)
+        return state
 
     def stop_spm(self):
         """
@@ -225,12 +274,14 @@ class ExperimentRunner(
         if self.spm is None:
             return
 
-        self.spm.hard_stop()
+        state = self.spm.hard_stop()
+        self._spm_motion_active = False
 
-        self.opc.write_value(
+        self._write_amf_display(
             SPM_FLOW_TAG,
             0.0,
         )
+        return state
 
     def _protocol_callable(self, function_name: str):
         if self.running_protocol_module is None:
@@ -369,6 +420,7 @@ class ExperimentRunner(
             )
 
         self.last_measurement_result = None
+        self._experiment_completed = False
         if self.measurement_backend == "uvvis" and self.simulation_mode == "off":
             # Validate the folder/model before any protocol can start hardware.
             self._get_uvvis_measurement()
@@ -422,6 +474,9 @@ class ExperimentRunner(
             return self._normalize_result_payload(result, objectives)
         finally:
             if hardware_started:
+                # Protocol cleanup can avoid starting a cleaning pump after an
+                # experiment failed, while its shutdown path still always runs.
+                self._experiment_completed = completed
                 try:
                     try:
                         if self.protocol_stop_pumps_fn:

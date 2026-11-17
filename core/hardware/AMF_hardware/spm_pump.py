@@ -222,11 +222,13 @@ class SPMPump:
                 if time.monotonic() >= deadline:
                     raise TimeoutError("SPM homing did not finish; no refill is allowed.")
                 time.sleep(0.05)
-            if self.pump.getValvePosition() != 1:
+            valve_position = self.pump.getValvePosition()
+            if valve_position != 1:
                 raise RuntimeError("SPM homing did not finish on port 1.")
             state = self.get_syringe_state()
             if state["volume_uL"] > state["tolerance_uL"]:
                 raise RuntimeError("SPM homing did not leave an empty syringe; no refill is allowed.")
+            state["valve_position"] = valve_position
         except BaseException:
             try:
                 self.pump.hardStop()
@@ -342,6 +344,7 @@ class SPMPump:
         if not math.isfinite(self._flow_rate_uL_min) or self._flow_rate_uL_min <= 0:
             raise RuntimeError("SPM did not report a valid flow rate.")
         print("Flow rate:", self._flow_rate_uL_min)
+        return self._flow_rate_uL_min
 
     def _wait_until_idle(self, timeout_s=10.0):
         """Require an acknowledged stop/completion; never clear device faults here."""
@@ -384,14 +387,20 @@ class SPMPump:
             "tolerance_uL": capacity * 2.0 / full_stroke_steps,
         }
 
-    def move_to_volume(self, volume_uL, block=True):
-        """Move to an absolute syringe content, preventing cumulative overfilling."""
+    def move_to_volume(self, volume_uL, block=True, on_started=None):
+        """Move to an absolute content; optionally report an accepted motion.
+
+        The callback receives whether the target differs from the encoder
+        position. It runs after the USB command is accepted, before waiting.
+        """
         volume_uL = float(volume_uL)
         capacity = float(self.syringe_volume)
         if not math.isfinite(volume_uL) or not 0 <= volume_uL <= capacity:
             raise ValueError(f"SPM target volume must be between 0 and {capacity:g} µL.")
         before = self.get_syringe_state()
         self.pump.pumpVolume(volume=volume_uL, syringeVolume=capacity, block=False)
+        if on_started is not None:
+            on_started(abs(volume_uL - before["volume_uL"]) > before["tolerance_uL"])
         if not block:
             return None
         flow = getattr(self, "_flow_rate_uL_min", None)

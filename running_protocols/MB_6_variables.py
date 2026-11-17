@@ -176,15 +176,99 @@ PUMP_ANALYTICAL_DILUTION_TAG = (
     "Hitec_OPC_DA20_Server->E_CHEM:PUMP3.W1"
 )
 
+# Pump 6 uses mL/min (unlike the reagent pumps above, which use uL/min).
+PUMP_CLEANING_TAG = "Hitec_OPC_DA20_Server-%3EE_CHEM%3APUMP_6.W1"
+CLEANING_SOURCE_VALVE_TAG = "Hitec_OPC_DA20_Server-%3EE_CHEM%3AROT_VALVE.POS"
+CLEANING_WATER_PORT = 1
+CLEANING_FLOW_ML_MIN = 1.0
+CLEANING_DURATION_S = 60.0
+
+# Same switching-valve commands as PDA_5_current_density_applied_charge.py.
+# Readbacks below confirm OPC command values, not mechanical position sensors.
+VALVE_ELECTROLYSIS_TAGS = (
+    ("Hitec_OPC_DA20_Server-%3EE_CHEM%3AV_02_CLOSE", 1),
+    ("Hitec_OPC_DA20_Server-%3EE_CHEM%3AV_02_OPEN", 1),
+    ("Hitec_OPC_DA20_Server-%3EE_CHEM%3AV_01_CLOSE", 0),
+    ("Hitec_OPC_DA20_Server-%3EE_CHEM%3AV_01_OPEN", 0),
+)
+VALVE_CLEANING_TAGS = tuple((tag, 0) for tag, _ in VALVE_ELECTROLYSIS_TAGS)
+POWER_OFF_TAGS = (
+    ("Hitec_OPC_DA20_Server-%3EE_CHEM%3ABKK_P.OUTON", 0),
+    ("Hitec_OPC_DA20_Server-%3EE_CHEM%3ABKK_P.OUTOFF", 1),
+)
+FEED_STOP_TAGS = tuple((tag, 0) for tag in (
+    PUMP_MB_TAG, PUMP_WATER_TAG, PUMP_ANALYTICAL_DILUTION_TAG,
+))
+OPC_CONTROL_TIMEOUT_S = 2.0
+OPC_CHECK_ATTEMPTS = 3
+OPC_CHECK_INTERVAL_S = 0.25
+
+
+def _required_write(runner, tag, value):
+    if runner.opc.write_value(tag, value, timeout=OPC_CONTROL_TIMEOUT_S) is False:
+        raise RuntimeError(f"Required OPC write failed: {tag} = {value}.")
+
+
+def _verify_opc_values(runner, expected, description):
+    """Require readable command values before continuing to the next phase."""
+    for attempt in range(OPC_CHECK_ATTEMPTS):
+        mismatches = []
+        for tag, target in expected:
+            try:
+                value = runner.opc.read_value(tag, timeout=OPC_CONTROL_TIMEOUT_S)
+                number = float(value.strip().replace(",", ".")) if isinstance(value, str) else float(value)
+                if not math.isfinite(number) or not math.isclose(number, target, abs_tol=1e-6):
+                    mismatches.append(f"{tag}: expected {target}, got {value!r}")
+            except Exception as exc:
+                mismatches.append(f"{tag}: readback unavailable ({exc})")
+        if not mismatches:
+            return
+        if attempt + 1 < OPC_CHECK_ATTEMPTS:
+            time.sleep(OPC_CHECK_INTERVAL_S)
+    raise RuntimeError(f"Could not verify {description}: " + "; ".join(mismatches))
+
+
+def _ensure_power_off(runner):
+    runner.turn_off_power_supply()
+    _verify_opc_values(runner, POWER_OFF_TAGS, "power-supply OFF commands")
+
+
+def _set_flow_mode(runner, mode):
+    if mode not in ("electrolysis", "cleaning"):
+        raise ValueError(f"Unknown flow mode: {mode!r}.")
+    commands = VALVE_ELECTROLYSIS_TAGS if mode == "electrolysis" else VALVE_CLEANING_TAGS
+    for tag, value in commands:
+        _required_write(runner, tag, value)
+    _verify_opc_values(runner, commands, f"{mode} valve commands")
+    print(f"Switching valves: {mode} mode commands verified.")
+
+
+def _stop_cleaning_pump(runner):
+    _required_write(runner, PUMP_CLEANING_TAG, 0)
+    _verify_opc_values(runner, ((PUMP_CLEANING_TAG, 0),), "cleaning pump stopped")
+    runner._mb_cleaning_active = False
+
+
+def _stop_reagent_feeds(runner):
+    errors = []
+    for tag, value in FEED_STOP_TAGS:
+        try:
+            _required_write(runner, tag, value)
+        except Exception as exc:
+            errors.append(exc)
+    if errors:
+        raise RuntimeError("Could not stop all reagent feeds: " + "; ".join(map(str, errors))) from errors[0]
+    _verify_opc_values(runner, FEED_STOP_TAGS, "reagent feeds stopped")
+
 
 # ============================================================
 # BKK CHANNEL TAGS
 # ============================================================
 
 BKK_CHANNEL_TAGS = {
-    1: "BKK_USER_DEFINE.CHANNEL1",
-    2: "BKK_USER_DEFINE.CHANNEL2",
-    3: "BKK_USER_DEFINE.CHANNEL3",
+    1: "Hitec_OPC_DA20_Server->E_CHEM:BKK_USER_DEFINE.CHANNEL1",
+    2: "Hitec_OPC_DA20_Server->E_CHEM:BKK_USER_DEFINE.CHANNEL2",
+    3: "Hitec_OPC_DA20_Server->E_CHEM:BKK_USER_DEFINE.CHANNEL3",
 }
 
 
@@ -708,7 +792,7 @@ def _select_cell(runner, cell_port):
             "runner.cell_valve is not configured."
         )
 
-    runner.cell_valve.move_to(
+    runner.move_cell_valve(
         cell_port
     )
 
@@ -792,14 +876,7 @@ def _prepare_spm_electrolyte(runner, op):
 
     try:
         waste, rinse, cycles, target = _spm_refill_settings(runner, spm)
-        if not getattr(runner, "_mb_spm_initialized", False):
-            _invalidate_spm_contents(runner)
-            print("SPM+: first preparation of this campaign; homing the syringe to waste.")
-            spm.home_to_waste(waste_port=waste)
-            runner._mb_spm_delivery_active = False
-            runner._mb_spm_initialized = True
-        if getattr(runner, "_mb_spm_delivery_active", False):
-            _stop_spm_delivery(runner)
+        _initialize_spm_campaign(runner, waste)
         state = spm.get_syringe_state()
         # A different source or stock concentration also requires a changeover.
         identity = (op["electrolyte"], float(op["electrolyte_stock_M"]), op["electrolyte_spm_port"])
@@ -817,30 +894,42 @@ def _prepare_spm_electrolyte(runner, op):
         else:
             reason = "contents unknown" if previous is None else f"changing stock from {previous[0]} to {identity[0]}"
             print(f"SPM+: {reason}; emptying through waste port {waste}.")
-            spm.move_valve(waste)
-            spm.set_flow_rate(SPM_DISCARD_FLOW_UL_MIN)
-            spm.move_to_volume(0.0)
+            runner.move_spm_valve(waste)
+            runner.set_spm_flow(SPM_DISCARD_FLOW_UL_MIN)
+            runner.move_spm_to_volume(0.0)
             for cycle in range(1, cycles + 1):
                 print(f"SPM+: rinse {cycle}/{cycles}, {rinse:.0f} µL of incoming {identity[0]} to waste.")
-                spm.move_valve(identity[2])
-                spm.set_flow_rate(SPM_LOADING_FLOW_UL_MIN)
-                spm.move_to_volume(rinse)
-                spm.move_valve(waste)
-                spm.set_flow_rate(SPM_DISCARD_FLOW_UL_MIN)
-                spm.move_to_volume(0.0)
+                runner.move_spm_valve(identity[2])
+                runner.set_spm_flow(SPM_LOADING_FLOW_UL_MIN)
+                runner.move_spm_to_volume(rinse)
+                runner.move_spm_valve(waste)
+                runner.set_spm_flow(SPM_DISCARD_FLOW_UL_MIN)
+                runner.move_spm_to_volume(0.0)
 
-        spm.move_valve(identity[2])
-        spm.set_flow_rate(SPM_LOADING_FLOW_UL_MIN)
+        runner.move_spm_valve(identity[2])
+        runner.set_spm_flow(SPM_LOADING_FLOW_UL_MIN)
         # Absolute target: a partly full syringe receives only the missing volume.
-        spm.move_to_volume(target)
-        spm.move_valve(SPM_DELIVERY_PORT)
-        spm.set_flow_rate(op["flow_electrolyte_uL_min"])
+        runner.move_spm_to_volume(target)
+        runner.move_spm_valve(SPM_DELIVERY_PORT)
+        runner.set_spm_flow(op["flow_electrolyte_uL_min"])
         runner._mb_spm_contents = identity
         runner._mb_spm_delivery_active = False
         print(f"SPM+: ready with {target:.0f} µL of {identity[0]}; delivery flow {op['flow_electrolyte_uL_min']:.1f} µL/min.")
     except Exception:
         _invalidate_spm_contents(runner)
         raise
+
+
+def _initialize_spm_campaign(runner, waste):
+    if not getattr(runner, "_mb_spm_initialized", False):
+        _invalidate_spm_contents(runner)
+        print("SPM+: first preparation of this campaign; homing the syringe to waste.")
+        runner.home_spm_to_waste(waste_port=waste)
+        runner._mb_spm_delivery_active = False
+        runner._mb_spm_initialized = True
+    elif getattr(runner, "_mb_spm_delivery_active", False):
+        _stop_spm_delivery(runner)
+    runner.spm.get_syringe_state()  # Refuse valve-mode changes with an uncertain pump.
 
 
 # ============================================================
@@ -858,7 +947,7 @@ def _start_spm_delivery(runner):
         if state["volume_uL"] <= state["tolerance_uL"]:
             raise RuntimeError("SPM syringe is empty; delivery cannot start.")
         runner._mb_spm_delivery_active = True
-        runner.spm.move_to_volume(0.0, block=False)
+        runner.move_spm_to_volume(0.0, block=False)
         print("SPM+ electrolyte delivery started (nonblocking command).")
     except Exception:
         _invalidate_spm_contents(runner)
@@ -879,7 +968,7 @@ def _stop_spm_delivery(runner, best_effort=False):
         return
 
     try:
-        state = runner.spm.hard_stop()
+        state = runner.stop_spm()
         runner._mb_spm_delivery_active = False
         print(f"SPM+ electrolyte delivery stopped; {state['volume_uL']:.2f} µL retained.")
         return state
@@ -904,6 +993,7 @@ def emergency_shutdown(runner):
     """
 
     _invalidate_spm_contents(runner)
+    runner._mb_feed_shutdown_confirmed = False
     print("")
     print("!!! SAFE SHUTDOWN STARTED !!!")
 
@@ -956,6 +1046,11 @@ def emergency_shutdown(runner):
     _stop_spm_delivery(
         runner, best_effort=True
     )
+
+    try:
+        _stop_cleaning_pump(runner)
+    except Exception as exc:
+        print(f"Warning: cleaning-pump stop could not be verified: {exc}")
 
     print("!!! SAFE SHUTDOWN ATTEMPT COMPLETE — CHECK ANY WARNINGS ABOVE !!!")
     print("")
@@ -1217,8 +1312,8 @@ def prepare_hardware(
     1. Compute operating point.
     2. Print and log conditions.
     3. Exit before hardware movement in full simulation.
-    4. Ensure PSU OFF.
-    5. Select electrochemical cell.
+    4. Ensure PSU and feed pumps OFF; initialize the SPM once via waste.
+    5. Establish/read back electrolysis mode, then select the cell.
     6. Load selected electrolyte into SPM+.
     7. Set Pump 1 MB flow.
     8. Set Pump 2 water flow.
@@ -1266,6 +1361,7 @@ def prepare_hardware(
     # --------------------------------------------------------
 
     try:
+        runner._mb_feed_shutdown_confirmed = False
 
         # ====================================================
         # 1. POWER SUPPLY OFF
@@ -1275,7 +1371,12 @@ def prepare_hardware(
             "Ensuring power supply is OFF..."
         )
 
-        runner.turn_off_power_supply()
+        _ensure_power_off(runner)
+        _stop_cleaning_pump(runner)
+        _stop_reagent_feeds(runner)
+        waste, _, _, _ = _spm_refill_settings(runner, runner.spm)
+        _initialize_spm_campaign(runner, waste)
+        _set_flow_mode(runner, "electrolysis")
 
 
         # ====================================================
@@ -1461,103 +1562,28 @@ def prepare_hardware(
 # ============================================================
 
 def stop_pumps(runner, parameters):
-    """
-    Safely stop electrochemistry and all active feed pumps
-    after the experiment.
-
-    Shutdown order:
-        1. Power supply OFF
-        2. SPM+ electrolyte delivery OFF
-        3. Pump 1 MB OFF
-        4. Pump 2 water OFF
-        5. Pump 3 analytical dilution OFF
-    """
-
+    """Attempt every stop; automatic cleaning requires verified shutdown."""
     if runner.simulation_mode not in ("off", "hybrid"):
         return
+    runner._mb_feed_shutdown_confirmed = False
+    errors = []
+    for action in (
+        lambda: _ensure_power_off(runner),
+        lambda: _stop_spm_delivery(runner),
+        lambda: _stop_reagent_feeds(runner),
+        lambda: _stop_cleaning_pump(runner),
+    ):
+        try:
+            action()
+        except Exception as exc:
+            errors.append(exc)
+            print(f"Warning: shutdown could not be verified: {exc}")
+    if errors:
+        raise RuntimeError("Feed shutdown is uncertain; automatic cleaning is blocked: "
+                           + "; ".join(map(str, errors))) from errors[0]
+    runner._mb_feed_shutdown_confirmed = True
+    print("Power supply and pumps stopped; remaining SPM electrolyte retained.")
 
-    # --------------------------------------------------------
-    # 1. POWER SUPPLY OFF
-    # --------------------------------------------------------
-
-    try:
-        runner.turn_off_power_supply()
-        print("Power supply OFF.")
-
-    except Exception as exc:
-        print(
-            f"Warning: power supply shutdown failed: {exc}"
-        )
-
-
-    # --------------------------------------------------------
-    # 2. SPM+ OFF
-    # --------------------------------------------------------
-
-    spm_error = None
-    try:
-        _stop_spm_delivery(runner)
-    except Exception as exc:
-        # Continue shutting down the other feeds, then propagate this fault.
-        spm_error = exc
-
-
-    # --------------------------------------------------------
-    # 3. PUMP 1 — MB OFF
-    # --------------------------------------------------------
-
-    try:
-        runner.opc.write_value(
-            PUMP_MB_TAG,
-            0
-        )
-
-        print("Pump 1 MB stopped.")
-
-    except Exception as exc:
-        print(
-            f"Warning: Pump 1 stop failed: {exc}"
-        )
-
-
-    # --------------------------------------------------------
-    # 4. PUMP 2 — WATER OFF
-    # --------------------------------------------------------
-
-    try:
-        runner.opc.write_value(
-            PUMP_WATER_TAG,
-            0
-        )
-
-        print("Pump 2 water stopped.")
-
-    except Exception as exc:
-        print(
-            f"Warning: Pump 2 stop failed: {exc}"
-        )
-
-
-    # --------------------------------------------------------
-    # 5. PUMP 3 — ANALYTICAL DILUTION OFF
-    # --------------------------------------------------------
-
-    try:
-        runner.opc.write_value(
-            PUMP_ANALYTICAL_DILUTION_TAG,
-            0
-        )
-
-        print("Pump 3 analytical dilution stopped.")
-
-    except Exception as exc:
-        print(
-            f"Warning: Pump 3 stop failed: {exc}"
-        )
-
-    if spm_error is not None:
-        raise RuntimeError("Feed shutdown attempted, but SPM status is uncertain; next refill is blocked.") from spm_error
-    print("Experiment hardware stopped; remaining SPM electrolyte retained for the next experiment.")
 
 # ============================================================
 # AUTOSAMPLER / DOWNSTREAM FLOW INFORMATION
@@ -1586,32 +1612,76 @@ def autosampler_flow_rate(
 # CLEANUP
 # ============================================================
 
-def cleanup(
-    runner,
-    parameters
-):
+def _cleaning_settings(runner):
+    config = getattr(runner, "adapter_config", {}) or {}
+    flow = float(config.get("cleaning_flow_ml_min", CLEANING_FLOW_ML_MIN))
+    duration = float(config.get("cleaning_duration_s", CLEANING_DURATION_S))
+    water_port = config.get("cleaning_water_port", CLEANING_WATER_PORT)
+    if not math.isfinite(flow) or flow <= 0:
+        raise ValueError("Cleaning flow must be finite and positive, in mL/min.")
+    if not math.isfinite(duration) or duration <= 0:
+        raise ValueError("Cleaning duration must be finite and positive, in seconds.")
+    if isinstance(water_port, bool) or not isinstance(water_port, int) or water_port < 1:
+        raise ValueError("Cleaning water port must be a positive integer.")
+    return flow, duration, water_port
+
+
+def cleanup(runner, parameters):
+    """Rinse the selected cell with water; retain the separate SPM contents.
+
+    Called after feed shutdown. Failed experiments or unverified shutdowns
+    never start Pump 6. The same electrolysis commands are reasserted and
+    read back again at the start of every experiment.
     """
-    Retain stopped syringe contents. _prepare_spm_electrolyte handles the
-    syringe changeover when the next stock electrolyte is known. Cleaning
-    of the mixer, downstream tubing, and cell remains undefined.
-
-    Do NOT return residual electrolyte to stock bottle
-    unless contamination risk has been experimentally excluded.
-    """
-
-    if runner.simulation_mode not in [
-        "off",
-        "hybrid",
-    ]:
-
-        print(
-            "Simulation mode: "
-            "skipping cleaning."
-        )
-
+    if runner.simulation_mode not in ("off", "hybrid"):
+        print("Full simulation mode: skipping water cleaning.")
+        return
+    if not getattr(runner, "_experiment_completed", True):
+        print("Experiment failed: skipping automatic water cleaning; shutdown only.")
+        return
+    if not getattr(runner, "_mb_feed_shutdown_confirmed", False):
+        print("Feed shutdown is unverified: skipping automatic water cleaning.")
         return
 
-    print(
-        "SPM syringe changeover is handled before the next experiment; "
-        "downstream cleaning is not yet defined."
-    )
+    flow, duration, water_port = _cleaning_settings(runner)
+    error = None
+    cleaning_stopped = False
+    try:
+        _ensure_power_off(runner)
+        _verify_opc_values(runner, FEED_STOP_TAGS, "reagent feeds stopped before cleaning")
+        runner.spm.get_syringe_state()
+        _stop_cleaning_pump(runner)
+        _set_flow_mode(runner, "cleaning")
+        _required_write(runner, CLEANING_SOURCE_VALVE_TAG, water_port)
+        _verify_opc_values(runner, ((CLEANING_SOURCE_VALVE_TAG, water_port),), "water inlet selected")
+        print(f"Water cleaning: Pump 6 at {flow:g} mL/min for {duration:g} s "
+              f"({flow * duration / 60.0:g} mL), source port {water_port}.")
+        # Set the flag before attempting start: a lost reply leaves motion uncertain.
+        runner._mb_cleaning_active = True
+        _required_write(runner, PUMP_CLEANING_TAG, flow)
+        _verify_opc_values(runner, ((PUMP_CLEANING_TAG, flow),), "cleaning flow command")
+        time.sleep(duration)
+    except BaseException as exc:
+        error = exc
+    finally:
+        try:
+            _stop_cleaning_pump(runner)
+            cleaning_stopped = True
+        except Exception as exc:
+            if error is None:
+                error = exc
+            else:
+                print(f"Cleaning-pump shutdown also failed: {exc}")
+        # Never switch the water path while Pump 6 might still be flowing.
+        if cleaning_stopped:
+            try:
+                _set_flow_mode(runner, "electrolysis")
+            except Exception as exc:
+                if error is None:
+                    error = exc
+                else:
+                    print(f"Restoring electrolysis mode also failed: {exc}")
+    if error is not None:
+        runner._mb_feed_shutdown_confirmed = False
+        raise error
+    print("Water cleaning complete; Pump 6 stopped and electrolysis mode restored.")
