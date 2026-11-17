@@ -183,15 +183,15 @@ CLEANING_WATER_PORT = 1
 CLEANING_FLOW_ML_MIN = 1.0
 CLEANING_DURATION_S = 60.0
 
-# Same switching-valve commands as PDA_5_current_density_applied_charge.py.
+# Rebuilt MB routing: electrolysis V_02=0/V_01=1; cleaning V_02=1/V_01=0.
 # Readbacks below confirm OPC command values, not mechanical position sensors.
 VALVE_ELECTROLYSIS_TAGS = (
-    ("Hitec_OPC_DA20_Server-%3EE_CHEM%3AV_02_CLOSE", 1),
-    ("Hitec_OPC_DA20_Server-%3EE_CHEM%3AV_02_OPEN", 1),
-    ("Hitec_OPC_DA20_Server-%3EE_CHEM%3AV_01_CLOSE", 0),
-    ("Hitec_OPC_DA20_Server-%3EE_CHEM%3AV_01_OPEN", 0),
+    ("Hitec_OPC_DA20_Server-%3EE_CHEM%3AV_02_CLOSE", 0),
+    ("Hitec_OPC_DA20_Server-%3EE_CHEM%3AV_02_OPEN", 0),
+    ("Hitec_OPC_DA20_Server-%3EE_CHEM%3AV_01_CLOSE", 1),
+    ("Hitec_OPC_DA20_Server-%3EE_CHEM%3AV_01_OPEN", 1),
 )
-VALVE_CLEANING_TAGS = tuple((tag, 0) for tag, _ in VALVE_ELECTROLYSIS_TAGS)
+VALVE_CLEANING_TAGS = tuple((tag, 1 - value) for tag, value in VALVE_ELECTROLYSIS_TAGS)
 POWER_OFF_TAGS = (
     ("Hitec_OPC_DA20_Server-%3EE_CHEM%3ABKK_P.OUTON", 0),
     ("Hitec_OPC_DA20_Server-%3EE_CHEM%3ABKK_P.OUTOFF", 1),

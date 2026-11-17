@@ -110,8 +110,9 @@ class WaterCleaningTests(unittest.TestCase):
 
     def test_unconfirmed_electrolysis_mode_blocks_reaction_feeds_and_power(self):
         first_tag = protocol.VALVE_ELECTROLYSIS_TAGS[0][0]
+        wrong_value = 1 - dict(protocol.VALVE_ELECTROLYSIS_TAGS)[first_tag]
         original = self.runner.opc.read_value.side_effect
-        self.runner.opc.read_value.side_effect = lambda tag, **kwargs: 0 if tag == first_tag else original(tag, **kwargs)
+        self.runner.opc.read_value.side_effect = lambda tag, **kwargs: wrong_value if tag == first_tag else original(tag, **kwargs)
         with self.assertRaisesRegex(RuntimeError, "electrolysis valve commands"):
             protocol.prepare_hardware(self.runner, PARAMS)
         self.runner.turn_on_power_supply.assert_not_called()
@@ -132,9 +133,10 @@ class WaterCleaningTests(unittest.TestCase):
     def test_cleaning_mode_write_failure_never_starts_water_pump(self):
         self.prepared_and_stopped()
         first_tag = protocol.VALVE_CLEANING_TAGS[0][0]
+        cleaning_value = dict(protocol.VALVE_CLEANING_TAGS)[first_tag]
         original = self.runner.opc.write_value.side_effect
         self.runner.opc.write_value.side_effect = lambda tag, value, **kwargs: (
-            False if tag == first_tag and value == 0 else original(tag, value, **kwargs))
+            False if tag == first_tag and value == cleaning_value else original(tag, value, **kwargs))
         with self.assertRaisesRegex(RuntimeError, "Required OPC write failed"):
             protocol.cleanup(self.runner, PARAMS)
         self.assertEqual(self.cleaning_starts(), [])
