@@ -194,26 +194,83 @@ class SPMPump:
 
     def home(
         self,
-        force=1
+        force=1,
+        timeout_s=120.0,
     ):
+        """Home the complete SPM, which always expels liquid through port 1."""
+        if isinstance(force, bool) or not isinstance(force, int) or force not in range(4):
+            raise ValueError("SPM homing force must be an integer from 0 to 3.")
+        timeout_s = float(timeout_s)
+        if not math.isfinite(timeout_s) or timeout_s <= 0:
+            raise ValueError("SPM homing timeout must be finite and positive.")
+        print("Homing SPM pump and valve through port 1...")
+        try:
+            self.pump.setPumpStrengthAndHome(force=force, block=False)
+            deadline = time.monotonic() + timeout_s
+            while True:
+                valve_status = self.pump.getValveStatus()
+                if valve_status not in (0, 144, 255):
+                    raise RuntimeError(f"SPM valve fault during homing: {valve_status!r}.")
+                # Like the SDK, wait for the valve to home before checking the
+                # plunger; an old plunger fault can remain during valve homing.
+                if valve_status == 0:
+                    status = self.pump.getPumpStatus()
+                    if status not in (0, 144, 255):
+                        raise RuntimeError(f"SPM pump fault during homing: {status!r}.")
+                    if status == 0 and self.pump.getHomeStatus():
+                        break
+                if time.monotonic() >= deadline:
+                    raise TimeoutError("SPM homing did not finish; no refill is allowed.")
+                time.sleep(0.05)
+            if self.pump.getValvePosition() != 1:
+                raise RuntimeError("SPM homing did not finish on port 1.")
+            state = self.get_syringe_state()
+            if state["volume_uL"] > state["tolerance_uL"]:
+                raise RuntimeError("SPM homing did not leave an empty syringe; no refill is allowed.")
+        except BaseException:
+            try:
+                self.pump.hardStop()
+            except Exception as stop_error:
+                print(f"SPM stop after homing failure also failed: {stop_error}")
+            raise
+        print("SPM homing verified: ready, syringe empty, valve on port 1.")
+        return state
 
-        print(
-            "Homing pump..."
-        )
+    def home_to_waste(self, waste_port, force=1, timeout_s=120.0):
+        """Start a campaign with a verified home, never route homing to stock.
 
-        self.pump.setPumpStrengthAndHome(
-            force=force
-        )
-
-        print(
-            "Home status:",
-            self.pump.getHomeStatus()
-        )
-
-        print(
-            "Plunger position:",
-            self.pump.getPlungerPosition()
-        )
+        AMF SPM operating manual, section 6.1.3: Z/Y always home the valve
+        to port 1 before expelling the syringe. Selecting another port first
+        cannot redirect this discharge.
+        """
+        if isinstance(waste_port, bool) or not isinstance(waste_port, int) or waste_port != 1:
+            raise ValueError("Automatic SPM homing requires waste connected to port 1.")
+        if self.pump.getPortNumber() < waste_port:
+            raise ValueError("SPM waste port is not available on this valve.")
+        print("SPM campaign startup: stopping previous motion before homing to waste port 1.")
+        try:
+            self.pump.hardStop()
+        except KeyError as exc:
+            # Older AMFTools versions can fail while parsing the stop reply.
+            # Independent status checks below must still confirm a stopped device.
+            print(f"AMFTools status parsing warning after startup stop: {exc}")
+        deadline = time.monotonic() + 10.0
+        while True:
+            status = self.pump.getPumpStatus()
+            valve_status = self.pump.getValveStatus()
+            # Only ready, stopped, not-homed and the known out-of-range fault
+            # may proceed to this explicit startup recovery. Mechanical/sensor
+            # faults must not be cleared by an automatic homing attempt.
+            if status not in (0, 138, 144, 145, 255):
+                raise RuntimeError(f"SPM startup blocked by pump fault {status!r}; check the device.")
+            if valve_status not in (0, 144, 255):
+                raise RuntimeError(f"SPM startup blocked by valve fault {valve_status!r}; check the device.")
+            if status != 255 and valve_status != 255:
+                break
+            if time.monotonic() >= deadline:
+                raise TimeoutError("SPM did not stop before startup homing; no refill is allowed.")
+            time.sleep(0.05)
+        return self.home(force=force, timeout_s=timeout_s)
 
 
     def move_valve(

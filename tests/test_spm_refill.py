@@ -29,6 +29,11 @@ class FakeAMF:
         self.fail_volume = None
         self.moves = []
         self.events = []
+        self.valve_fault = 0
+        self.home_error = None
+        self.home_noop = False
+        self.home_never_complete = False
+        self.home_started = False
 
     @property
     def volume(self):
@@ -46,6 +51,11 @@ class FakeAMF:
 
     def getHomeStatus(self):
         return self.homed
+
+    def getValveStatus(self):
+        if self.home_started and self.home_never_complete:
+            return 255
+        return self.valve_fault
 
     def getMicrostepResolution(self):
         return self.resolution
@@ -84,9 +94,9 @@ class FakeAMF:
         if not 0 <= volume <= syringeVolume:
             raise AssertionError("Syringe capacity exceeded")
         delta = volume - self.volume
-        if self.valve in (1, 2, 3) and delta < -0.01:
+        if self.valve in (2, 3, 5) and delta < -0.01:
             raise AssertionError("Residual solution returned to stock")
-        if self.valve == 5 and delta > 0.01:
+        if self.valve == 1 and delta > 0.01:
             raise AssertionError("Waste aspirated into syringe")
         self.moves.append((self.valve, volume, round(delta, 6), block))
         self.events.append(("volume", self.valve, volume))
@@ -100,7 +110,18 @@ class FakeAMF:
         self.pending = None
 
     def setPumpStrengthAndHome(self, **kwargs):
-        raise AssertionError("Routine refill must not home the syringe")
+        self.events.append(("home", kwargs["force"], kwargs["block"]))
+        self.home_started = True
+        if self.home_error:
+            raise self.home_error
+        # The real Z command homes the valve to port 1, regardless of its
+        # selected port. It then expels the entire syringe through port 1.
+        self.valve = 1
+        self.fault = 0
+        self.homed = True
+        self.pending = None
+        if not self.home_noop:
+            self.actual_steps = self.commanded_steps = 0
 
     def consume(self, volume):
         if self.pending is None or self.valve != 4:
@@ -116,12 +137,13 @@ def make_pump(volume=0.0, resolution=0):
     return pump, sdk
 
 
-def make_runner(volume=0.0, resolution=0):
+def make_runner(volume=0.0, resolution=0, initialized=True):
     pump, sdk = make_pump(volume, resolution)
     runner = SimpleNamespace(
         spm=pump, simulation_mode="hybrid", adapter_config={},
         opc=Mock(), cell_valve=Mock(), turn_off_power_supply=Mock(),
         turn_on_power_supply=Mock(), set_current=Mock(),
+        _mb_spm_initialized=initialized,
     )
     return runner, sdk
 
@@ -148,6 +170,78 @@ class QuietTest(unittest.TestCase):
 
 
 class SyringeDriverTests(QuietTest):
+    def test_startup_homes_a_full_syringe_with_latched_fault_145_to_port_one(self):
+        for resolution in (0, 1):
+            with self.subTest(resolution=resolution):
+                pump, sdk = make_pump(5000, resolution)
+                sdk.fault = 145
+                state = pump.home_to_waste(waste_port=1)
+                self.assertEqual(sdk.events, [("stop",), ("home", 1, False)])
+                self.assertEqual(state["volume_uL"], 0)
+                self.assertEqual(sdk.valve, 1)
+                self.assertEqual(sdk.getPumpStatus(), 0)
+
+    def test_startup_always_homes_even_if_already_homed_and_ready(self):
+        pump, sdk = make_pump(3200)
+        pump.home_to_waste(waste_port=1)
+        self.assertIn(("home", 1, False), sdk.events)
+        self.assertEqual(sdk.volume, 0)
+
+    def test_startup_homes_an_uninitialized_syringe(self):
+        pump, sdk = make_pump(5000)
+        sdk.homed = False
+        sdk.fault = sdk.valve_fault = 144
+        original_home = sdk.setPumpStrengthAndHome
+
+        def home(**kwargs):
+            original_home(**kwargs)
+            sdk.valve_fault = 0
+
+        sdk.setPumpStrengthAndHome = home
+        self.assertEqual(pump.home_to_waste(waste_port=1)["volume_uL"], 0)
+
+    def test_startup_rejects_any_waste_port_other_than_the_homing_port(self):
+        for port in (5, 6, 0, True, "1"):
+            with self.subTest(port=port):
+                pump, sdk = make_pump(5000)
+                with self.assertRaisesRegex(ValueError, "port 1"):
+                    pump.home_to_waste(waste_port=port)
+                self.assertEqual(sdk.events, [])
+
+    def test_startup_does_not_home_through_mechanical_or_sensor_faults(self):
+        for target, fault in (("fault", 224), ("fault", 225), ("valve_fault", 226)):
+            with self.subTest(target=target, fault=fault):
+                pump, sdk = make_pump(5000)
+                setattr(sdk, target, fault)
+                with self.assertRaisesRegex(RuntimeError, "startup blocked"):
+                    pump.home_to_waste(waste_port=1)
+                self.assertFalse(sdk.home_started)
+                self.assertEqual(sdk.moves, [])
+
+    def test_homing_error_stops_and_preserves_the_original_failure(self):
+        pump, sdk = make_pump(5000)
+        sdk.home_error = RuntimeError("Homing failed")
+        with self.assertRaisesRegex(RuntimeError, "Homing failed"):
+            pump.home_to_waste(waste_port=1)
+        self.assertEqual(sdk.events[-1], ("stop",))
+        self.assertEqual(sdk.moves, [])
+
+    def test_homing_must_confirm_an_empty_syringe(self):
+        pump, sdk = make_pump(5000)
+        sdk.home_noop = True
+        with self.assertRaisesRegex(RuntimeError, "empty syringe"):
+            pump.home_to_waste(waste_port=1)
+        self.assertEqual(sdk.events[-1], ("stop",))
+
+    def test_homing_timeout_stops_instead_of_allowing_a_refill(self):
+        pump, sdk = make_pump(5000)
+        sdk.home_never_complete = True
+        with patch("core.hardware.AMF_hardware.spm_pump.time.monotonic", side_effect=[0, 1, 1000]):
+            with self.assertRaisesRegex(TimeoutError, "homing did not finish"):
+                pump.home_to_waste(waste_port=1)
+        self.assertEqual(sdk.events[-1], ("stop",))
+        self.assertEqual(sdk.moves, [])
+
     def test_encoder_position_and_resolution_determine_remaining_volume(self):
         for resolution in (0, 1):
             with self.subTest(resolution=resolution):
@@ -250,6 +344,38 @@ class SyringeDriverTests(QuietTest):
 
 
 class ElectrolyteRefillTests(QuietTest):
+    def test_first_campaign_preparation_recovers_a_full_faulted_syringe_once(self):
+        runner, sdk = make_runner(5000, initialized=False)
+        sdk.fault = 145
+        protocol._prepare_spm_electrolyte(runner, operating("Na2SO4"))
+        self.assertTrue(runner._mb_spm_initialized)
+        self.assertEqual([(port, volume) for port, volume, _, _ in sdk.moves],
+                         [(1, 0), (5, 1000), (1, 0), (5, 1000), (1, 0), (5, 5000)])
+        protocol._start_spm_delivery(runner)
+        sdk.consume(1800)
+        protocol.stop_pumps(runner, {})
+        before = len(sdk.moves)
+        protocol._prepare_spm_electrolyte(runner, operating("Na2SO4"))
+        self.assertEqual(sdk.moves[before:], [(5, 5000, 1800, False)])
+        self.assertEqual(sdk.events.count(("home", 1, False)), 1)
+
+    def test_homing_failure_never_marks_the_campaign_initialized_or_refills(self):
+        runner, sdk = make_runner(5000, initialized=False)
+        sdk.home_error = RuntimeError("Homing failed")
+        with self.assertRaisesRegex(RuntimeError, "Homing failed"):
+            protocol._prepare_spm_electrolyte(runner, operating())
+        self.assertFalse(runner._mb_spm_initialized)
+        self.assertIsNone(runner._mb_spm_contents)
+        self.assertEqual(sdk.moves, [])
+
+    def test_later_fault_does_not_trigger_an_automatic_home_between_experiments(self):
+        runner, sdk = make_runner(5000, initialized=False)
+        protocol._prepare_spm_electrolyte(runner, operating())
+        sdk.fault = 145
+        with self.assertRaisesRegex(RuntimeError, "145"):
+            protocol._prepare_spm_electrolyte(runner, operating())
+        self.assertEqual(sdk.events.count(("home", 1, False)), 1)
+
     def test_runner_does_not_home_the_syringe_before_protocol_state_checks(self):
         from core.hardware.experimental_run import ExperimentRunner
 
@@ -267,7 +393,8 @@ class ElectrolyteRefillTests(QuietTest):
         runner._mb_spm_contents = identity(op)
         protocol._prepare_spm_electrolyte(runner, op)
         self.assertEqual(sdk.moves, [(2, 5000, 1800, False)])
-        self.assertNotIn(("port", 5), sdk.events)
+        self.assertNotIn(("port", 1), sdk.events)
+        self.assertFalse(sdk.home_started)
         self.assertEqual(runner._mb_spm_contents, identity(op))
         self.assertEqual(sdk.valve, 4)
         self.assertEqual(sdk.flow, op["flow_electrolyte_uL_min"])
@@ -293,9 +420,9 @@ class ElectrolyteRefillTests(QuietTest):
         runner._mb_spm_contents = identity(operating("Na2SO4"))
         protocol._prepare_spm_electrolyte(runner, operating("NaCl"))
         self.assertEqual(sdk.moves, [
-            (5, 0, -3200, False),
-            (2, 1000, 1000, False), (5, 0, -1000, False),
-            (2, 1000, 1000, False), (5, 0, -1000, False),
+            (1, 0, -3200, False),
+            (2, 1000, 1000, False), (1, 0, -1000, False),
+            (2, 1000, 1000, False), (1, 0, -1000, False),
             (2, 5000, 5000, False),
         ])
 
@@ -304,7 +431,7 @@ class ElectrolyteRefillTests(QuietTest):
             with self.subTest(remaining=remaining):
                 runner, sdk = make_runner(remaining)
                 protocol._prepare_spm_electrolyte(runner, operating())
-                self.assertEqual(sdk.moves[0][0:2], (5, 0))
+                self.assertEqual(sdk.moves[0][0:2], (1, 0))
                 self.assertEqual([v for port, v, _, _ in sdk.moves if port == 2], [1000, 1000, 5000])
 
     def test_stock_concentration_and_source_port_are_part_of_identity(self):
@@ -313,19 +440,19 @@ class ElectrolyteRefillTests(QuietTest):
                 runner, sdk = make_runner(3200)
                 runner._mb_spm_contents = previous
                 protocol._prepare_spm_electrolyte(runner, operating())
-                self.assertEqual(sdk.moves[0][0:2], (5, 0))
+                self.assertEqual(sdk.moves[0][0:2], (1, 0))
 
     def test_rinse_configuration_can_be_overridden(self):
         runner, sdk = make_runner(2000)
-        runner.adapter_config = {"spm_waste_port": 6, "spm_rinse_volume_uL": 500, "spm_rinse_cycles": 1}
+        runner.adapter_config = {"spm_waste_port": 1, "spm_rinse_volume_uL": 500, "spm_rinse_cycles": 1}
         protocol._prepare_spm_electrolyte(runner, operating())
         self.assertEqual([(port, volume) for port, volume, _, _ in sdk.moves],
-                         [(6, 0), (2, 500), (6, 0), (2, 5000)])
+                         [(1, 0), (2, 500), (1, 0), (2, 5000)])
 
     def test_invalid_configuration_blocks_all_fluid_movements(self):
         for config in (
-            {"spm_waste_port": 2}, {"spm_waste_port": 4},
-            {"spm_waste_port": True}, {"spm_waste_port": 7},
+            {"spm_waste_port": 2}, {"spm_waste_port": 4}, {"spm_waste_port": 5},
+            {"spm_waste_port": True}, {"spm_waste_port": 7}, {"spm_waste_port": 6},
             {"spm_rinse_cycles": 0}, {"spm_rinse_cycles": 1.5},
             {"spm_rinse_volume_uL": 0}, {"spm_rinse_volume_uL": 6000},
             {"spm_rinse_volume_uL": math.nan},
@@ -367,7 +494,8 @@ class ElectrolyteRefillTests(QuietTest):
         self.assertEqual(sdk.moves[before:], [(2, 5000, 1800, False)])
 
     def test_two_complete_preparations_use_the_new_refill_path(self):
-        runner, sdk = make_runner()
+        runner, sdk = make_runner(5000, initialized=False)
+        sdk.fault = 145
         params = {
             "current_density": 3.028, "applied_charge": 6.753,
             "substrate_concentration": 309.39, "electrolyte_concentration": 0.0666,
@@ -383,7 +511,34 @@ class ElectrolyteRefillTests(QuietTest):
             self.assertEqual(sdk.moves[before:], [(2, 5000, 1800, False), (4, 0, -5000, False)])
             protocol.stop_pumps(runner, params)
         self.assertEqual(runner._mb_spm_contents, ("NaCl", 0.4, 2))
+        self.assertEqual(sdk.events.count(("home", 1, False)), 1)
         runner.turn_on_power_supply.assert_has_calls([call(), call()])
+
+    def test_startup_homing_failure_keeps_the_power_supply_off_and_stops_feeds(self):
+        runner, sdk = make_runner(5000, initialized=False)
+        sdk.home_error = RuntimeError("Homing failed")
+        params = {
+            "current_density": 1, "applied_charge": 10,
+            "substrate_concentration": 100, "electrolyte_concentration": 0.05,
+            "cell": "EC1", "electrolyte": "Na2SO4",
+        }
+        home = runner.spm.home_to_waste
+
+        def checked_home(**kwargs):
+            runner.turn_off_power_supply.assert_called()
+            return home(**kwargs)
+
+        with patch.object(protocol, "_log_operating_point"), patch.object(
+            runner.spm, "home_to_waste", side_effect=checked_home
+        ):
+            with self.assertRaisesRegex(RuntimeError, "Homing failed"):
+                protocol.prepare_hardware(runner, params)
+        self.assertEqual(sdk.moves, [])
+        runner.turn_on_power_supply.assert_not_called()
+        runner.opc.write_value.assert_has_calls([
+            call(protocol.PUMP_MB_TAG, 0), call(protocol.PUMP_WATER_TAG, 0),
+            call(protocol.PUMP_ANALYTICAL_DILUTION_TAG, 0),
+        ])
 
     def test_preparation_error_still_shuts_down_when_error_logging_fails(self):
         runner, sdk = make_runner()
@@ -436,7 +591,7 @@ class ElectrolyteRefillTests(QuietTest):
         self.assertIn("could not verify", self.output.getvalue())
 
     def test_simulation_does_not_move_or_stop_any_device(self):
-        runner, sdk = make_runner(3200)
+        runner, sdk = make_runner(3200, initialized=False)
         runner.simulation_mode = "full"
         params = {
             "current_density": 1, "applied_charge": 10,
@@ -448,6 +603,7 @@ class ElectrolyteRefillTests(QuietTest):
         protocol.stop_pumps(runner, params)
         protocol.cleanup(runner, params)
         self.assertEqual(sdk.events, [])
+        self.assertFalse(runner._mb_spm_initialized)
         runner.opc.write_value.assert_not_called()
 
 

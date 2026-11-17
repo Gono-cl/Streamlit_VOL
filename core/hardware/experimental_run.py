@@ -91,8 +91,8 @@ class ExperimentRunner(
             )
 
             self.spm = SPMPump(
-                # Homing can move unknown liquid and the internal valve. Require
-                # established device initialization before the protocol refills.
+                # Let the selected protocol home once at campaign startup, after
+                # its waste routing is validated and the power supply is off.
                 auto_home=False,
                 syringe_volume=5000
             )

@@ -99,17 +99,22 @@ CELL_METADATA = {
 
 # SPM+ internal valve:
 #
-# port 1 -> Na2SO4
+# port 1 -> waste (homing always expels through port 1)
 # port 2 -> NaCl
 # port 3 -> NaNO3
 # port 4 -> reactor delivery
-# port 5 -> waste (verify the physical connection before running)
+# port 5 -> Na2SO4
+#
+# This layout requires swapping the previous port 1/5 tubing. Each new or
+# resumed campaign homes the full SPM through waste port 1 once, then rinses
+# with the incoming electrolyte. Later experiments retain/top up matching stock.
+# Z/Y homing always uses port 1; a prior valve selection cannot redirect it.
 #
 # Current stock concentration = 0.4 M
 
 ELECTROLYTE_METADATA = {
     "Na2SO4": {
-        "spm_port": 1,
+        "spm_port": 5,
         "stock_concentration_M": 0.4,
     },
 
@@ -125,7 +130,7 @@ ELECTROLYTE_METADATA = {
 }
 
 SPM_DELIVERY_PORT = 4
-SPM_WASTE_PORT = 5
+SPM_WASTE_PORT = 1
 
 
 # ============================================================
@@ -765,6 +770,8 @@ def _spm_refill_settings(runner, spm):
     capacity = float(spm.syringe_volume)
     if isinstance(waste, bool) or not isinstance(waste, int) or waste < 1:
         raise ValueError("SPM waste port must be a positive integer.")
+    if waste != 1:
+        raise ValueError("SPM startup homing always expels through port 1; connect waste to port 1 and set spm_waste_port to 1.")
     source_ports = {data["spm_port"] for data in ELECTROLYTE_METADATA.values()}
     if waste == SPM_DELIVERY_PORT or waste in source_ports:
         raise ValueError("SPM waste must use a separate port from electrolyte sources and reactor delivery.")
@@ -778,13 +785,19 @@ def _spm_refill_settings(runner, spm):
 
 
 def _prepare_spm_electrolyte(runner, op):
-    """Top up a known stock solution; empty/rinse before every change or reset."""
+    """Home once at startup; retain matching stock or empty/rinse on a change."""
     spm = getattr(runner, "spm", None)
     if spm is None:
         raise RuntimeError("runner.spm is not configured.")
 
     try:
         waste, rinse, cycles, target = _spm_refill_settings(runner, spm)
+        if not getattr(runner, "_mb_spm_initialized", False):
+            _invalidate_spm_contents(runner)
+            print("SPM+: first preparation of this campaign; homing the syringe to waste.")
+            spm.home_to_waste(waste_port=waste)
+            runner._mb_spm_delivery_active = False
+            runner._mb_spm_initialized = True
         if getattr(runner, "_mb_spm_delivery_active", False):
             _stop_spm_delivery(runner)
         state = spm.get_syringe_state()
