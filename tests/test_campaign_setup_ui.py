@@ -114,6 +114,34 @@ class CampaignSetupUITests(unittest.TestCase):
     def test_multi_advanced(self):
         self.roundtrip("multi", "Advanced")
 
+    def test_degradation_is_available_and_explained_in_both_optimization_pages(self):
+        for mode in ["single", "multi"]:
+            with self.subTest(mode=mode):
+                state = configured_state(mode)
+                state.update(response_to_optimize="Degradation", objectives=["Degradation"],
+                             Degradation_direction="maximize")
+                app = self.make_app(mode, state)
+                if mode == "single":
+                    self.assertEqual(app.selectbox(key="single_response_select").value, "Degradation")
+                else:
+                    self.assertEqual(app.multiselect(key="multi_objectives_select").value, ["Degradation"])
+                    self.assertEqual(app.selectbox(key="Degradation_direction").value, "maximize")
+                self.assertTrue(any("Degradation (%)" in caption.value for caption in app.caption))
+                self.runner_factory.assert_not_called()
+
+    def test_doe_can_select_degradation_without_connecting_hardware(self):
+        import pandas as pd
+        app = AppTest.from_file(str(Path(__file__).resolve().parents[1] / "DoE_Executor.py"), default_timeout=30)
+        app.session_state["simulation_mode"] = "full"
+        app.session_state["doe_exec_plan_df"] = pd.DataFrame([{"substrate_concentration": 100, "objectives": "Degradation"}])
+        app.session_state["doe_exec_param_cols_select"] = ["substrate_concentration"]
+        app.session_state["doe_exec_objectives_select"] = ["Degradation"]
+        app.run()
+        self.check(app)
+        self.assertEqual(app.multiselect(key="doe_exec_objectives_select").value, ["Degradation"])
+        self.assertTrue(any("Degradation (%)" in caption.value for caption in app.caption))
+        self.runner_factory.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

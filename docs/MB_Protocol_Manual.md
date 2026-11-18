@@ -1,7 +1,7 @@
 # MB Protocol Manual
 
 **Virtual Optimization Lab (Streamlit_VOL)**  
-Operator and developer reference · Version 1.1 · 18 November 2026
+Operator and developer reference · Version 1.2 · 18 November 2026
 
 Based on the current working copy, including the inverse cleaning-valve mapping and automatic downstream UV/VIS dilution. This document describes implemented software behavior and identifies the analytical work that remains to be validated. Source references [S1]–[S17] appear in the final section.
 
@@ -35,7 +35,7 @@ Cell selection, electrolyte routing and syringe preparation, current and flow ca
 
 ## What needs analytical validation
 
-The MB module currently does not define its own objective-calculation or measurement-tag hook. The runner therefore uses the selected process adapter and measurement configuration. Generic yield, throughput and solvent metrics are not validated MB conversion metrics. Review Section 14 before using analytical results to drive optimization. [S1, S3, S6]
+The MB module currently does not define its own objective-calculation or measurement-tag hook. The runner therefore uses the selected process adapter and measurement configuration. Select Degradation for apparent MB removal from the corrected outlet concentration. Generic yield, throughput and solvent metrics are not MB-removal responses. Review Section 14 before using analytical results to drive optimization. [S1, S3, S6]
 
 <!-- pagebreak -->
 
@@ -430,20 +430,21 @@ The current MB module defines `prepare_hardware()`, `stop_pumps()`, `cleanup()`,
 | Selected quantity | Current generic behavior / implication |
 |---|---|
 | Concentration | Real MB UV/VIS returns the dilution-corrected reactor-outlet concentration in mg/L. Other sources retain their configured meaning/units. |
+| Degradation | 100 × (1 − corrected outlet / inlet), in percent. Select this to maximize apparent MB removal. |
 | Yield | Computes measurement / `substrate_concentration` × 100. With corrected MB UV/VIS in mg/L this is residual MB percentage, not removal. Other sources require matching units. |
 | Throughput | Uses generic organic-flow assumptions and a default molecular mass of 114.1 g/mol, not the MB operating-point flow and molecular mass. |
 | Solvent, extraction and space-time metrics | Inherit generic process assumptions; not validated for this aqueous MB experiment. |
 | “Normalized Area” in multi-objective choices | The generic calculator exposes `Area`, not this exact key. Selecting an unreturned key can cause a missing-objective error. |
 
-Single-objective optimization currently **maximizes** the selected metric. There is no single-objective minimize selector. Maximizing residual MB concentration is the opposite of maximizing MB removal. Multi-objective mode supports maximize/minimize choices, but all selected objectives must be valid for the measurement and process.
+Select **Degradation** in Single Objective, Multi-Objective or DOE to obtain removal percentage. Single-objective optimization **maximizes** this response; use **maximize** for Degradation in multi-objective mode. There is no single-objective minimize selector. Maximizing residual MB concentration is the opposite of maximizing MB removal. Multi-objective mode supports maximize/minimize choices, but all selected objectives must be valid for the measurement and process.
 
-For multi-objective minimization, the generic calculator returns the negative physical value. The page negates again for the optimizer’s minimization convention. As a result, saved objective columns may contain a signed score; a minimized concentration may be stored as a negative number. The UV/VIS concentration field and raw log remain useful for physical interpretation.
+For multi-objective minimization, the generic calculator returns the negative physical value. The page negates again for the optimizer’s minimization convention. As a result, saved objective columns may contain a signed score; a minimized concentration may be stored as a negative number. The physical Degradation (%) field stays unnegated, while the selected Degradation objective follows the existing score convention. The UV/VIS concentration field and raw log remain useful for physical interpretation.
 
-## Planned MB-specific extension
+## Degradation objective and interpretation
 
-A validated MB objective should define a protocol `calculate_real_result()` hook and explicitly match concentration units. The real MB UV/VIS measurement passed to that hook is already corrected for downstream dilution; do not multiply it again. For example, a removal metric could be `100 × (1 − C_out / C_in)` after both concentrations are on the same basis. This formula is explanatory; that MB-specific objective is **not currently implemented**.
+The implemented Degradation objective is **100 × (1 − C_out / C_in)**, in percent. C_in is this experiment’s substrate_concentration (mg/L for MB); C_out is the validated, dilution-corrected outlet concentration in the same unit. For example, an inlet of 100 mg/L and corrected outlet of 25 mg/L gives 75% degradation. The generic adapter uses this response directly; no MB-specific calculation hook is required.
 
-Automatic optical dilution does not change the meaning or optimization direction of generic objectives. Validate the objective definitions before using them for scientific conclusions or closed-loop MB optimization.
+The inlet must be finite and positive; the outlet must be finite and nonnegative. Results are not clipped: C_out greater than C_in gives a negative percentage, preserving a possible concentration increase or measurement issue. UV/VIS provides apparent degradation/decolourization, not proof of mineralization. Keep the calibration, inlet concentration and dilution validation on the same basis. A standalone UV/VIS test still reports detector concentration; the campaign calculates degradation using each experiment’s inlet concentration.
 
 <!-- pagebreak -->
 
@@ -461,7 +462,7 @@ Automatic optical dilution does not change the meaning or optimization direction
 
 Saved setups are JSON files in `campaign_templates/` and are available in Quick and Advanced views. Loading a setup is the appropriate way to reuse configuration without immediately resuming hardware execution. Use a unique experiment name for a new campaign; reusing an existing run name can overwrite its checkpoint files. [S9]
 
-For an existing run, single-objective resume expects `experiment_data.csv`, `metadata.json` and `optimizer.pkl`; it also restores `pending_next_params.json` when available. Multi-objective resume restores its own run folder. Load a previous run only when ready for hardware execution, not merely to inspect its settings.
+For an existing run, single-objective resume expects `experiment_data.csv`, `metadata.json` and `optimizer.pkl`; it also restores `pending_next_params.json` when available. Multi-objective resume restores its own run folder. Load a previous run only when ready for hardware execution, not merely to inspect its settings. To switch a previous Yield setup to Degradation, load the campaign setup, select Degradation and save it under a new campaign name. Do not reinterpret an existing Yield optimizer history as degradation data.
 
 ## Stop behavior
 
@@ -499,9 +500,9 @@ CSV/Excel download buttons generate browser downloads; the advertised export fil
 
 ## Campaign result rows
 
-A typical single-objective row includes `Experiment #`, `Timestamp`, all six proposed parameters, `Measurement`, and the selected objective column. Multi-objective rows contain each selected objective instead. These values are saved after the runner returns successfully, including its shutdown and cleaning.
+A typical single-objective row includes `Experiment #`, `Timestamp`, all six proposed parameters, `Measurement`, and the selected objective column. Multi-objective rows contain each selected objective instead. These values are saved after the runner returns successfully, including its shutdown and cleaning. Selecting Degradation also records Inlet Concentration, Outlet Concentration, Degradation (%) and Degradation Basis. The selected objective is stored as Degradation; the separate percentage field always contains the physical value.
 
-UV/VIS adds fields such as `Measurement Source`, `Concentration Unit`, `UV/VIS Concentration`, absorbance, absorbance SD, CV, acceptance/range status, extra measurements, calibration path and calibration ID. The raw UV/VIS CSV includes the original spectrum filename and acquisition wavelength. Automatic MB dilution also adds `UV/VIS Measured Concentration`, `UV/VIS Corrected Concentration`, `UV/VIS Dilution Factor`, three flow fields, attempt count, wait, history and stop verification. `UV/VIS Concentration` is the corrected value in this mode. Raw `Value` and `Measured Concentration` are detector values; raw corrected values are supplied only for optically valid attempts. The final successful attempt is marked separately from rejected or incomplete attempts.
+UV/VIS adds fields such as `Measurement Source`, `Concentration Unit`, `UV/VIS Concentration`, absorbance, absorbance SD, CV, acceptance/range status, extra measurements, calibration path and calibration ID. The raw UV/VIS CSV includes the original spectrum filename and acquisition wavelength. Automatic MB dilution also adds `UV/VIS Measured Concentration`, `UV/VIS Corrected Concentration`, `UV/VIS Dilution Factor`, three flow fields, attempt count, wait, history and stop verification. `UV/VIS Concentration` is the corrected value in this mode. Raw `Value` and `Measured Concentration` are detector values; raw corrected values are supplied only for optically valid attempts. The final successful attempt is marked separately from rejected or incomplete attempts. With Degradation selected, raw rows also record the inlet, accepted outlet and per-reading percentage. Rejected optical attempts receive no degradation value. Their original detector readings remain preserved.
 
 ## Metadata and optimizer state
 
@@ -587,13 +588,13 @@ The MB protocol is loaded dynamically when selected. Having a file in `running_p
 | Transport and stabilization | Measured upstream/downstream dead volumes and cell-volume timing factors |
 | Detector integration | Measurement UI; optional MB `measurement_tag()` hook for an explicit OPC source |
 | Analytical dilution | `ANALYTICAL_DILUTION_MAX_FLOW_ML_MIN`, `ANALYTICAL_DILUTION_WAIT_S`, `ANALYTICAL_DILUTION_MAX_ATTEMPTS`; adapter overrides below |
-| MB removal or another physical objective | Implement and validate MB `calculate_real_result()` with matching units/dilution; align objective catalogs |
+| MB removal or another physical objective | Degradation is implemented in core/objectives.py; select it in the UI. Additional custom objectives may use calculate_real_result() |
 
 A custom calculation hook receives `(runner, mean_measurement, parameters, objectives, directions)` and must return a dictionary containing the selected objective names. Check the optimizer’s sign convention when applying minimization. Keep physical concentration fields distinct from optimizer scores.
 
 Dilution adapter overrides are `uvvis_dilution_max_flow_ml_min`, `uvvis_dilution_wait_s` and `uvvis_dilution_max_attempts` in `process_adapter_config`. Saved effective settings are used when no override is supplied. The water limit may be lowered but cannot exceed the 6.25 mL/min protocol ceiling. Wait must be positive; attempts must be an integer from 1 to 20. There is no dedicated dilution-settings form.
 
-Relevant regression checks are in `tests/test_mb_cleaning.py`, `tests/test_amf_display.py`, `tests/test_spm_refill.py`, `tests/test_hardware_connections.py`, campaign setup tests, UV/VIS integration tests and `tests/test_uvvis_dilution.py`. They use simulated devices and test behavior; passing them is not a validation of changed physical tubing or analytical chemistry.
+Relevant regression checks are in `tests/test_mb_cleaning.py`, `tests/test_amf_display.py`, `tests/test_spm_refill.py`, `tests/test_hardware_connections.py`, campaign setup tests, UV/VIS integration tests and `tests/test_uvvis_dilution.py` and `tests/test_degradation.py`. They use simulated devices and test behavior; passing them is not a validation of changed physical tubing or analytical chemistry.
 
 Keep the default project README general. This dedicated manual is the place for MB-specific operating details. Update it after changing wiring, stock assumptions, objective formulas or persistence behavior.
 
@@ -680,9 +681,9 @@ Use the appropriate LabVision indications and laboratory checks to establish act
 
 # Appendix C. Source references and document control
 
-This manual was prepared from local source inspection on **18 November 2026**. It documents the working-copy behavior, including the corrected inverse valve mapping and automatic downstream UV/VIS dilution. It does not introduce code changes or validate a chemical method.
+This manual was prepared from local source inspection on **18 November 2026**. It documents the working-copy behavior, including the corrected inverse valve mapping, automatic downstream UV/VIS dilution and the Degradation objective. It does not introduce code changes or validate a chemical method.
 
-**Repository reference:** `6788a75` plus the working-copy configuration captured by the protocol hash below.
+**Repository reference:** `afecdb7` plus the working-copy configuration captured by the protocol hash below.
 
 **MB protocol SHA-256:**
 

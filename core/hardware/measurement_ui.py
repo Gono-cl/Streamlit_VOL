@@ -34,7 +34,7 @@ def render_measurement_settings():
     st.sidebar.text_input(
         "Concentration unit",
         key="uvvis_concentration_unit",
-        help="Use the unit used to fit the calibration, for example mM. Match substrate units when calculating yield. This label does not convert coefficients.",
+        help="Use the calibration unit, for example mg/L for MB. Match inlet concentration units when calculating yield or degradation. This label does not convert coefficients.",
     )
     with st.sidebar.expander("UV/VIS acquisition settings"):
         st.text_input("Spectrum filename pattern", key="uvvis_file_pattern")

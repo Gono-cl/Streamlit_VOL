@@ -9,6 +9,7 @@ import pandas as pd
 import streamlit as st
 
 from core.campaigns import MULTI_OBJECTIVE_OPTIONS, SINGLE_OBJECTIVE_OPTIONS
+from core.objectives import DEGRADATION_HELP
 from core.hardware.experimental_run import replace_experiment_runner
 from core.hardware.connections import campaign_connections, close_runner
 from core.hardware.measurement_ui import render_measurement_settings
@@ -479,7 +480,7 @@ with st.expander("How To Use This Page", expanded=False):
         st.code("No required keys defined (or no protocol selected).", language="text")
     st.caption(
         "Template columns: `run_id`, required parameter keys, and optional `objectives` "
-        "(comma-separated, e.g. `Yield, Throughput`)."
+        "(comma-separated, e.g. `Degradation, Concentration` for residual-substrate measurements)."
     )
     st.caption(
         "Internal columns `__status` and `__error` are managed automatically to support stop/resume/retry."
@@ -566,6 +567,8 @@ if not st.session_state.doe_exec_plan_df.empty:
         options=catalog,
         key="doe_exec_objectives_select",
     )
+    if "Degradation" in st.session_state.doe_exec_objectives:
+        st.caption(DEGRADATION_HELP)
 
     st.markdown("### Matrix Preview")
     st.dataframe(plan_df, use_container_width=True)

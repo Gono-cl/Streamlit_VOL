@@ -379,13 +379,16 @@ class ExperimentRunner(
 
         result = calculate_objectives(
             raw_area,
-            float(parameters.get("substrate_concentration", 1.0)),
+            self._degradation_inlet(parameters) if "Degradation" in objectives
+            else float(parameters.get("substrate_concentration", 1.0)),
             flow_aq,
             flow_org,
             res_time,
             selected_objectives=objectives,
             directions=directions,
         )
+        if "Degradation" in objectives:
+            self._record_degradation_measurement(raw_area, parameters, len(self.full_measurement_log) - 1)
         return self._normalize_result_payload(result, objectives)
 
     # ---------------------------------------------------------------------------
@@ -423,7 +426,10 @@ class ExperimentRunner(
             )
 
         self.last_measurement_result = None
+        self.last_degradation_result = None
         self._experiment_completed = False
+        if objectives and "Degradation" in objectives:
+            self._degradation_inlet(parameters)  # Reject an invalid denominator before preparation.
         if self.measurement_backend == "uvvis" and self.simulation_mode == "off":
             # Validate the folder/model before any protocol can start hardware.
             provider = self._get_uvvis_measurement()
@@ -443,7 +449,10 @@ class ExperimentRunner(
             if self.simulation_mode in ["full"]:
                 result = self.simulate_experiment(parameters, objectives, directions)
             else:
+                measurement_log_start = len(self.full_measurement_log) if objectives and "Degradation" in objectives else 0
                 mean_measurement = self.collect_measurements(iteration=experiment_number or 0, parameters=parameters)
+                if objectives and "Degradation" in objectives:
+                    self._record_degradation_measurement(mean_measurement, parameters, measurement_log_start)
                 if self.protocol_calculate_fn:
                     result = self.protocol_calculate_fn(
                         self,

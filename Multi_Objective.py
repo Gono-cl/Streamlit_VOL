@@ -6,6 +6,7 @@ from core.campaigns.variables import (
 from core.campaigns.variable_ui import render_variable_form, render_reference_categories, restore_reference_categories
 from core.campaigns.setup_ui import render_campaign_setup
 from core.campaigns.setup import widget_state_updates
+from core.objectives import DEGRADATION_HELP
 from datetime import datetime
 import numpy as np
 import pandas as pd
@@ -585,6 +586,8 @@ st.session_state.acq_func = acq_func
 objective_defaults = [obj for obj in st.session_state.get("objectives", []) if obj in MULTI_OBJECTIVE_OPTIONS]
 objectives = st.multiselect("🎯 Select Objectives to Optimize", MULTI_OBJECTIVE_OPTIONS, default=objective_defaults, key="multi_objectives_select")
 st.session_state.objectives = objectives
+if "Degradation" in objectives:
+    st.caption(DEGRADATION_HELP)
 
 st.markdown("### Select Maximize or Minimize Objective")
 

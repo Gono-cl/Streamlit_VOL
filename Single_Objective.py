@@ -6,6 +6,7 @@ from core.campaigns.variables import (
 from core.campaigns.variable_ui import render_variable_form, render_reference_categories, restore_reference_categories
 from core.campaigns.setup_ui import render_campaign_setup
 from core.campaigns.setup import widget_state_updates
+from core.objectives import DEGRADATION_HELP
 from datetime import datetime
 import numpy as np
 import pandas as pd
@@ -555,6 +556,8 @@ response_to_optimize = col7.selectbox("Response to Optimize", SINGLE_OBJECTIVE_O
 st.session_state.initial_experiments = int(initial_experiments)
 st.session_state.total_iterations = total_iterations
 st.session_state.response_to_optimize = response_to_optimize
+if response_to_optimize == "Degradation":
+    st.caption(DEGRADATION_HELP)
 
 # Additional BO settings
 acq_default = st.session_state.get("acq_func", OPTIMIZER_ACQ_OPTIONS[0])

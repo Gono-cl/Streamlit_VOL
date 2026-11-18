@@ -7,6 +7,7 @@ from datetime import datetime
 from typing import List
 
 import numpy as np
+from core.objectives import degradation_percent
 
 from core.hardware.uvvis_measurement import UVVisMeasurement, MeasurementValidationError
 from core.hardware.uvvis_dilution import collect_with_dilution, validate_dilution_settings
@@ -21,8 +22,9 @@ class MeasurementMixin:
 
     def measurement_result_fields(self):
         result = getattr(self, "last_measurement_result", None)
+        degradation = dict(getattr(self, "last_degradation_result", None) or {})
         if not result:
-            return {}
+            return degradation
         fields = {
             "Measurement Source": "UV/VIS",
             "Concentration Unit": result["concentration_unit"],
@@ -52,7 +54,41 @@ class MeasurementMixin:
                 "UV/VIS Dilution History": json.dumps(result["dilution_history"], allow_nan=False),
                 "UV/VIS Accepted": bool(result["dilution_used_for_result"]),
             })
+        fields.update(degradation)
         return fields
+
+    def _degradation_inlet(self, parameters):
+        adapter = getattr(self, "process_adapter", None)
+        config = getattr(adapter, "config", getattr(self, "adapter_config", {})) or {}
+        key = str(config.get("substrate_key", "substrate_concentration"))
+        if key not in (parameters or {}):
+            raise ValueError(f"Degradation requires inlet concentration parameter '{key}'.")
+        inlet = parameters[key]
+        degradation_percent(0.0, inlet)
+        return float(inlet)
+
+    def _record_degradation_measurement(self, concentration, parameters, log_start):
+        """Save the physical percentage independently of optimizer score signs."""
+        inlet = self._degradation_inlet(parameters)
+        degradation = degradation_percent(concentration, inlet)
+        self.last_degradation_result = {
+            "Inlet Concentration": inlet,
+            "Outlet Concentration": float(concentration),
+            "Degradation (%)": degradation,
+            "Degradation Basis": "Apparent removal from calibrated concentration",
+        }
+        for row in self.full_measurement_log[log_start:]:
+            # Rejected optical attempts have no accepted outlet concentration.
+            accepted = row.get("Accepted", True)
+            outlet = row.get("Corrected Concentration", row.get("Value")) if accepted else None
+            row.update({"Inlet Concentration": inlet, "Outlet Concentration": outlet, "Degradation (%)": None})
+            if outlet is not None:
+                try:
+                    row["Degradation (%)"] = degradation_percent(outlet, inlet)
+                except (TypeError, ValueError):
+                    pass  # Preserve raw noise without manufacturing a valid physical percentage.
+        print(f"Apparent degradation: {degradation:.6g}% "
+              f"(inlet {inlet:.6g}, corrected outlet {float(concentration):.6g}).")
 
     def _get_uvvis_dilution_settings(self, provider, parameters):
         hook = getattr(self, "protocol_uvvis_dilution_fn", None)

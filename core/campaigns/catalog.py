@@ -24,6 +24,7 @@ VARIABLE_OPTIONS = {
 
 SINGLE_OBJECTIVE_OPTIONS = [
     "Yield",
+    "Degradation",
     "Area",
     "Concentration",
     "Throughput",
@@ -35,6 +36,7 @@ SINGLE_OBJECTIVE_OPTIONS = [
 
 MULTI_OBJECTIVE_OPTIONS = [
     "Yield",
+    "Degradation",
     "Normalized Area",
     "Concentration",
     "Throughput",

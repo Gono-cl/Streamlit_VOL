@@ -1,5 +1,32 @@
 # Example objective functions for VOL simulation mode
 
+import math
+
+
+DEGRADATION_HELP = (
+    "Degradation (%) = 100 × (1 − Cout/Cin). Use calibrated residual-substrate "
+    "concentrations in matching units. Cout includes any analytical dilution correction. "
+    "Higher values mean greater removal. UV/VIS reports apparent degradation/decolourization, "
+    "not mineralization."
+)
+
+
+def degradation_percent(outlet_concentration, inlet_concentration):
+    """Apparent substrate removal; retain negative results instead of clipping."""
+    if isinstance(inlet_concentration, bool) or isinstance(outlet_concentration, bool):
+        raise ValueError("Degradation requires numerical inlet and outlet concentrations.")
+    inlet = float(inlet_concentration)
+    outlet = float(outlet_concentration)
+    if not math.isfinite(inlet) or inlet <= 0:
+        raise ValueError("Degradation requires a finite inlet concentration greater than zero.")
+    if not math.isfinite(outlet) or outlet < 0:
+        raise ValueError("Degradation requires a finite, nonnegative outlet concentration.")
+    value = 100.0 * (1.0 - outlet / inlet)
+    if not math.isfinite(value):
+        raise ValueError("Calculated degradation is not finite.")
+    return value
+
+
 def area(raw_area):
     """
     Raw Value obtained directly from the FT-IR.
@@ -60,6 +87,9 @@ def calculate_objectives(raw_area, substrate_concentration,  flow_aq = 1.0, flow
     Compute selected objectives
     """
 
+    include_degradation = selected_objectives is None or "Degradation" in selected_objectives
+    degradation = degradation_percent(raw_area, substrate_concentration) if include_degradation else None
+
     # Precompute shared values
     product_concentration = raw_area
 
@@ -74,6 +104,9 @@ def calculate_objectives(raw_area, substrate_concentration,  flow_aq = 1.0, flow
         "Extraction Efficiency": extraction_efficiency(normalized_area, flow_org),
         "Space-Time Yield": space_time_yield(raw_area, flow_org, flow_aq, residence_time)
     }
+
+    if include_degradation:
+        computed["Degradation"] = degradation
 
     result = {}
     selected = selected_objectives if selected_objectives else computed.keys()
