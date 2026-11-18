@@ -11,6 +11,7 @@ from __future__ import annotations
 import csv
 import math
 import os
+import tempfile
 import time
 from collections.abc import Mapping
 from datetime import datetime
@@ -144,6 +145,8 @@ class ExperimentRunner(
         self.protocol_stop_pumps_fn = self._protocol_callable("stop_pumps")
         self.protocol_cleanup_fn = self._protocol_callable("cleanup")
         self.protocol_measurement_tag_fn = self._protocol_callable("measurement_tag")
+        self.protocol_uvvis_dilution_fn = self._protocol_callable("uvvis_dilution_settings")
+        self.protocol_uvvis_set_flow_fn = self._protocol_callable("set_uvvis_dilution_flow")
         self.experiment_status_placeholder = st.sidebar.empty()
         self.countdown_placeholder = st.empty()
         self.timer_placeholder = st.sidebar.empty()
@@ -423,7 +426,8 @@ class ExperimentRunner(
         self._experiment_completed = False
         if self.measurement_backend == "uvvis" and self.simulation_mode == "off":
             # Validate the folder/model before any protocol can start hardware.
-            self._get_uvvis_measurement()
+            provider = self._get_uvvis_measurement()
+            self._get_uvvis_dilution_settings(provider, parameters)
         hardware_started = False
         completed = False
         try:
@@ -501,10 +505,39 @@ class ExperimentRunner(
         filename = f"raw_measurements/{experiment_name.replace(' ', '_')}{suffix}_measurements.csv"
         if not self.full_measurement_log:
             return filename
-        keys = self.full_measurement_log[0].keys() if self.full_measurement_log else []
         file_exists = os.path.isfile(filename) and os.path.getsize(filename) > 0
+        old_keys = []
+        if file_exists:
+            with open(filename, newline="", encoding="utf-8-sig") as f:
+                old_keys = next(csv.reader(f))
+        keys = list(dict.fromkeys(old_keys + [key for row in self.full_measurement_log for key in row]))
+        if file_exists and old_keys != keys:
+            # Resume may add dilution columns to an older measurement log.
+            # Expand its header atomically instead of appending misaligned rows.
+            temporary = None
+            try:
+                with tempfile.NamedTemporaryFile(mode="w", newline="", encoding="utf-8",
+                                                 dir=os.path.dirname(filename), suffix=".tmp", delete=False) as f:
+                    temporary = f.name
+                    writer = csv.DictWriter(f, fieldnames=keys)
+                    writer.writeheader()
+                    with open(filename, newline="", encoding="utf-8-sig") as previous:
+                        for row in csv.DictReader(previous):
+                            if None in row:
+                                raise ValueError("Existing measurement CSV has inconsistent columns; log not overwritten.")
+                            writer.writerow(row)
+                    writer.writerows(self.full_measurement_log)
+                    f.flush()
+                    os.fsync(f.fileno())
+                os.replace(temporary, filename)
+            finally:
+                if temporary is not None and os.path.exists(temporary):
+                    os.unlink(temporary)
+            print(f"Full measurement log saved to {filename}")
+            self.full_measurement_log.clear()
+            return filename
         mode = "a" if file_exists else "w"
-        with open(filename, mode, newline="") as f:
+        with open(filename, mode, newline="", encoding="utf-8") as f:
             writer = csv.DictWriter(f, fieldnames=keys)
             if not file_exists:
                 writer.writeheader()

@@ -175,6 +175,48 @@ PUMP_WATER_TAG = (
 PUMP_ANALYTICAL_DILUTION_TAG = (
     "Hitec_OPC_DA20_Server->E_CHEM:PUMP3.W1"
 )
+ANALYTICAL_DILUTION_MAX_FLOW_ML_MIN = 6.25
+ANALYTICAL_DILUTION_WAIT_S = 10.0
+ANALYTICAL_DILUTION_MAX_ATTEMPTS = 6
+
+
+def uvvis_dilution_settings(runner, parameters):
+    """Real UV/VIS experiments start directly, then dilute only if above range."""
+    op = _compute_operating_point(parameters)
+    saved = dict(getattr(runner, "uvvis_config", {}).get("auto_dilution", {}) or {})
+    config = getattr(runner, "adapter_config", {}) or {}
+    maximum = config.get("uvvis_dilution_max_flow_ml_min", saved.get(
+        "max_water_flow_ml_min", ANALYTICAL_DILUTION_MAX_FLOW_ML_MIN))
+    if isinstance(maximum, bool):
+        raise ValueError("MB Pump 3 dilution limit must be a number in mL/min.")
+    maximum = float(maximum)
+    if not math.isfinite(maximum) or not 0 < maximum <= ANALYTICAL_DILUTION_MAX_FLOW_ML_MIN:
+        raise ValueError("MB Pump 3 dilution limit must be positive and no greater than 6.25 mL/min.")
+    return {
+        "reaction_flow_ml_min": op["total_flow_ml_min"],
+        "inlet_concentration_mg_L": op["mb_target_mg_L"],
+        "max_water_flow_ml_min": maximum,
+        "settle_time_s": config.get("uvvis_dilution_wait_s", saved.get(
+            "settle_time_s", ANALYTICAL_DILUTION_WAIT_S)),
+        "max_attempts": config.get("uvvis_dilution_max_attempts", saved.get(
+            "max_attempts", ANALYTICAL_DILUTION_MAX_ATTEMPTS)),
+    }
+
+
+def set_uvvis_dilution_flow(runner, flow_ml_min):
+    """Write/read back Pump 3 in uL/min; return its verified command in mL/min."""
+    if runner.simulation_mode != "off" or runner.measurement_backend != "uvvis":
+        raise RuntimeError("Automatic UV/VIS dilution is only available in real UV/VIS experiments.")
+    flow = float(flow_ml_min)
+    maximum = float(runner.uvvis_config.get("auto_dilution", {}).get(
+        "max_water_flow_ml_min", ANALYTICAL_DILUTION_MAX_FLOW_ML_MIN))
+    if not math.isfinite(flow) or not 0 <= flow <= min(maximum, ANALYTICAL_DILUTION_MAX_FLOW_ML_MIN):
+        raise ValueError("Pump 3 dilution flow exceeds the configured 6.25 mL/min maximum.")
+    command = min(maximum * 1000.0, round(flow * 1000.0, 4))
+    _required_write(runner, PUMP_ANALYTICAL_DILUTION_TAG, command)
+    _verify_opc_values(runner, ((PUMP_ANALYTICAL_DILUTION_TAG, command),), "analytical dilution flow")
+    runner._mb_analytical_dilution_flow_ml_min = command / 1000.0
+    return command / 1000.0
 
 # Pump 6 uses mL/min (unlike the reagent pumps above, which use uL/min).
 PUMP_CLEANING_TAG = "Hitec_OPC_DA20_Server-%3EE_CHEM%3APUMP_6.W1"

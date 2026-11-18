@@ -1,9 +1,9 @@
 # MB Protocol Manual
 
 **Virtual Optimization Lab (Streamlit_VOL)**  
-Operator and developer reference · Version 1.0 · 17 November 2026
+Operator and developer reference · Version 1.1 · 18 November 2026
 
-Based on the current working copy, including the latest inverse cleaning-valve mapping. This document describes implemented software behavior and identifies the analytical work that remains to be validated. Source references [S1]–[S16] appear in the final section.
+Based on the current working copy, including the inverse cleaning-valve mapping and automatic downstream UV/VIS dilution. This document describes implemented software behavior and identifies the analytical work that remains to be validated. Source references [S1]–[S17] appear in the final section.
 
 <!-- MANUAL BODY -->
 
@@ -24,16 +24,18 @@ The MB protocol automates methylene blue electrooxidation using six optimization
 | Water cleaning | Pump 6: 1 mL/min for 60 s; water selector port 1 |
 | Electrolysis mode | Both V_01 tags = 1; both V_02 tags = 0 |
 | Cleaning mode | Both V_01 tags = 0; both V_02 tags = 1 |
+| Real MB UV/VIS | mg/L calibration; direct first, automatic downstream water dilution if above range |
+| Analytical dilution | Pump 3 maximum 6.25 mL/min; 10 s wait per flow setting; up to 6 attempts including direct |
 
 > **Latest valve mapping:** “Both tags” means OPEN and CLOSE. Cleaning is the exact inverse of electrolysis. These are the rebuilt MB setup’s command values; do not substitute settings from an older PDA protocol.
 
 ## What is already automated
 
-Cell selection, electrolyte routing and syringe preparation, current and flow calculations, reagent delivery, BKK channel commands, waiting periods, measurement collection, feed shutdown, water cleaning, result handling and serial-connection cleanup are coordinated by the software.
+Cell selection, electrolyte routing and syringe preparation, current and flow calculations, reagent delivery, BKK channel commands, waiting periods, measurement collection with optional automatic UV/VIS dilution, feed shutdown, water cleaning, result handling and serial-connection cleanup are coordinated by the software.
 
 ## What needs analytical validation
 
-The MB module currently does not define its own objective-calculation or measurement-tag hook. The runner therefore uses the selected process adapter and measurement configuration. Generic yield, throughput and solvent metrics are not validated MB conversion metrics. Review Section 13 before using analytical results to drive optimization. [S1, S3, S6]
+The MB module currently does not define its own objective-calculation or measurement-tag hook. The runner therefore uses the selected process adapter and measurement configuration. Generic yield, throughput and solvent metrics are not validated MB conversion metrics. Review Section 14 before using analytical results to drive optimization. [S1, S3, S6]
 
 <!-- pagebreak -->
 
@@ -66,7 +68,7 @@ The Streamlit pages own the campaign and its optimizer. `ExperimentRunner` owns 
 | Pump 1 | 2,000 mg/L MB stock | µL/min; calculated mL/min × 1,000, rounded to whole µL/min |
 | Pump 2 | Reaction dilution water | µL/min; calculated mL/min × 1,000, rounded to whole µL/min |
 | SPM+ | Selected 0.4 M electrolyte stock | µL and µL/min; USB commands |
-| Pump 3 | Downstream analytical dilution water | Excluded from reaction flow; current MB code stops it but does not start it |
+| Pump 3 | Downstream analytical dilution water | µL/min; automatic only for real MB UV/VIS; excluded from reaction flow |
 | Pump 6 | Water cleaning | **mL/min**; a value of 1 means 1 mL/min, not 1,000 |
 
 ## External cell-selection valve and BKK mapping
@@ -216,7 +218,7 @@ Water cleaning is a separate Pump 6 operation after SPM shutdown. It does not co
 9. **Flush without electrolysis.** Wait the calculated upstream/cell flush time.
 10. **Select electrical output.** Send BKK channel selection commands, write the calculated current in amperes, and enable the power supply.
 11. **Wait for response.** Wait the calculated post-power stabilization/transport time.
-12. **Measure and calculate.** The runner collects the selected measurement and obtains objective values from a protocol hook or the selected fallback adapter. Optional autosampling follows.
+12. **Measure and calculate.** For real MB UV/VIS, stop Pump 3, wait 10 s and collect fresh spectra. Above-range readings trigger bounded dilution retries, each with a 10 s wait. Return the dilution-corrected reactor-outlet concentration to the selected objective calculator. Stop Pump 3 and, after a diluted success, wait 10 s for undiluted flow before optional autosampling. Other measurement modes retain their existing acquisition path.
 13. **Stop and clean.** In the runner’s cleanup path, stop the power supply and all feeds. A successful experiment with verified shutdown receives the timed water clean and return to electrolysis routing.
 14. **Accept and persist.** Only after the runner returns successfully does the page observe the result in the optimizer and write its campaign checkpoint.
 
@@ -335,7 +337,7 @@ The default stability procedure takes three readings, 20 s apart in real mode. I
 
 ## Test button versus experiment
 
-**Test UV/VIS measurement** reads actual exported spectra without controlling hardware, even when the experiment mode is hybrid or full simulation. The experiment itself still uses synthetic measurements in those modes. Testing the button is not evidence that a campaign is using real UV/VIS results.
+**Test UV/VIS measurement** reads actual exported spectra without controlling hardware, even when the experiment mode is hybrid or full simulation. The experiment itself still uses synthetic measurements in those modes. Testing the button is not evidence that a campaign is using real UV/VIS results. The test never starts Pump 3 or applies automatic dilution. Automatic dilution belongs to real MB experiments only; OPC, hybrid and full simulation do not use it.
 
 <!-- pagebreak -->
 
@@ -348,7 +350,7 @@ The `uvvis` backend reads Spectragryph CSV exports, applies a saved linear calib
 1. Prepare and validate a calibration using the intended concentration unit and optical configuration. Save the calibration JSON.
 2. Configure Spectragryph to export continuously to the chosen folder with incrementing filenames.
 3. Select **UV/VIS (Spectragryph CSV)**, the export folder, filename pattern and calibration file in VOL.
-4. Select the calibration’s actual concentration unit. A label change does not convert calibration coefficients or concentrations.
+4. For MB automatic dilution, select **mg/L** and use the MB calibration fitted with mg/L standards. Other units are rejected before hardware preparation. A label change does not convert calibration coefficients or concentrations.
 5. Use **Test UV/VIS measurement** with a known sample, then inspect concentration, absorbance, wavelength, CV and calibration-range status.
 6. Select real hardware mode for a campaign that must use these measurements.
 
@@ -365,13 +367,61 @@ The `uvvis` backend reads Spectragryph CSV exports, applies a saved linear calib
 
 The model must contain finite `slope`, `intercept`, `r2`, `range_min`, `range_max` and `wavelength` values. Concentration is `(absorbance − intercept) / slope`. The slope must be nonzero, the concentration range ordered, wavelength positive and R² between 0 and 1.
 
-At measurement start, existing filenames are marked as already seen. The reader waits for a distinct new, stable CSV, checks that it covers the calibration wavelength and uses its nearest wavelength point. Reusing one fixed filename is therefore unsuitable. Rejected stability or out-of-range concentration raises a measurement error and prevents a normal optimizer observation.
+At measurement start, existing filenames are marked as already seen. The reader waits for a distinct new, stable CSV, checks that it covers the calibration wavelength and uses its nearest wavelength point. Reusing one fixed filename is therefore unsuitable. A final in-range reading must also pass the absorbance-CV stability check. In a real MB experiment, an above-range reading can trigger the dilution procedure in Section 13; it is never accepted as a final result. The standalone test and protocols without dilution hooks do not retry using a pump. Unresolved range, stability or acquisition failures prevent a normal optimizer observation.
 
 A SHA-256 calibration ID is stored with the run. Resume checks it against the current saved model. Relative UV/VIS paths resolve from the project root. The original spectral CSVs stay in their export folder and must be archived separately.
 
 <!-- pagebreak -->
 
-# 13. Objective values and MB analytics
+# 13. Automatic downstream UV/VIS dilution
+
+This procedure applies when `MB_6_variables.py`, real hardware mode (`off`) and the UV/VIS CSV backend are selected together. Pump 3 adds water downstream of the electrochemical reactor and upstream of the UV/VIS flow cell. It does not change the reactor formulation or its calculated total reaction flow. [S1, S3, S10, S17]
+
+## Sequence and concentration correction
+
+1. Validate the mg/L calibration, positive flow/wait settings and attempt limit before hardware preparation.
+2. After normal reactor stabilization, command Pump 3 to zero and verify the command readback. Wait 10 s, then begin a fresh spectral-acquisition window.
+3. Accept a stable direct measurement if it is within the calibration range. Its dilution factor is 1.
+4. If the detector concentration is above range, calculate a water flow using this experiment’s reaction flow and the calibration range. Apply and verify the Pump 3 command, wait 10 s and acquire fresh spectra. Files exported before or during the wait are excluded.
+5. Continue bounded retries until a stable in-range measurement is obtained, or reject the measurement if the water-flow or attempt limit is reached. If dilution overshoots below the lower calibration limit, reduce the factor between the known above-range and below-range settings.
+6. Multiply the accepted detector concentration by the applied dilution factor. Stop Pump 3 in the measurement’s `finally` path. After a diluted success, wait another 10 s before normal sample collection. A failed stop rejects the measurement; errors return promptly to the runner’s full shutdown path.
+
+```text
+Q_reactor = calculated total reactor feed, mL/min
+Q_water   = verified Pump 3 command flow, mL/min
+D         = (Q_reactor + Q_water) / Q_reactor
+C_out     = C_detector × D, mg/L
+Q_water   = Q_reactor × (D − 1)
+D_max     = 1 + 6.25 / Q_reactor
+```
+
+For example, a 1 mL/min reactor flow plus 3 mL/min of downstream water gives D = 4. A validated detector reading of 25 mg/L represents a reactor outlet of 100 mg/L. Pump 3 receives 3,000 µL/min, because its OPC command uses µL/min.
+
+The first diluted setting targets the midpoint of the calibration concentration range using the inlet MB concentration as a conservative starting hint, with at least a doubling of the factor and a cap at the maximum water flow. Above-range extrapolated concentrations are used only as range indicators, not as numerical estimates of the true outlet concentration. Subsequent above-range readings increase dilution; an established above/below bracket uses its geometric midpoint. The final accepted reading must pass both calibration-range and stability checks.
+
+<!-- pagebreak -->
+
+## Limits and failure behavior
+
+| Setting | Default / constraint |
+|---|---|
+| Maximum Pump 3 water flow | 6.25 mL/min; command maximum 6,250 µL/min |
+| Wait after each applied flow setting | 10 s, including the initial direct setting |
+| Wait after restoring undiluted flow | 10 s following a successful diluted measurement |
+| Maximum attempts | 6 total, including the direct attempt |
+| Concentration unit | mg/L; no automatic unit conversion |
+
+A direct reading below the calibration range cannot be corrected by adding water and is rejected. Missing fresh spectra, unstable in-range results, an unresolved range after retries, or failed pump commands/readbacks stop the experiment without a normal optimizer observation. Pump 3 is always given a stop attempt; the existing protocol shutdown also stops reagent feeds. Cleaning starts only after an otherwise successful experiment and verified shutdown.
+
+The 10 s delay is the initial agreed fixed setting, not a calculated transport-volume correction. Confirm it is adequate for the actual tubing and flow cell. Verification checks the OPC command value, not independently measured water flow. The dilution factor uses the calculated reactor flow and verified, rounded Pump 3 command flow; accurate physical concentrations require the pumps and mixing to be validated.
+
+## Recorded evidence
+
+Campaign rows retain detector concentration, corrected reactor-outlet concentration, dilution factor, reactor/water/total detector flows, number of attempts, wait, history and verified stop. Raw rows retain every acquired spectrum with the attempt number and dilution context. Out-of-range readings are retained but never accepted as the final concentration. `Attempt Used for Result` identifies the final successful optical attempt; it does not mean that later campaign cleanup necessarily succeeded.
+
+<!-- pagebreak -->
+
+# 14. Objective values and MB analytics
 
 The current MB module defines `prepare_hardware()`, `stop_pumps()`, `cleanup()`, `autosampler_flow_rate()` and required parameter names. It does **not** define `calculate_real_result()`. The runner therefore falls back to the selected process adapter, normally `echem_4pump`, and `core/objectives.py`. [S1, S3, S6]
 
@@ -379,8 +429,8 @@ The current MB module defines `prepare_hardware()`, `stop_pumps()`, `cleanup()`,
 
 | Selected quantity | Current generic behavior / implication |
 |---|---|
-| Concentration | Returns the accepted measurement unchanged. Its physical meaning and unit depend on the configured measurement source. |
-| Yield | Computes measurement / `substrate_concentration` × 100. MB feed is entered in mg/L; a measurement in mM would make this ratio invalid. It is not an MB removal calculation. |
+| Concentration | Real MB UV/VIS returns the dilution-corrected reactor-outlet concentration in mg/L. Other sources retain their configured meaning/units. |
+| Yield | Computes measurement / `substrate_concentration` × 100. With corrected MB UV/VIS in mg/L this is residual MB percentage, not removal. Other sources require matching units. |
 | Throughput | Uses generic organic-flow assumptions and a default molecular mass of 114.1 g/mol, not the MB operating-point flow and molecular mass. |
 | Solvent, extraction and space-time metrics | Inherit generic process assumptions; not validated for this aqueous MB experiment. |
 | “Normalized Area” in multi-objective choices | The generic calculator exposes `Area`, not this exact key. Selecting an unreturned key can cause a missing-objective error. |
@@ -391,13 +441,13 @@ For multi-objective minimization, the generic calculator returns the negative ph
 
 ## Planned MB-specific extension
 
-A validated MB calculation should define a protocol `calculate_real_result()` hook, explicitly match concentration units and account for any downstream dilution. For example, a removal metric could be `100 × (1 − C_out / C_in)` after both concentrations are on the same basis. This formula is explanatory; that MB-specific objective is **not currently implemented**.
+A validated MB objective should define a protocol `calculate_real_result()` hook and explicitly match concentration units. The real MB UV/VIS measurement passed to that hook is already corrected for downstream dilution; do not multiply it again. For example, a removal metric could be `100 × (1 − C_out / C_in)` after both concentrations are on the same basis. This formula is explanatory; that MB-specific objective is **not currently implemented**.
 
-Pump 3 is not started by this protocol and no analytical-dilution correction is applied automatically. Validate the measurement and objective definitions before using them for scientific conclusions or closed-loop MB optimization.
+Automatic optical dilution does not change the meaning or optimization direction of generic objectives. Validate the objective definitions before using them for scientific conclusions or closed-loop MB optimization.
 
 <!-- pagebreak -->
 
-# 14. Saving configuration, resuming and stopping
+# 15. Saving configuration, resuming and stopping
 
 ## Saved setup versus saved run
 
@@ -421,7 +471,7 @@ After an error, review the displayed failure, stopped-state indications and phys
 
 <!-- pagebreak -->
 
-# 15. Where data are stored
+# 16. Where data are stored
 
 Launch `streamlit run main.py` from the project directory. Most result paths are relative to that working directory. This section describes files actually written by the current code. [S1–S3, S13–S15]
 
@@ -439,23 +489,23 @@ Launch `streamlit run main.py` from the project directory. Most result paths are
 
 `MB_experiment_log.csv` records `ready_for_measurement`, `hardware_error` or simulation status when the protocol hook runs. It contains operating conditions, not the final analytical result or a cleaning-completion record. It is shared across campaign names, so preserve timestamps and campaign checkpoints when correlating records.
 
-The raw-log writer appends its current in-memory buffer and then clears it. It is not a continuous external logger. A hard application/process termination can lose readings not yet flushed.
+The raw-log writer appends its current in-memory buffer and then clears it. When a resumed log needs new dilution columns, the writer atomically expands the existing header while preserving older rows; it does not append a different column layout under the old header. It is not a continuous external logger. A hard application/process termination can lose readings not yet flushed.
 
 CSV/Excel download buttons generate browser downloads; the advertised export filename does not mean the file was automatically saved in the project root. Single- and multi-objective campaigns write database records at normal completion. DOE has a separate **Save Current Results to Experiment Database** button.
 
 <!-- pagebreak -->
 
-# 16. Reading and preserving the data
+# 17. Reading and preserving the data
 
 ## Campaign result rows
 
 A typical single-objective row includes `Experiment #`, `Timestamp`, all six proposed parameters, `Measurement`, and the selected objective column. Multi-objective rows contain each selected objective instead. These values are saved after the runner returns successfully, including its shutdown and cleaning.
 
-UV/VIS adds fields such as `Measurement Source`, `Concentration Unit`, `UV/VIS Concentration`, absorbance, absorbance SD, CV, acceptance/range status, extra measurements, calibration path and calibration ID. The raw UV/VIS CSV includes the original spectrum filename and acquisition wavelength.
+UV/VIS adds fields such as `Measurement Source`, `Concentration Unit`, `UV/VIS Concentration`, absorbance, absorbance SD, CV, acceptance/range status, extra measurements, calibration path and calibration ID. The raw UV/VIS CSV includes the original spectrum filename and acquisition wavelength. Automatic MB dilution also adds `UV/VIS Measured Concentration`, `UV/VIS Corrected Concentration`, `UV/VIS Dilution Factor`, three flow fields, attempt count, wait, history and stop verification. `UV/VIS Concentration` is the corrected value in this mode. Raw `Value` and `Measured Concentration` are detector values; raw corrected values are supplied only for optically valid attempts. The final successful attempt is marked separately from rejected or incomplete attempts.
 
 ## Metadata and optimizer state
 
-`metadata.json` stores variable definitions, objectives, execution mode, OPC configuration, protocol filename, adapter configuration, initialization/optimizer settings, category references, reproducibility/QC information and measurement settings. Multi-objective metadata also includes objective directions and experiment metadata.
+`metadata.json` stores variable definitions, objectives, execution mode, OPC configuration, protocol filename, adapter configuration, initialization/optimizer settings, category references, reproducibility/QC information and measurement settings. Multi-objective metadata also includes objective directions and experiment metadata. After real MB UV/VIS preflight, `uvvis_config.auto_dilution` records the effective water-flow limit, wait, attempt limit and target concentration. These limits are preserved with run checkpoints; reactor flow is recalculated for each proposed condition.
 
 `optimizer.pkl` contains a Python optimizer object serialized with dill. Use a compatible software environment when resuming and load checkpoints only from trusted runs. The checkpoint does not contain live USB handles or prove what liquid is in the syringe. A protocol filename is not a complete snapshot of that file’s contents or its stock/geometry constants.
 
@@ -473,7 +523,7 @@ The database is useful for browsing completed experiments; the checkpoint folder
 
 <!-- pagebreak -->
 
-# 17. Initialization, QC, reproducibility and DOE
+# 18. Initialization, QC, reproducibility and DOE
 
 ## Initialization and categorical variables
 
@@ -497,13 +547,13 @@ The DOE Executor runs an uploaded matrix rather than asking an optimizer for the
 
 <!-- pagebreak -->
 
-# 18. File and function guide
+# 19. File and function guide
 
 Use this map when changing or reviewing the implementation. Relative paths are from the `Streamlit_VOL` project root.
 
 | File / area | Relevant responsibilities |
 |---|---|
-| `running_protocols/MB_6_variables.py` | `required_parameter_keys`, `_compute_operating_point`, `_prepare_spm_electrolyte`, `_set_flow_mode`, `_select_bkk_channel`, `prepare_hardware`, `stop_pumps`, `cleanup`, `emergency_shutdown` |
+| `running_protocols/MB_6_variables.py` | `required_parameter_keys`, `_compute_operating_point`, `_prepare_spm_electrolyte`, `_set_flow_mode`, `_select_bkk_channel`, `prepare_hardware`, `stop_pumps`, `cleanup`, `emergency_shutdown`, `uvvis_dilution_settings`, `set_uvvis_dilution_flow` |
 | `core/hardware/experimental_run.py` | `ExperimentRunner`, protocol-hook selection, USB/OPC display helpers, measurement/objective fallback, success/cleanup status, raw-log writes |
 | `core/hardware/protocol_scripts.py` | Discovers/imports protocol Python files and reads optional protocol hooks/metadata |
 | `core/hardware/AMF_hardware/spm_pump.py` | USB discovery, homing, real-encoder volume conversion, absolute moves, verified stopping |
@@ -511,6 +561,7 @@ Use this map when changing or reviewing the implementation. Relative paths are f
 | `core/hardware/opc_communication.py` | HTTP read/write transport and optional per-request timeouts |
 | `core/hardware/mixins/measurement_mixin.py` | Measurement-source selection, OPC stability routine, UV/VIS logging |
 | `core/hardware/uvvis_measurement.py` | Fresh CSV detection, calibration validation/identity, concentration acceptance |
+| `core/hardware/uvvis_dilution.py` | Bounded direct-first dilution, fresh acquisition waits, concentration correction and mandatory pump stop |
 | `core/hardware/measurement_ui.py` | Sidebar source settings and standalone UV/VIS test |
 | `core/hardware/process_adapters.py`, `core/objectives.py` | Fallback objective definitions used because MB has no calculation hook |
 | `core/hardware/connections.py` | Error decorators, campaign connection lifetime and runner replacement |
@@ -522,7 +573,7 @@ The MB protocol is loaded dynamically when selected. Having a file in `running_p
 
 <!-- pagebreak -->
 
-# 19. Changing the protocol deliberately
+# 20. Changing the protocol deliberately
 
 | Change | Edit / confirm |
 |---|---|
@@ -535,17 +586,20 @@ The MB protocol is loaded dynamically when selected. Having a file in `running_p
 | Homing waste connection | Must remain internal SPM port 1 for automatic homing; `spm_waste_port` is rejected if not 1 |
 | Transport and stabilization | Measured upstream/downstream dead volumes and cell-volume timing factors |
 | Detector integration | Measurement UI; optional MB `measurement_tag()` hook for an explicit OPC source |
+| Analytical dilution | `ANALYTICAL_DILUTION_MAX_FLOW_ML_MIN`, `ANALYTICAL_DILUTION_WAIT_S`, `ANALYTICAL_DILUTION_MAX_ATTEMPTS`; adapter overrides below |
 | MB removal or another physical objective | Implement and validate MB `calculate_real_result()` with matching units/dilution; align objective catalogs |
 
 A custom calculation hook receives `(runner, mean_measurement, parameters, objectives, directions)` and must return a dictionary containing the selected objective names. Check the optimizer’s sign convention when applying minimization. Keep physical concentration fields distinct from optimizer scores.
 
-Relevant regression checks are in `tests/test_mb_cleaning.py`, `tests/test_amf_display.py`, `tests/test_spm_refill.py`, `tests/test_hardware_connections.py`, campaign setup tests and UV/VIS integration tests. They use simulated devices and test behavior; passing them is not a validation of changed physical tubing or analytical chemistry.
+Dilution adapter overrides are `uvvis_dilution_max_flow_ml_min`, `uvvis_dilution_wait_s` and `uvvis_dilution_max_attempts` in `process_adapter_config`. Saved effective settings are used when no override is supplied. The water limit may be lowered but cannot exceed the 6.25 mL/min protocol ceiling. Wait must be positive; attempts must be an integer from 1 to 20. There is no dedicated dilution-settings form.
+
+Relevant regression checks are in `tests/test_mb_cleaning.py`, `tests/test_amf_display.py`, `tests/test_spm_refill.py`, `tests/test_hardware_connections.py`, campaign setup tests, UV/VIS integration tests and `tests/test_uvvis_dilution.py`. They use simulated devices and test behavior; passing them is not a validation of changed physical tubing or analytical chemistry.
 
 Keep the default project README general. This dedicated manual is the place for MB-specific operating details. Update it after changing wiring, stock assumptions, objective formulas or persistence behavior.
 
 <!-- pagebreak -->
 
-# 20. Troubleshooting and known limits
+# 21. Troubleshooting and known limits
 
 | Symptom / message | Meaning and next check |
 |---|---|
@@ -557,11 +611,13 @@ Keep the default project README general. This dedicated manual is the place for 
 | Display update failed | AMF USB control may still work; check the three display item IDs, permissions and LabVision display mapping. |
 | Negative water flow / flow below minimum | Proposed concentration/charge/current combination is infeasible under the stock and flow assumptions. Adjust campaign bounds or formulation. |
 | No new complete UV/VIS spectrum | Check continuous export, incrementing filenames, folder/pattern, wavelength coverage and timeout. |
-| Calibration changed / unit mismatch / out of range | Restore the intended model, match units and validate the sample/dilution. Changing the unit label does not convert a result. |
-| Objective key missing or scientifically implausible values | MB uses generic fallback calculations. Check Section 13, selected objective names and units. |
+| Calibration changed / unit mismatch | Restore the intended model and select mg/L for real MB automatic dilution. Changing the unit label does not convert a result. |
+| Above range at Pump 3 limit / attempts exhausted | No validated concentration is accepted. Review calibration range, reactor flow, mixing and the allowed dilution; do not accept the extrapolated detector concentration. |
+| Could not verify analytical dilution flow / stop | Check Pump 3 OPC item, units, connectivity, readback and actual pump state. A failed stop rejects the result. |
+| Objective key missing or scientifically implausible values | MB uses generic fallback calculations. Check Section 14, selected objective names and units. |
 | Results/raw CSVs do not have identical row counts | Raw files contain replicate readings and possibly failed attempts; campaign CSVs contain accepted optimizer observations. QC adds further acquisitions. |
 
-Other current limits include zero default dead volumes, no automatic mid-run SPM refill, no independent physical valve-position feedback in mode checks, no BKK channel readback, no Pump 3 startup/dilution correction, and possible final-QC raw-log buffering. These are implementation facts to consider during analytical commissioning, not features supplied by the manual.
+Other current limits include zero default dead volumes, no automatic mid-run SPM refill, no independent physical valve-position feedback in mode checks, no BKK channel readback, a fixed rather than transport-calculated analytical wait, and possible final-QC raw-log buffering. These are implementation facts to consider during analytical commissioning, not features supplied by the manual.
 
 <!-- pagebreak -->
 
@@ -575,7 +631,7 @@ The code uses both raw `->` / `:` item strings and URL-encoded forms. The follow
 |---|---|
 | Pump 1 MB; µL/min | `Hitec_OPC_DA20_Server->E_CHEM:PUMP1.W1` |
 | Pump 2 water; µL/min | `Hitec_OPC_DA20_Server->E_CHEM:PUMP2.W1` |
-| Pump 3 analytical dilution; stop command | `Hitec_OPC_DA20_Server->E_CHEM:PUMP3.W1` |
+| Pump 3 analytical dilution; µL/min | `Hitec_OPC_DA20_Server->E_CHEM:PUMP3.W1` |
 | BKK channel 1; 0/1 | `Hitec_OPC_DA20_Server->E_CHEM:BKK_USER_DEFINE.CHANNEL1` |
 | BKK channel 2; 0/1 | `Hitec_OPC_DA20_Server->E_CHEM:BKK_USER_DEFINE.CHANNEL2` |
 | BKK channel 3; 0/1 | `Hitec_OPC_DA20_Server->E_CHEM:BKK_USER_DEFINE.CHANNEL3` |
@@ -624,14 +680,14 @@ Use the appropriate LabVision indications and laboratory checks to establish act
 
 # Appendix C. Source references and document control
 
-This manual was prepared from local source inspection on **17 November 2026**. It documents the working-copy behavior, including the corrected inverse valve mapping. It does not introduce code changes or validate a chemical method.
+This manual was prepared from local source inspection on **18 November 2026**. It documents the working-copy behavior, including the corrected inverse valve mapping and automatic downstream UV/VIS dilution. It does not introduce code changes or validate a chemical method.
 
-**Repository reference:** `5de2314` plus the working-copy configuration captured by the protocol hash below.
+**Repository reference:** `6788a75` plus the working-copy configuration captured by the protocol hash below.
 
 **MB protocol SHA-256:**
 
 ```text
-0fb0dccb2c81215c4591a26ed3bb5b106012e50677ec3d4da7cc9a40cf6a2407
+710d298a6ccc911daf923cb540f08ccf5de0b7979117add0aa492d6dc368c3dd
 ```
 
 | Ref. | Source file or area |
@@ -652,5 +708,6 @@ This manual was prepared from local source inspection on **17 November 2026**. I
 | S14 | `core/utils/export_tools.py`, `logger.py` |
 | S15 | `core/campaigns/templates.py`, `setup.py`, `setup_ui.py` |
 | S16 | `Reproducibility.py`, `src/repro/`, and optimization-page escalation callbacks |
+| S17 | `core/hardware/uvvis_dilution.py`, `tests/test_uvvis_dilution.py` |
 
 **Update this manual when:** stock assumptions, cell geometry, valve polarity, electrolyte ports, cleaning settings, measurement units, objective definitions or data-persistence behavior change. Keep the deployed code/calibration version with the experiment records.

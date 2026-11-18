@@ -9,6 +9,7 @@ from typing import List
 import numpy as np
 
 from core.hardware.uvvis_measurement import UVVisMeasurement, MeasurementValidationError
+from core.hardware.uvvis_dilution import collect_with_dilution, validate_dilution_settings
 
 
 class MeasurementMixin:
@@ -22,7 +23,7 @@ class MeasurementMixin:
         result = getattr(self, "last_measurement_result", None)
         if not result:
             return {}
-        return {
+        fields = {
             "Measurement Source": "UV/VIS",
             "Concentration Unit": result["concentration_unit"],
             "UV/VIS Concentration": result["concentration"],
@@ -35,32 +36,90 @@ class MeasurementMixin:
             "UV/VIS Calibration": result["calibration_file"],
             "UV/VIS Calibration ID": result["calibration_id"],
         }
+        if "dilution_factor" in result:
+            fields.update({
+                "UV/VIS Concentration": result["corrected_concentration"],
+                "UV/VIS Measured Concentration": result["measured_concentration"],
+                "UV/VIS Corrected Concentration": result["corrected_concentration"],
+                "UV/VIS Dilution Factor": result["dilution_factor"],
+                "UV/VIS Reaction Flow (mL/min)": result["reaction_flow_ml_min"],
+                "UV/VIS Dilution Water Flow (mL/min)": result["water_flow_ml_min"],
+                "UV/VIS Total Detector Flow (mL/min)": result["total_flow_ml_min"],
+                "UV/VIS Dilution Attempts": result["attempt"],
+                "UV/VIS Dilution Wait (s)": result["settle_time_s"],
+                "UV/VIS Dilution Status": result["dilution_status"],
+                "UV/VIS Dilution Stop Verified": result["dilution_stop_verified"],
+                "UV/VIS Dilution History": json.dumps(result["dilution_history"], allow_nan=False),
+                "UV/VIS Accepted": bool(result["dilution_used_for_result"]),
+            })
+        return fields
+
+    def _get_uvvis_dilution_settings(self, provider, parameters):
+        hook = getattr(self, "protocol_uvvis_dilution_fn", None)
+        if not callable(hook):
+            return None
+        if not callable(getattr(self, "protocol_uvvis_set_flow_fn", None)):
+            raise ValueError("The selected protocol is missing its UV/VIS dilution pump hook.")
+        config = validate_dilution_settings(hook(self, parameters), provider)
+        # Persist the effective limits with campaign metadata and calibration ID.
+        self.uvvis_config["auto_dilution"] = {key: config[key] for key in (
+            "max_water_flow_ml_min", "settle_time_s", "max_attempts", "target_concentration_mg_L",
+        )}
+        return config
+
+    def _log_uvvis_attempt(self, provider, result, acquisitions, iteration, parameters, context=None):
+        self.last_measurement_result = result
+        for index, acquisition in enumerate(acquisitions, 1):
+            value = float(provider.sample.calculate_concentration(acquisition["absorbance"]))
+            accepted = bool(result and result["accepted"] and result["status"] == "valid")
+            row = {
+                "Iteration": iteration, "Timestamp": acquisition["timestamp"],
+                **(parameters or {}), "Measurement #": index, "Value": value,
+                "Absorbance": acquisition["absorbance"], "Wavelength (nm)": acquisition["wavelength"],
+                "Spectrum File": acquisition["file"], "Concentration Unit": provider.concentration_unit,
+                "Accepted": accepted, "Range Status": result["status"] if result else "acquisition_failed",
+                "Absorbance CV (%)": result["absorbance_cv"] if result else "",
+                "Calibration ID": provider.calibration_id,
+                "Calibration Model": json.dumps(provider.sample.calibration_model, sort_keys=True),
+            }
+            if context is not None:
+                row.update({
+                    "Dilution Attempt": context["attempt"], "Dilution Factor": context["dilution_factor"],
+                    "Measured Concentration": value,
+                    "Corrected Concentration": value * context["dilution_factor"] if accepted else None,
+                    "Reaction Flow (mL/min)": context["reaction_flow_ml_min"],
+                    "Dilution Water Flow (mL/min)": context["water_flow_ml_min"],
+                    "Total Detector Flow (mL/min)": context["total_flow_ml_min"],
+                    "Dilution Wait (s)": context["settle_time_s"],
+                    "Dilution Max Water Flow (mL/min)": context["max_water_flow_ml_min"],
+                    "Dilution Max Attempts": context["max_attempts"],
+                    "Attempt Used for Result": False,
+                })
+            self.full_measurement_log.append(row)
 
     def _collect_uvvis_measurements(self, iteration, parameters):
         provider = self._get_uvvis_measurement()
+        config = self._get_uvvis_dilution_settings(provider, parameters)
+        if config is not None:
+            start = len(self.full_measurement_log)
+            result = collect_with_dilution(
+                provider, config,
+                set_water_flow=lambda flow: self.protocol_uvvis_set_flow_fn(self, flow),
+                on_attempt=lambda outcome, acquisitions, context: self._log_uvvis_attempt(
+                    provider, outcome, acquisitions, iteration, parameters, context),
+            )
+            self.last_measurement_result = result
+            for row in self.full_measurement_log[start:]:
+                row["Attempt Used for Result"] = bool(
+                    row["Dilution Attempt"] == result["attempt"] and row["Accepted"])
+            return result["corrected_concentration"]
         result = None
         try:
             result = provider.measure()
             self.last_measurement_result = result
             return provider.require_valid(result)
         finally:
-            for index, acquisition in enumerate(provider.reader.acquisitions, 1):
-                self.full_measurement_log.append({
-                    "Iteration": iteration,
-                    "Timestamp": acquisition["timestamp"],
-                    **(parameters or {}),
-                    "Measurement #": index,
-                    "Value": float(provider.sample.calculate_concentration(acquisition["absorbance"])),
-                    "Absorbance": acquisition["absorbance"],
-                    "Wavelength (nm)": acquisition["wavelength"],
-                    "Spectrum File": acquisition["file"],
-                    "Concentration Unit": provider.concentration_unit,
-                    "Accepted": bool(result and result["accepted"] and result["status"] == "valid"),
-                    "Range Status": result["status"] if result else "acquisition_failed",
-                    "Absorbance CV (%)": result["absorbance_cv"] if result else "",
-                    "Calibration ID": provider.calibration_id,
-                    "Calibration Model": json.dumps(provider.sample.calibration_model, sort_keys=True),
-                })
+            self._log_uvvis_attempt(provider, result, provider.reader.acquisitions, iteration, parameters)
 
     def calculate_rsd(self, measurements: List[float]):
         return (np.std(measurements) / np.mean(measurements)) * 100 if np.mean(measurements) != 0 else float("inf")
