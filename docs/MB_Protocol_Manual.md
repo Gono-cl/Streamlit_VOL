@@ -1,0 +1,656 @@
+# MB Protocol Manual
+
+**Virtual Optimization Lab (Streamlit_VOL)**  
+Operator and developer reference · Version 1.0 · 17 November 2026
+
+Based on the current working copy, including the latest inverse cleaning-valve mapping. This document describes implemented software behavior and identifies the analytical work that remains to be validated. Source references [S1]–[S16] appear in the final section.
+
+<!-- MANUAL BODY -->
+
+# 1. Quick operating reference
+
+The MB protocol automates methylene blue electrooxidation using six optimization variables, three selectable electrochemical cells, and three electrolyte stocks. VOL proposes or loads a condition, the protocol converts it into hardware settings, the runner obtains a measurement, and the selected objective values are returned to the optimizer.
+
+## Current configuration
+
+| Item | Current setting |
+|---|---|
+| Protocol selected in VOL | `MB_6_variables.py` |
+| MB feed stock | 2,000 mg/L; molecular-weight assumption 319.85 g/mol |
+| Electrolyte stocks | Na₂SO₄, NaCl and NaNO₃, each 0.4 mol/L |
+| SPM syringe | 5,000 µL; internal port 1 waste, port 4 reactor delivery |
+| First preparation after start/resume | Home to waste, rinse twice with 1,000 µL incoming stock, fill to 5,000 µL |
+| Between matching-electrolyte experiments | Retain remaining stock and top up to 5,000 µL |
+| Water cleaning | Pump 6: 1 mL/min for 60 s; water selector port 1 |
+| Electrolysis mode | Both V_01 tags = 1; both V_02 tags = 0 |
+| Cleaning mode | Both V_01 tags = 0; both V_02 tags = 1 |
+
+> **Latest valve mapping:** “Both tags” means OPEN and CLOSE. Cleaning is the exact inverse of electrolysis. These are the rebuilt MB setup’s command values; do not substitute settings from an older PDA protocol.
+
+## What is already automated
+
+Cell selection, electrolyte routing and syringe preparation, current and flow calculations, reagent delivery, BKK channel commands, waiting periods, measurement collection, feed shutdown, water cleaning, result handling and serial-connection cleanup are coordinated by the software.
+
+## What needs analytical validation
+
+The MB module currently does not define its own objective-calculation or measurement-tag hook. The runner therefore uses the selected process adapter and measurement configuration. Generic yield, throughput and solvent metrics are not validated MB conversion metrics. Review Section 13 before using analytical results to drive optimization. [S1, S3, S6]
+
+<!-- pagebreak -->
+
+# 2. Software and hardware connections
+
+![Runtime connections](assets/mb_protocol_architecture.png)
+
+The Streamlit pages own the campaign and its optimizer. `ExperimentRunner` owns the live hardware connections and calls protocol hooks for each experiment. The MB protocol calculates operating settings and requests the corresponding hardware actions. [S1–S5]
+
+| Component | Main responsibility |
+|---|---|
+| `main.py` | Loads the selected Streamlit page |
+| `Single_Objective.py`, `Multi_Objective.py` | Build initialization points, suggest conditions, execute runs and persist optimizer/results |
+| `DoE_Executor.py` | Executes rows from an externally prepared matrix |
+| `core/hardware/experimental_run.py` | Creates devices, calls hooks, measures, calculates results, shuts down and cleans |
+| `running_protocols/MB_6_variables.py` | MB-specific calculations, routing, syringe handling and water cleaning |
+| AMF driver wrappers | Control the SPM+ and external RVMFS valve over USB |
+| `OPCClient` | Sends reads/writes through the configured OPC Expert HTTP endpoint |
+
+**Two separate communication paths:** AMF devices receive movement commands directly over USB. Their LabVision values are separate OPC display updates. Other pumps, switching valves and the BKK are addressed through OPC/LabVision. A displayed AMF value does not itself control the USB device.
+
+<!-- pagebreak -->
+
+# 3. Physical layout and units
+
+## Reaction and cleaning pumps
+
+| Device | Role | Command units / behavior |
+|---|---|---|
+| Pump 1 | 2,000 mg/L MB stock | µL/min; calculated mL/min × 1,000, rounded to whole µL/min |
+| Pump 2 | Reaction dilution water | µL/min; calculated mL/min × 1,000, rounded to whole µL/min |
+| SPM+ | Selected 0.4 M electrolyte stock | µL and µL/min; USB commands |
+| Pump 3 | Downstream analytical dilution water | Excluded from reaction flow; current MB code stops it but does not start it |
+| Pump 6 | Water cleaning | **mL/min**; a value of 1 means 1 mL/min, not 1,000 |
+
+## External cell-selection valve and BKK mapping
+
+| Cell label | Structure | Area (cm²) | Cell volume (µL) | External port / BKK channel |
+|---|---|---|---|---|
+| EC1 | Fin | 4.740 | 120.54 | 1 / 1 |
+| EC2 | Meandering | 6.310 | 160.38 | 2 / 2 |
+| EC3 | Tangential | 4.850 | 123.38 | 3 / 3 |
+
+The metadata also records a 0.254 mm gap, graphite anode and stainless-steel cathode. Area, volume, valve port and BKK channel are looked up from the cell label. [S1]
+
+## SPM internal valve
+
+| Port | Connection |
+|---|---|
+| 1 | Waste; mandatory for startup homing |
+| 2 | NaCl stock |
+| 3 | NaNO₃ stock |
+| 4 | Reactor delivery |
+| 5 | Na₂SO₄ stock |
+
+`ROT_VALVE.POS = 1` is the separate water-inlet selector for Pump 6. It is not the SPM internal valve and is not the USB cell-selection valve. Confirm all three valve identities when checking the setup.
+
+<!-- pagebreak -->
+
+# 4. Campaign variables and valid conditions
+
+Define the following six variables in the optimization page. Use the exact internal IDs; selecting their catalog names in VOL supplies these IDs. [S1, S9]
+
+| Internal ID | Type | Meaning / units |
+|---|---|---|
+| `current_density` | Continuous | Applied current density, mA/cm² |
+| `applied_charge` | Continuous | Applied charge per mole of MB, F/mol |
+| `substrate_concentration` | Continuous | Target inlet MB concentration, mg/L |
+| `electrolyte_concentration` | Continuous | Target inlet electrolyte concentration, mol/L |
+| `cell` | Categorical | `EC1, EC2, EC3` |
+| `electrolyte` | Categorical | `Na2SO4, NaCl, NaNO3` |
+
+Enter category choices separated by commas. VOL trims spaces and removes duplicate labels. Labels are passed to the protocol and retained in saved data. Optimizer encoding is internal; there is no universal integer code that the operator must enter for an electrolyte or cell.
+
+## Implemented feasibility checks
+
+- Current density, applied charge and both target concentrations must be positive.
+- MB target must be below the 2,000 mg/L stock concentration.
+- Electrolyte target must be below its selected stock concentration, currently 0.4 M.
+- Calculated total reaction flow must be at least 0.45 mL/min.
+- MB and electrolyte flows must be positive; calculated water flow cannot be negative.
+- Electrolyte delivery must be at least 50 µL/min.
+
+The nonnegative-water condition implies:
+
+```text
+C_MB / 2000 + C_electrolyte / 0.4 ≤ 1
+```
+
+This is a coupled constraint: individually valid concentration bounds can still create an invalid combination. In real/hybrid execution, an invalid proposed condition raises an error and stops the current campaign; the MB protocol does not automatically request a replacement suggestion.
+
+> **Bounds are operational choices.** The checks above do not establish maximum safe current, pump flow, pressure, electrode loading or instrument limits. Configure campaign bounds using the actual setup’s established operating range. Full simulation skips MB hardware preparation and is not a validation of these physical limits.
+
+<!-- pagebreak -->
+
+# 5. Calculating current, flows and waiting times
+
+`_compute_operating_point()` converts a parameter dictionary into an operating-point dictionary. It does not move hardware. Its output is printed and used by preparation and logging. [S1]
+
+| Symbol | Meaning |
+|---|---|
+| j, A, I | Current density (mA/cm²), electrode area (cm²), current (A) |
+| q | Applied charge (F/mol) |
+| F | Faraday constant = 96,485.33212 C/mol |
+| C_MB | MB target at cell inlet, mg/L |
+| MW | MB molecular weight = 319.85 g/mol, anhydrous assumption |
+| C_E, C_E,stock | Electrolyte target and stock concentration, mol/L |
+| Q | Total reaction flow, mL/min; excludes Pump 3 |
+
+```text
+I_mA = j × A                         I_A = I_mA / 1000
+C_MB,mM = C_MB,mg/L / MW
+Q = I_A × 60 × 10^6 / (F × q × C_MB,mM)
+Q_MB = Q × C_MB / 2000
+Q_SPM = Q × C_E / C_E,stock
+Q_water = Q − Q_MB − Q_SPM
+```
+
+Cell volume is converted from µL to mL before timing calculations:
+
+```text
+t_cell = 60 × V_cell / Q
+t_flush = 60 × (V_upstream + 2 × V_cell) / Q
+t_wait = 3 × t_cell + 60 × V_downstream / Q
+t_SPM_capacity,min = 5000 / Q_SPM,µL/min
+```
+
+`t_flush` occurs before power is enabled. `t_wait` occurs after current is set and power is enabled. The defaults use two cell volumes for the first flush and three cell residence times after power-on.
+
+> **Dead-volume placeholders:** `UPSTREAM_DEAD_VOLUME_ML` and `DOWNSTREAM_DEAD_VOLUME_ML` are both currently 0.0. The calculated waits therefore omit unmeasured tubing, mixer, separator and detector transport volumes. Enter measured values in the protocol when available. A stable detector signal alone does not prove that a new formulation has reached the detector.
+
+<!-- pagebreak -->
+
+# 6. Worked operating-point example
+
+This example uses a previously tested condition and is recalculated from the current protocol. It illustrates the calculation, not a recommended optimization range.
+
+| Input | Value |
+|---|---|
+| Cell / electrolyte | EC3 / NaCl |
+| Current density | 3.028 mA/cm² |
+| Applied charge | 6.753 F/mol |
+| Target MB | 309.39 mg/L |
+| Target electrolyte | 0.0666 mol/L |
+
+| Calculated output | Value |
+|---|---|
+| Total current | 14.686 mA (0.014686 A) |
+| Reaction total flow | 1.3981 mL/min |
+| Pump 1 MB stock | 0.2163 mL/min |
+| Pump 2 water | 0.9490 mL/min |
+| SPM electrolyte | 0.2328 mL/min (232.8 µL/min) |
+| Cell residence time | 5.29 s |
+| Pre-electrolysis flush | 10.59 s |
+| Post-power measurement wait | 15.88 s |
+| Nominal SPM delivery capacity | 21.48 min |
+
+The current depends on the selected cell’s area. Changing EC3 to another cell while retaining the same current density changes both current and calculated total flow. Cell selection is therefore part of the operating-point calculation, not only a valve change.
+
+## Reading the timing estimate
+
+The syringe capacity estimate covers delivery at the calculated reaction electrolyte rate. Actual electrolyte consumption also includes the pre-electrolysis flush, the post-power wait, measurement acquisition and any enabled sample collection before the SPM is stopped.
+
+No automatic mid-experiment refill or remaining-volume watchdog is implemented. If the syringe reaches its zero target, the physical movement ends; the code does not automatically load another syringe during that experiment. Compare the full experiment duration with capacity before choosing long acquisition or sample-collection settings.
+
+Water cleaning is a separate Pump 6 operation after SPM shutdown. It does not consume the retained electrolyte in the SPM syringe. [S1, S3, S7]
+
+<!-- pagebreak -->
+
+# 7. One experiment, from proposal to saved result
+
+1. **Choose the condition.** The page takes an initialization point, optimizer suggestion or DOE row and builds the six-parameter dictionary.
+2. **Enter the runner.** `run_experiment()` validates the selected UV/VIS provider when applicable, then calls the MB preparation hook.
+3. **Compute and print.** The protocol calculates current, flows, selected ports and waiting times. Invalid conditions stop here.
+4. **Establish a stopped state.** Power-off commands, Pump 6 stop and reaction-feed stops are issued and checked. The SPM is homed once for a new runner, or its stopped state is checked for a continuing runner.
+5. **Establish electrolysis routing.** V_01 OPEN/CLOSE = 1; V_02 OPEN/CLOSE = 0. Command readbacks must match.
+6. **Select the cell.** Move the USB external valve to port 1, 2 or 3 and update its OPC display value.
+7. **Prepare electrolyte.** Top up matching stock, or discard/rinse/fill when stock identity is unknown or different. End on SPM delivery port 4.
+8. **Start reaction feeds.** Write Pump 1 and Pump 2 flows; start nonblocking SPM delivery toward an empty syringe.
+9. **Flush without electrolysis.** Wait the calculated upstream/cell flush time.
+10. **Select electrical output.** Send BKK channel selection commands, write the calculated current in amperes, and enable the power supply.
+11. **Wait for response.** Wait the calculated post-power stabilization/transport time.
+12. **Measure and calculate.** The runner collects the selected measurement and obtains objective values from a protocol hook or the selected fallback adapter. Optional autosampling follows.
+13. **Stop and clean.** In the runner’s cleanup path, stop the power supply and all feeds. A successful experiment with verified shutdown receives the timed water clean and return to electrolysis routing.
+14. **Accept and persist.** Only after the runner returns successfully does the page observe the result in the optimizer and write its campaign checkpoint.
+
+> **Cleanup is part of success.** If measurement succeeds but cleaning or final shutdown fails, the runner raises an error. The result is not accepted as a normal optimizer observation. Raw measurements can still exist for that attempted run. [S1, S3]
+
+<!-- pagebreak -->
+
+# 8. SPM syringe management
+
+## New or resumed campaign
+
+The runner opens the SPM with `auto_home=False`; MB preparation performs the controlled startup home after validating waste routing. Homing always uses internal port 1. The protocol requires that port to be connected to waste.
+
+Startup stops previous motion and permits an explicit home from ready, stopped, not-homed or the known out-of-range status 145. Mechanical and sensor faults are not automatically cleared. Homing has a 120 s timeout and must finish with a ready pump, a homed device, internal valve on port 1 and an empty syringe. [S7]
+
+| State at preparation | Action |
+|---|---|
+| Contents unknown, including a fresh/resumed runner | Home once; rinse twice with 1 mL incoming stock; fill to 5 mL |
+| Same electrolyte, same stock concentration, same source port | Retain contents; add only the missing volume to reach 5 mL |
+| Different electrolyte, concentration or source | Empty through waste, rinse twice with incoming stock, fill to 5 mL |
+| Busy, faulted, unhomed or inconsistent encoder state | Refuse normal refill; stop the campaign |
+
+Stock identity is held only on the live runner as the electrolyte label, stock molarity and source port. Saved optimizer history is not evidence of the liquid currently inside the syringe. A restarted or resumed runner treats contents as unknown.
+
+## Absolute volume and encoder readings
+
+The driver uses an absolute target volume rather than adding a full relative 5 mL pickup to whatever is already present. A syringe containing 3.2 mL receives a 1.8 mL top-up when retaining the same stock.
+
+Remaining volume comes from the real encoder position. A full stroke is 3,000 steps in standard resolution or 24,000 steps in high resolution. With the configured 5 mL syringe, **3,000 standard steps means 5,000 µL**, not 3,000 µL. The commanded position can be zero during an ongoing dispense and must not be used as the remaining volume.
+
+USB operations remain on one execution thread. Nonblocking delivery uses the SDK’s command mode; there is no background syringe-control thread.
+
+<!-- pagebreak -->
+
+# 9. BKK selection, valve modes and LabVision display
+
+## Electrical selection
+
+The selected cell supplies the BKK channel: EC1 → 1, EC2 → 2, EC3 → 3. `_select_bkk_channel()` writes 1 to the selected channel tag and 0 to the other two, using the full OPC item IDs in Appendix A. Power is commanded off before preparation and enabled after channel selection and current setting.
+
+The current command is sent in amperes. The MB protocol does not configure a BKK control-mode selector or voltage-compliance limit; establish the intended current-control configuration on the actual system before a campaign.
+
+The channel-selection helper currently does not read the channel values back. Its printed selection message is not proof of physical output switching. Mode and shutdown verification elsewhere must not be interpreted as BKK channel feedback.
+
+## Latest switching-valve commands
+
+| Tag | Electrolysis | Cleaning |
+|---|---|---|
+| V_01_OPEN | 1 | 0 |
+| V_01_CLOSE | 1 | 0 |
+| V_02_OPEN | 0 | 1 |
+| V_02_CLOSE | 0 | 1 |
+
+`_set_flow_mode()` writes all four commands and reads the same OPC command items back. It tries up to three checks, with a 0.25 s interval; control reads/writes use a 2 s request timeout. A mismatch or unavailable readback blocks the next phase. These checks do not use independent mechanical position sensors. [S1, S8]
+
+## AMF display values
+
+| LabVision item suffix | Meaning |
+|---|---|
+| `AMF_MULTIPORT_VALVE` | Reported position of the external USB valve |
+| `AMF_SPM_MULTIPORT` | Reported internal SPM valve position, including verified homing |
+| `AMF_PUMP_FLOW` | Device-configured motion rate in µL/min while commanded movement is active |
+
+Configuring a speed while idle displays zero. A confirmed blocking movement completion or stop also displays zero. An uncertain stop does not publish a false zero. Display writes use a 1 s timeout and are best effort, so a display-server failure does not prevent USB shutdown. The flow value is not a flow-sensor measurement or a continuously polled motion watchdog. [S3]
+
+<!-- pagebreak -->
+
+# 10. Water cleaning between experiments
+
+The selected cell remains selected while the downstream water-cleaning path is used. Cleaning is automatic after each successful hardware experiment, including successful QC/reproducibility calls that use the same runner. It also runs after the final successful experiment. [S1, S3]
+
+1. Confirm power-off commands and stopped reagent feeds. The SPM must report a valid idle state.
+2. Ensure Pump 6 is stopped.
+3. Switch to cleaning mode: V_01 OPEN/CLOSE = 0; V_02 OPEN/CLOSE = 1. Verify command readbacks.
+4. Set the separate cleaning-liquid selector to `ROT_VALVE.POS = 1` and verify it.
+5. Set `PUMP_6.W1 = 1.0` mL/min and verify the flow command.
+6. Wait 60 s: nominal delivered water volume = 1 mL.
+7. Attempt to stop Pump 6 in the `finally` path, even if the timed step is interrupted.
+8. Restore electrolysis mode only after the Pump 6 stop command is verified.
+
+| Setting | Default | Where to adapt |
+|---|---|---|
+| `CLEANING_FLOW_ML_MIN` | 1.0 | Protocol constant; adapter override `cleaning_flow_ml_min` |
+| `CLEANING_DURATION_S` | 60.0 | Protocol constant; adapter override `cleaning_duration_s` |
+| `CLEANING_WATER_PORT` | 1 | Protocol constant; adapter override `cleaning_water_port` |
+
+These adapter overrides belong in `process_adapter_config`; there is currently no dedicated cleaning-settings form. Editing the protocol constants is the straightforward way to adjust the initial rinse. Flow and duration must be finite and positive.
+
+## Failure behavior
+
+An experiment failure or an unverified feed shutdown does not start an automatic water clean. If Pump 6 cannot be confirmed stopped, the code does not switch its water path back to electrolysis. The error propagates and the campaign stops. Shutdown commands are attempts; an unavailable OPC connection cannot guarantee that a remote pump physically stopped.
+
+SPM electrolyte is retained separately. The water rinse does not wash the SPM syringe. Its two incoming-electrolyte rinses occur during stock changeover. Cleaning effectiveness and carryover reduction must be assessed from the actual hydraulic setup and analytical results.
+
+<!-- pagebreak -->
+
+# 11. Selecting a measurement source
+
+Measurement collection belongs to the runner and its measurement mixin, not to MB flow calculation. Select the backend in the sidebar’s **Measurement Source** controls. [S3, S10, S11]
+
+| Execution mode | AMF / OPC hardware actions | Measurements used in the experiment |
+|---|---|---|
+| Real hardware (`off`) | Executed | Selected OPC signal or calibrated UV/VIS CSV backend |
+| Hybrid (`hybrid`) | Executed, including power and cleaning | Synthetic measurements |
+| Full simulation (`full`) | Hardware preparation and cleaning skipped | Synthetic measurements |
+
+> **Hybrid operates hardware.** It is not a no-motion or power-disabled test mode. Full simulation is the mode that skips hardware execution. Its synthetic objective path uses generic legacy assumptions, so it does not validate MB chemistry or hydraulic feasibility.
+
+## OPC measurement backend
+
+The measurement tag is resolved in this order: an explicit full tag on the runner, an optional protocol `measurement_tag()` hook, then the configured prefix plus signal. The MB protocol currently supplies no measurement-tag hook.
+
+The generic UI defaults are `OpusOPCSvr.HP-CZC3484P17->` and `PDA - mM`. They are legacy defaults, not a confirmed MB measurement. Enter the actual calibrated MB item before using the OPC backend. The code treats the returned value as a number; it does not add MB calibration or dilution correction.
+
+The default stability procedure takes three readings, 20 s apart in real mode. It checks their rolling three-point window, adding readings up to 15 total if needed. For a mean below 10 it requires an absolute standard deviation below 0.5; otherwise it requires RSD below 3%. These thresholds are in the measurement’s own units. The returned value is the mean of the final accepted three-point window, while the log retains all collected readings.
+
+## Test button versus experiment
+
+**Test UV/VIS measurement** reads actual exported spectra without controlling hardware, even when the experiment mode is hybrid or full simulation. The experiment itself still uses synthetic measurements in those modes. Testing the button is not evidence that a campaign is using real UV/VIS results.
+
+<!-- pagebreak -->
+
+# 12. UV/VIS calibration and acquisition
+
+The `uvvis` backend reads Spectragryph CSV exports, applies a saved linear calibration and returns a validated concentration. It does not control the spectrometer acquisition program or create a calibration automatically. [S10–S12]
+
+## Setup procedure
+
+1. Prepare and validate a calibration using the intended concentration unit and optical configuration. Save the calibration JSON.
+2. Configure Spectragryph to export continuously to the chosen folder with incrementing filenames.
+3. Select **UV/VIS (Spectragryph CSV)**, the export folder, filename pattern and calibration file in VOL.
+4. Select the calibration’s actual concentration unit. A label change does not convert calibration coefficients or concentrations.
+5. Use **Test UV/VIS measurement** with a known sample, then inspect concentration, absorbance, wavelength, CV and calibration-range status.
+6. Select real hardware mode for a campaign that must use these measurements.
+
+| Configuration key | Default |
+|---|---|
+| `spectra_folder` | Empty; must be supplied |
+| `file_pattern` | `my_acquired_spectra_*.csv` |
+| `calibration_file` | `InlineAnalytics/calibration_model.json` |
+| `concentration_unit` | `mM` |
+| `n_replicates` / `replicate_interval` | 5 / 2 s |
+| `cv_threshold` | 5% absorbance CV |
+| `max_extra_measurements` | 10 |
+| `spectrum_timeout` | 30 s per new spectrum |
+
+The model must contain finite `slope`, `intercept`, `r2`, `range_min`, `range_max` and `wavelength` values. Concentration is `(absorbance − intercept) / slope`. The slope must be nonzero, the concentration range ordered, wavelength positive and R² between 0 and 1.
+
+At measurement start, existing filenames are marked as already seen. The reader waits for a distinct new, stable CSV, checks that it covers the calibration wavelength and uses its nearest wavelength point. Reusing one fixed filename is therefore unsuitable. Rejected stability or out-of-range concentration raises a measurement error and prevents a normal optimizer observation.
+
+A SHA-256 calibration ID is stored with the run. Resume checks it against the current saved model. Relative UV/VIS paths resolve from the project root. The original spectral CSVs stay in their export folder and must be archived separately.
+
+<!-- pagebreak -->
+
+# 13. Objective values and MB analytics
+
+The current MB module defines `prepare_hardware()`, `stop_pumps()`, `cleanup()`, `autosampler_flow_rate()` and required parameter names. It does **not** define `calculate_real_result()`. The runner therefore falls back to the selected process adapter, normally `echem_4pump`, and `core/objectives.py`. [S1, S3, S6]
+
+## Important consequences
+
+| Selected quantity | Current generic behavior / implication |
+|---|---|
+| Concentration | Returns the accepted measurement unchanged. Its physical meaning and unit depend on the configured measurement source. |
+| Yield | Computes measurement / `substrate_concentration` × 100. MB feed is entered in mg/L; a measurement in mM would make this ratio invalid. It is not an MB removal calculation. |
+| Throughput | Uses generic organic-flow assumptions and a default molecular mass of 114.1 g/mol, not the MB operating-point flow and molecular mass. |
+| Solvent, extraction and space-time metrics | Inherit generic process assumptions; not validated for this aqueous MB experiment. |
+| “Normalized Area” in multi-objective choices | The generic calculator exposes `Area`, not this exact key. Selecting an unreturned key can cause a missing-objective error. |
+
+Single-objective optimization currently **maximizes** the selected metric. There is no single-objective minimize selector. Maximizing residual MB concentration is the opposite of maximizing MB removal. Multi-objective mode supports maximize/minimize choices, but all selected objectives must be valid for the measurement and process.
+
+For multi-objective minimization, the generic calculator returns the negative physical value. The page negates again for the optimizer’s minimization convention. As a result, saved objective columns may contain a signed score; a minimized concentration may be stored as a negative number. The UV/VIS concentration field and raw log remain useful for physical interpretation.
+
+## Planned MB-specific extension
+
+A validated MB calculation should define a protocol `calculate_real_result()` hook, explicitly match concentration units and account for any downstream dilution. For example, a removal metric could be `100 × (1 − C_out / C_in)` after both concentrations are on the same basis. This formula is explanatory; that MB-specific objective is **not currently implemented**.
+
+Pump 3 is not started by this protocol and no analytical-dilution correction is applied automatically. Validate the measurement and objective definitions before using them for scientific conclusions or closed-loop MB optimization.
+
+<!-- pagebreak -->
+
+# 14. Saving configuration, resuming and stopping
+
+## Saved setup versus saved run
+
+| Feature | Save / Load Campaign Setup | Load Previous Run |
+|---|---|---|
+| Can be used before experiment 1 | Yes | Requires existing run checkpoint files |
+| Stored content | Variables, labels, objectives/directions, settings and metadata | Results, optimizer state and run metadata |
+| Experiment results / optimizer | Not stored | Restored from CSV and optimizer checkpoint |
+| On loading | Fills an editable form; does not open devices or start experiments | Reconnects the runner and enters the resumed execution workflow |
+| Syringe knowledge | None | Not restored; new runner homes and treats contents as unknown |
+
+Saved setups are JSON files in `campaign_templates/` and are available in Quick and Advanced views. Loading a setup is the appropriate way to reuse configuration without immediately resuming hardware execution. Use a unique experiment name for a new campaign; reusing an existing run name can overwrite its checkpoint files. [S9]
+
+For an existing run, single-objective resume expects `experiment_data.csv`, `metadata.json` and `optimizer.pkl`; it also restores `pending_next_params.json` when available. Multi-objective resume restores its own run folder. Load a previous run only when ready for hardware execution, not merely to inspect its settings.
+
+## Stop behavior
+
+Multi-objective and DOE pages request a stop between iterations. The single-objective page clears its running flag and closes the retained runner when its stop action is processed. The application uses synchronous hardware waits and acquisitions; a Streamlit button is not a real-time emergency stop. The controlled experiment error/finally path attempts shutdown, and campaign exit releases AMF serial connections. [S3, S5]
+
+After an error, review the displayed failure, stopped-state indications and physical state before starting or resuming. USB connection cleanup prevents a retained runner from keeping ports open, but power/USB disconnection or another serial application can still prevent discovery.
+
+<!-- pagebreak -->
+
+# 15. Where data are stored
+
+Launch `streamlit run main.py` from the project directory. Most result paths are relative to that working directory. This section describes files actually written by the current code. [S1–S3, S13–S15]
+
+| Artifact | Location | Purpose / write timing |
+|---|---|---|
+| Saved setup | `campaign_templates/<setup>.json` | Configuration saved from the UI, including before any experiment |
+| Single-objective checkpoint | `resumable_runs/<run>/` | Results CSV, metadata JSON and optimizer state after accepted iterations |
+| Multi-objective checkpoint | `resumable_multiobjective_runs/<run>/` | Equivalent multi-objective results, directions and optimizer state |
+| DOE checkpoint | `resumable_doe_executor_runs/<run>/` | `input_plan.csv`, results CSV and metadata; no optimizer state |
+| MB operating-point log | `MB_experiment_log.csv` | Shared, append-only preparation records with calculated flows/timing and status |
+| Raw OPC measurements | `raw_measurements/<name>_measurements.csv` | Individual readings appended at explicit raw-log save calls |
+| Raw UV/VIS measurements | `raw_measurements/<name>_uvvis_measurements.csv` | Individual acquisitions, concentration, absorbance and validation/calibration fields |
+| Experiment database | `experiments.db` | SQLite experiment records, with results and settings serialized as JSON |
+| Original spectra / calibration | Configured folder and calibration JSON path | Source analytical evidence; not automatically copied into a run folder |
+
+`MB_experiment_log.csv` records `ready_for_measurement`, `hardware_error` or simulation status when the protocol hook runs. It contains operating conditions, not the final analytical result or a cleaning-completion record. It is shared across campaign names, so preserve timestamps and campaign checkpoints when correlating records.
+
+The raw-log writer appends its current in-memory buffer and then clears it. It is not a continuous external logger. A hard application/process termination can lose readings not yet flushed.
+
+CSV/Excel download buttons generate browser downloads; the advertised export filename does not mean the file was automatically saved in the project root. Single- and multi-objective campaigns write database records at normal completion. DOE has a separate **Save Current Results to Experiment Database** button.
+
+<!-- pagebreak -->
+
+# 16. Reading and preserving the data
+
+## Campaign result rows
+
+A typical single-objective row includes `Experiment #`, `Timestamp`, all six proposed parameters, `Measurement`, and the selected objective column. Multi-objective rows contain each selected objective instead. These values are saved after the runner returns successfully, including its shutdown and cleaning.
+
+UV/VIS adds fields such as `Measurement Source`, `Concentration Unit`, `UV/VIS Concentration`, absorbance, absorbance SD, CV, acceptance/range status, extra measurements, calibration path and calibration ID. The raw UV/VIS CSV includes the original spectrum filename and acquisition wavelength.
+
+## Metadata and optimizer state
+
+`metadata.json` stores variable definitions, objectives, execution mode, OPC configuration, protocol filename, adapter configuration, initialization/optimizer settings, category references, reproducibility/QC information and measurement settings. Multi-objective metadata also includes objective directions and experiment metadata.
+
+`optimizer.pkl` contains a Python optimizer object serialized with dill. Use a compatible software environment when resuming and load checkpoints only from trusted runs. The checkpoint does not contain live USB handles or prove what liquid is in the syringe. A protocol filename is not a complete snapshot of that file’s contents or its stock/geometry constants.
+
+## Traceability and backup procedure
+
+1. Keep a unique run name and save the setup before starting.
+2. Preserve the entire run folder together, not just `experiment_data.csv`.
+3. Archive the corresponding raw-measurement CSV, source spectral CSVs, calibration JSON and MB operating-point log.
+4. Preserve the deployed protocol/code revision and environment with the campaign records. Record any changed stock concentrations, dead volumes or geometry constants.
+5. Check the final QC raw readings: successful QC measurements can remain buffered until a later explicit raw-log save. Do not assume the last QC acquisition was flushed at campaign exit.
+
+An attempted run may have raw measurements but no accepted result row if measurement validation, shutdown or cleaning subsequently failed. Most run/protocol timestamps use local time; UV/VIS acquisition records use UTC timestamps. Keep the time basis when aligning logs.
+
+The database is useful for browsing completed experiments; the checkpoint folders and analytical source files are the primary recovery/traceability set for interrupted work.
+
+<!-- pagebreak -->
+
+# 17. Initialization, QC, reproducibility and DOE
+
+## Initialization and categorical variables
+
+Single- and multi-objective pages support Random and Latin hypercube initialization, previous-data reuse and optional accepted reproducibility seed points. Continuous domains are numerical bounds; categorical domains are explicit label lists. Optimizers manage their numerical representation internally. Single-objective optimization uses scikit-optimize; multi-objective optimization uses ProcessOptimizer, with a random-forest fallback for spaces containing only categorical dimensions. [S2, S9]
+
+## Periodic QC reference runs
+
+QC uses a fixed reference point: continuous-variable midpoints and category labels selected in the UI. A QC run uses the same runner and MB hardware sequence. Successful QC therefore includes normal shutdown and water cleaning. QC results do not update the optimizer and do not count toward the optimization iteration budget.
+
+The live run number can exceed the optimization experiment number because QC and reproducibility runs add physical experiments. QC history is recorded in metadata; supporting readings use the raw-measurement path. A QC failure stops the campaign.
+
+## Startup reproducibility gate
+
+Advanced mode can run repeated conditions before optimization. Reproducibility Studio supplies schedules, sentinel settings and acceptance policies; reports/logs can be written as `reproducibility_report.json` and `reproducibility_log.csv` in the run folder. [S16]
+
+> **Separate legacy cleaning path:** Reproducibility escalation currently calls the runner’s inherited `cleaning_electrochemical_cell()` method. That method contains older multi-solvent routes and is not the MB water-only cleanup hook. Review or adapt this path before enabling cleaning escalation for the rebuilt MB setup. The normal between-experiment water rinse described in Section 10 uses the MB hook.
+
+## DOE execution
+
+The DOE Executor runs an uploaded matrix rather than asking an optimizer for the next point. Include all six MB parameter columns and use the exact categorical labels. It persists the input plan and per-row execution status with results. Confirm category handling in imported matrices and use the same protocol, hardware modes and measurement settings as for an optimization run.
+
+<!-- pagebreak -->
+
+# 18. File and function guide
+
+Use this map when changing or reviewing the implementation. Relative paths are from the `Streamlit_VOL` project root.
+
+| File / area | Relevant responsibilities |
+|---|---|
+| `running_protocols/MB_6_variables.py` | `required_parameter_keys`, `_compute_operating_point`, `_prepare_spm_electrolyte`, `_set_flow_mode`, `_select_bkk_channel`, `prepare_hardware`, `stop_pumps`, `cleanup`, `emergency_shutdown` |
+| `core/hardware/experimental_run.py` | `ExperimentRunner`, protocol-hook selection, USB/OPC display helpers, measurement/objective fallback, success/cleanup status, raw-log writes |
+| `core/hardware/protocol_scripts.py` | Discovers/imports protocol Python files and reads optional protocol hooks/metadata |
+| `core/hardware/AMF_hardware/spm_pump.py` | USB discovery, homing, real-encoder volume conversion, absolute moves, verified stopping |
+| `core/hardware/AMF_hardware/multiport_valve.py` | USB RVMFS discovery, homing and position reporting |
+| `core/hardware/opc_communication.py` | HTTP read/write transport and optional per-request timeouts |
+| `core/hardware/mixins/measurement_mixin.py` | Measurement-source selection, OPC stability routine, UV/VIS logging |
+| `core/hardware/uvvis_measurement.py` | Fresh CSV detection, calibration validation/identity, concentration acceptance |
+| `core/hardware/measurement_ui.py` | Sidebar source settings and standalone UV/VIS test |
+| `core/hardware/process_adapters.py`, `core/objectives.py` | Fallback objective definitions used because MB has no calculation hook |
+| `core/hardware/connections.py` | Error decorators, campaign connection lifetime and runner replacement |
+| `core/campaigns/` | Variable normalization, category UI, setup serialization and atomic JSON saves |
+| `core/utils/` | SQLite database, browser exports and live log redirection |
+| `src/repro/` | Reproducibility schedules, records, decisions and reports |
+
+The MB protocol is loaded dynamically when selected. Having a file in `running_protocols/` makes it discoverable, but adding descriptive `protocol_info()` metadata is optional. A missing custom hook activates the corresponding runner/adapter fallback; it does not automatically supply an MB-specific implementation.
+
+<!-- pagebreak -->
+
+# 19. Changing the protocol deliberately
+
+| Change | Edit / confirm |
+|---|---|
+| MB stock concentration or molecular form | `MB_STOCK_CONCENTRATION_MG_L`, `MB_MW_G_MOL`; recompute concentration/flow and objective assumptions |
+| Electrolyte stocks or tubing | `ELECTROLYTE_METADATA`; match source ports and actual stock molarity |
+| Cell geometry or electrical wiring | `CELL_METADATA`; area, volume, external valve port and BKK channel must all match |
+| Switching-valve polarity | `VALVE_ELECTROLYSIS_TAGS`; cleaning is calculated as its Boolean inverse |
+| Cleaning water source/rate/time | `CLEANING_WATER_PORT`, `CLEANING_FLOW_ML_MIN`, `CLEANING_DURATION_S` or their adapter overrides |
+| SPM rinse | `SPM_RINSE_VOLUME_UL`, `SPM_RINSE_CYCLES`; overrides `spm_rinse_volume_uL`, `spm_rinse_cycles` |
+| Homing waste connection | Must remain internal SPM port 1 for automatic homing; `spm_waste_port` is rejected if not 1 |
+| Transport and stabilization | Measured upstream/downstream dead volumes and cell-volume timing factors |
+| Detector integration | Measurement UI; optional MB `measurement_tag()` hook for an explicit OPC source |
+| MB removal or another physical objective | Implement and validate MB `calculate_real_result()` with matching units/dilution; align objective catalogs |
+
+A custom calculation hook receives `(runner, mean_measurement, parameters, objectives, directions)` and must return a dictionary containing the selected objective names. Check the optimizer’s sign convention when applying minimization. Keep physical concentration fields distinct from optimizer scores.
+
+Relevant regression checks are in `tests/test_mb_cleaning.py`, `tests/test_amf_display.py`, `tests/test_spm_refill.py`, `tests/test_hardware_connections.py`, campaign setup tests and UV/VIS integration tests. They use simulated devices and test behavior; passing them is not a validation of changed physical tubing or analytical chemistry.
+
+Keep the default project README general. This dedicated manual is the place for MB-specific operating details. Update it after changing wiring, stock assumptions, objective formulas or persistence behavior.
+
+<!-- pagebreak -->
+
+# 20. Troubleshooting and known limits
+
+| Symptom / message | Meaning and next check |
+|---|---|
+| No RVMFS valve / no AMF pump detected | Check power, USB, device family and other applications holding serial ports. Discovery uses the first matching device if several are found. |
+| SPM status 145 | Out-of-range movement state. A fresh MB runner can perform controlled startup recovery through waste port 1; normal refill does not ignore the fault. |
+| SPM not homed, busy, encoder invalid or stop uncertain | Do not infer volume from a target position. Resolve the device state; the protocol blocks normal refill. |
+| Could not verify electrolysis/cleaning valve commands | Check exact OPC items and read permissions, expected 0/1 mapping, connectivity and physical routing. |
+| Could not verify cleaning pump stopped | Pump 6 is not confirmed off. The code blocks route restoration and the campaign stops. Check the actual pump state. |
+| Display update failed | AMF USB control may still work; check the three display item IDs, permissions and LabVision display mapping. |
+| Negative water flow / flow below minimum | Proposed concentration/charge/current combination is infeasible under the stock and flow assumptions. Adjust campaign bounds or formulation. |
+| No new complete UV/VIS spectrum | Check continuous export, incrementing filenames, folder/pattern, wavelength coverage and timeout. |
+| Calibration changed / unit mismatch / out of range | Restore the intended model, match units and validate the sample/dilution. Changing the unit label does not convert a result. |
+| Objective key missing or scientifically implausible values | MB uses generic fallback calculations. Check Section 13, selected objective names and units. |
+| Results/raw CSVs do not have identical row counts | Raw files contain replicate readings and possibly failed attempts; campaign CSVs contain accepted optimizer observations. QC adds further acquisitions. |
+
+Other current limits include zero default dead volumes, no automatic mid-run SPM refill, no independent physical valve-position feedback in mode checks, no BKK channel readback, no Pump 3 startup/dilution correction, and possible final-QC raw-log buffering. These are implementation facts to consider during analytical commissioning, not features supplied by the manual.
+
+<!-- pagebreak -->
+
+# Appendix A. Exact OPC item IDs
+
+The code uses both raw `->` / `:` item strings and URL-encoded forms. The following are the literal strings used in the current implementation. Do not add a second server prefix to an already complete item.
+
+## Reaction pumps and BKK
+
+| Item / command units | Literal OPC item ID |
+|---|---|
+| Pump 1 MB; µL/min | `Hitec_OPC_DA20_Server->E_CHEM:PUMP1.W1` |
+| Pump 2 water; µL/min | `Hitec_OPC_DA20_Server->E_CHEM:PUMP2.W1` |
+| Pump 3 analytical dilution; stop command | `Hitec_OPC_DA20_Server->E_CHEM:PUMP3.W1` |
+| BKK channel 1; 0/1 | `Hitec_OPC_DA20_Server->E_CHEM:BKK_USER_DEFINE.CHANNEL1` |
+| BKK channel 2; 0/1 | `Hitec_OPC_DA20_Server->E_CHEM:BKK_USER_DEFINE.CHANNEL2` |
+| BKK channel 3; 0/1 | `Hitec_OPC_DA20_Server->E_CHEM:BKK_USER_DEFINE.CHANNEL3` |
+| Current setpoint; A | `Hitec_OPC_DA20_Server-%3EE_CHEM%3ABKK_P.SETCURR` |
+| Output-on command; 0/1 | `Hitec_OPC_DA20_Server-%3EE_CHEM%3ABKK_P.OUTON` |
+| Output-off command; 0/1 | `Hitec_OPC_DA20_Server-%3EE_CHEM%3ABKK_P.OUTOFF` |
+
+## USB-device display items
+
+| Display | Literal OPC item ID |
+|---|---|
+| SPM flow; µL/min motion rate | `Hitec_OPC_DA20_Server->E_CHEM:AMF_PUMP_FLOW` |
+| SPM internal valve position | `Hitec_OPC_DA20_Server->E_CHEM:AMF_SPM_MULTIPORT` |
+| External cell-valve position | `Hitec_OPC_DA20_Server->E_CHEM:AMF_MULTIPORT_VALVE` |
+
+These display items require writable OPC/LabVision variables. The USB device is controlled through its driver, not by writing to these display items. [S1, S3, S8]
+
+<!-- pagebreak -->
+
+# Appendix B. Cleaning and mode item IDs
+
+| Item | Literal OPC item ID |
+|---|---|
+| Pump 6; mL/min | `Hitec_OPC_DA20_Server-%3EE_CHEM%3APUMP_6.W1` |
+| Water inlet selector; port 1 | `Hitec_OPC_DA20_Server-%3EE_CHEM%3AROT_VALVE.POS` |
+| V_01 OPEN | `Hitec_OPC_DA20_Server-%3EE_CHEM%3AV_01_OPEN` |
+| V_01 CLOSE | `Hitec_OPC_DA20_Server-%3EE_CHEM%3AV_01_CLOSE` |
+| V_02 OPEN | `Hitec_OPC_DA20_Server-%3EE_CHEM%3AV_02_OPEN` |
+| V_02 CLOSE | `Hitec_OPC_DA20_Server-%3EE_CHEM%3AV_02_CLOSE` |
+
+## Final routing reference
+
+| Phase | V_01 OPEN | V_01 CLOSE | V_02 OPEN | V_02 CLOSE | Pump 6 |
+|---|---|---|---|---|---|
+| Electrolysis | 1 | 1 | 0 | 0 | 0 |
+| Cleaning | 0 | 0 | 1 | 1 | 1 mL/min for 60 s |
+| Normal end of cleaning | 1 | 1 | 0 | 0 | 0, verified before changing mode |
+
+## Interpreting a verification message
+
+The current control helper checks a successful HTTP write attempt and reads the OPC command values. A matching command readback is useful evidence that the requested setting reached the OPC data layer; it is not a separate mechanical-position, actual-flow or power-output measurement. The generic OPC client does not currently interpret an item-level OPC quality/write-result schema beyond its HTTP status and returned value.
+
+Use the appropriate LabVision indications and laboratory checks to establish actual hardware behavior. Preserve the command mapping above when deploying a new copy of the MB protocol; it differs from the earlier PDA example.
+
+<!-- pagebreak -->
+
+# Appendix C. Source references and document control
+
+This manual was prepared from local source inspection on **17 November 2026**. It documents the working-copy behavior, including the corrected inverse valve mapping. It does not introduce code changes or validate a chemical method.
+
+**Repository reference:** `5de2314` plus the working-copy configuration captured by the protocol hash below.
+
+**MB protocol SHA-256:**
+
+```text
+0fb0dccb2c81215c4591a26ed3bb5b106012e50677ec3d4da7cc9a40cf6a2407
+```
+
+| Ref. | Source file or area |
+|---|---|
+| S1 | `running_protocols/MB_6_variables.py` |
+| S2 | `Single_Objective.py`, `Multi_Objective.py`, `DoE_Executor.py` |
+| S3 | `core/hardware/experimental_run.py` |
+| S4 | `core/hardware/protocol_scripts.py` |
+| S5 | `core/hardware/connections.py` |
+| S6 | `core/hardware/process_adapters.py`, `core/objectives.py` |
+| S7 | `core/hardware/AMF_hardware/spm_pump.py`, `multiport_valve.py` |
+| S8 | `core/hardware/opc_communication.py`, `mixins/echem_mixin.py` |
+| S9 | `core/campaigns/`, `core/optimization/` |
+| S10 | `core/hardware/mixins/measurement_mixin.py` |
+| S11 | `core/hardware/measurement_ui.py`, `uvvis_measurement.py` |
+| S12 | `InlineAnalytics/SampleMeasurement/sample_measurement.py`, `Spectrometer/spectragryph_reader.py` |
+| S13 | `core/utils/db_handler.py` |
+| S14 | `core/utils/export_tools.py`, `logger.py` |
+| S15 | `core/campaigns/templates.py`, `setup.py`, `setup_ui.py` |
+| S16 | `Reproducibility.py`, `src/repro/`, and optimization-page escalation callbacks |
+
+**Update this manual when:** stock assumptions, cell geometry, valve polarity, electrolyte ports, cleaning settings, measurement units, objective definitions or data-persistence behavior change. Keep the deployed code/calibration version with the experiment records.
