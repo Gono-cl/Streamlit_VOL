@@ -114,22 +114,22 @@ CELL_METADATA = {
 
 ELECTROLYTE_METADATA = {
     "Na2SO4": {
-        "spm_port": 5,
-        "stock_concentration_M": 0.4,
-    },
-
-    "NaCl": {
         "spm_port": 2,
         "stock_concentration_M": 0.4,
     },
 
-    "NaNO3": {
+    "NaCl": {
         "spm_port": 3,
+        "stock_concentration_M": 0.4,
+    },
+
+    "NaNO3": {
+        "spm_port": 4,
         "stock_concentration_M": 0.4,
     },
 }
 
-SPM_DELIVERY_PORT = 4
+SPM_DELIVERY_PORT = 5
 SPM_WASTE_PORT = 1
 
 
