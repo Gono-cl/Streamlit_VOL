@@ -69,7 +69,8 @@ class WaterCleaningTests(unittest.TestCase):
             self.assertEqual(seconds, 60.0)
             self.assert_mode("cleaning")
             self.assertEqual(self.runner.opc.values[protocol.PUMP_CLEANING_TAG], 1.0)
-            self.assertEqual(self.runner.opc.values[protocol.CLEANING_SOURCE_VALVE_TAG], 1)
+            self.assertEqual(self.runner.opc.values[protocol.CELL_INLET_VALVE_TAG], 3)
+            self.assertEqual(self.runner.cell_valve.get_position(), 3)
             for tag, value in protocol.POWER_OFF_TAGS + protocol.FEED_STOP_TAGS:
                 self.assertEqual(self.runner.opc.values[tag], value)
         self.sleep.side_effect = during_clean
@@ -143,12 +144,12 @@ class WaterCleaningTests(unittest.TestCase):
         self.assertEqual(self.runner.opc.values[protocol.PUMP_CLEANING_TAG], 0)
         self.assert_mode("electrolysis")
 
-    def test_unconfirmed_water_inlet_blocks_cleaning_pump(self):
+    def test_unconfirmed_cell_inlet_blocks_cleaning_pump(self):
         self.prepared_and_stopped()
         original = self.runner.opc.read_value.side_effect
         self.runner.opc.read_value.side_effect = lambda tag, **kwargs: (
-            4 if tag == protocol.CLEANING_SOURCE_VALVE_TAG else original(tag, **kwargs))
-        with self.assertRaisesRegex(RuntimeError, "water inlet selected"):
+            1 if tag == protocol.CELL_INLET_VALVE_TAG else original(tag, **kwargs))
+        with self.assertRaisesRegex(RuntimeError, "cell inlet port 3"):
             protocol.cleanup(self.runner, PARAMS)
         self.assertEqual(self.cleaning_starts(), [])
         self.assertEqual(self.runner.opc.values[protocol.PUMP_CLEANING_TAG], 0)
@@ -186,7 +187,7 @@ class WaterCleaningTests(unittest.TestCase):
     def test_invalid_cleaning_settings_never_start_the_pump(self):
         self.prepared_and_stopped()
         for config in ({"cleaning_duration_s": 0}, {"cleaning_flow_ml_min": math.nan},
-                       {"cleaning_water_port": True}):
+                       {"cleaning_flow_ml_min": 0}):
             with self.subTest(config=config):
                 self.runner.adapter_config = config
                 with self.assertRaises(ValueError):

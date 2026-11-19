@@ -19,7 +19,7 @@ class FakeAMF:
         self.full_stroke = 3000 if resolution == 0 else 24000
         self.actual_steps = volume / 5000.0 * self.full_stroke
         self.commanded_steps = self.actual_steps
-        self.valve = 4
+        self.valve = 5
         self.flow = 5000.0
         self.pending = None
         self.fault = 0
@@ -99,7 +99,7 @@ class FakeAMF:
         if not 0 <= volume <= syringeVolume:
             raise AssertionError("Syringe capacity exceeded")
         delta = volume - self.volume
-        if self.valve in (2, 3, 5) and delta < -0.01:
+        if self.valve in (2, 3, 4) and delta < -0.01:
             raise AssertionError("Residual solution returned to stock")
         if self.valve == 1 and delta > 0.01:
             raise AssertionError("Waste aspirated into syringe")
@@ -129,7 +129,7 @@ class FakeAMF:
             self.actual_steps = self.commanded_steps = 0
 
     def consume(self, volume):
-        if self.pending is None or self.valve != 4:
+        if self.pending is None or self.valve != 5:
             raise AssertionError("Delivery has not started")
         self.actual_steps -= volume / 5000.0 * self.full_stroke
 
@@ -161,7 +161,13 @@ def make_runner(volume=0.0, resolution=0, initialized=True):
     runner.opc.write_value.side_effect = write_value
     runner.opc.read_value.side_effect = lambda tag, **kwargs: values.get(tag)
     runner.cell_valve = Mock()
-    runner.cell_valve.move_to.side_effect = lambda port: port
+    runner.cell_valve.position = 1
+
+    def move_cell(port):
+        runner.cell_valve.position = port
+        return port
+    runner.cell_valve.move_to.side_effect = move_cell
+    runner.cell_valve.get_position.side_effect = lambda: runner.cell_valve.position
     runner.turn_off_power_supply = Mock(side_effect=lambda: values.update(dict(protocol.POWER_OFF_TAGS)))
     runner.turn_on_power_supply = Mock(side_effect=lambda: values.update({tag: 1 - value for tag, value in protocol.POWER_OFF_TAGS}))
     runner.set_current = Mock()
@@ -371,13 +377,13 @@ class ElectrolyteRefillTests(QuietTest):
         protocol._prepare_spm_electrolyte(runner, operating("Na2SO4"))
         self.assertTrue(runner._mb_spm_initialized)
         self.assertEqual([(port, volume) for port, volume, _, _ in sdk.moves],
-                         [(1, 0), (5, 1000), (1, 0), (5, 1000), (1, 0), (5, 5000)])
+                         [(1, 0), (2, 1000), (1, 0), (2, 1000), (1, 0), (2, 5000)])
         protocol._start_spm_delivery(runner)
         sdk.consume(1800)
         protocol.stop_pumps(runner, {})
         before = len(sdk.moves)
         protocol._prepare_spm_electrolyte(runner, operating("Na2SO4"))
-        self.assertEqual(sdk.moves[before:], [(5, 5000, 1800, False)])
+        self.assertEqual(sdk.moves[before:], [(2, 5000, 1800, False)])
         self.assertEqual(sdk.events.count(("home", 1, False)), 1)
 
     def test_homing_failure_never_marks_the_campaign_initialized_or_refills(self):
@@ -413,11 +419,11 @@ class ElectrolyteRefillTests(QuietTest):
         op = operating()
         runner._mb_spm_contents = identity(op)
         protocol._prepare_spm_electrolyte(runner, op)
-        self.assertEqual(sdk.moves, [(2, 5000, 1800, False)])
+        self.assertEqual(sdk.moves, [(3, 5000, 1800, False)])
         self.assertNotIn(("port", 1), sdk.events)
         self.assertFalse(sdk.home_started)
         self.assertEqual(runner._mb_spm_contents, identity(op))
-        self.assertEqual(sdk.valve, 4)
+        self.assertEqual(sdk.valve, 5)
         self.assertEqual(sdk.flow, op["flow_electrolyte_uL_min"])
 
     def test_same_stock_with_different_reaction_concentration_only_changes_flow(self):
@@ -426,7 +432,7 @@ class ElectrolyteRefillTests(QuietTest):
         runner._mb_spm_contents = identity(op)
         op["flow_electrolyte_uL_min"] = 300.0
         protocol._prepare_spm_electrolyte(runner, op)
-        self.assertEqual(sdk.moves, [(2, 5000, 1000, False)])
+        self.assertEqual(sdk.moves, [(3, 5000, 1000, False)])
         self.assertEqual(sdk.flow, 300)
 
     def test_full_known_syringe_is_not_overfilled(self):
@@ -434,7 +440,7 @@ class ElectrolyteRefillTests(QuietTest):
         op = operating()
         runner._mb_spm_contents = identity(op)
         protocol._prepare_spm_electrolyte(runner, op)
-        self.assertEqual(sdk.moves, [(2, 5000, 0, False)])
+        self.assertEqual(sdk.moves, [(3, 5000, 0, False)])
 
     def test_changed_electrolyte_discards_then_rinses_twice_with_incoming_stock(self):
         runner, sdk = make_runner(3200)
@@ -442,9 +448,9 @@ class ElectrolyteRefillTests(QuietTest):
         protocol._prepare_spm_electrolyte(runner, operating("NaCl"))
         self.assertEqual(sdk.moves, [
             (1, 0, -3200, False),
-            (2, 1000, 1000, False), (1, 0, -1000, False),
-            (2, 1000, 1000, False), (1, 0, -1000, False),
-            (2, 5000, 5000, False),
+            (3, 1000, 1000, False), (1, 0, -1000, False),
+            (3, 1000, 1000, False), (1, 0, -1000, False),
+            (3, 5000, 5000, False),
         ])
 
     def test_unknown_contents_after_restart_are_not_assumed_to_match(self):
@@ -453,10 +459,10 @@ class ElectrolyteRefillTests(QuietTest):
                 runner, sdk = make_runner(remaining)
                 protocol._prepare_spm_electrolyte(runner, operating())
                 self.assertEqual(sdk.moves[0][0:2], (1, 0))
-                self.assertEqual([v for port, v, _, _ in sdk.moves if port == 2], [1000, 1000, 5000])
+                self.assertEqual([v for port, v, _, _ in sdk.moves if port == 3], [1000, 1000, 5000])
 
     def test_stock_concentration_and_source_port_are_part_of_identity(self):
-        for previous in (("NaCl", 0.5, 2), ("NaCl", 0.4, 3)):
+        for previous in (("NaCl", 0.5, 3), ("NaCl", 0.4, 2)):
             with self.subTest(previous=previous):
                 runner, sdk = make_runner(3200)
                 runner._mb_spm_contents = previous
@@ -468,7 +474,7 @@ class ElectrolyteRefillTests(QuietTest):
         runner.adapter_config = {"spm_waste_port": 1, "spm_rinse_volume_uL": 500, "spm_rinse_cycles": 1}
         protocol._prepare_spm_electrolyte(runner, operating())
         self.assertEqual([(port, volume) for port, volume, _, _ in sdk.moves],
-                         [(1, 0), (2, 500), (1, 0), (2, 5000)])
+                         [(1, 0), (3, 500), (1, 0), (3, 5000)])
 
     def test_invalid_configuration_blocks_all_fluid_movements(self):
         for config in (
@@ -503,17 +509,18 @@ class ElectrolyteRefillTests(QuietTest):
         protocol._prepare_spm_electrolyte(runner, op)
         protocol._start_spm_delivery(runner)
         self.assertTrue(runner._mb_spm_delivery_active)
-        self.assertEqual(sdk.moves[-1][0:2], (4, 0))
+        self.assertEqual(sdk.moves[-1][0:2], (5, 0))
         sdk.consume(1800)
         protocol.stop_pumps(runner, {})
         with patch.object(protocol.time, "sleep"):
-            protocol.cleanup(runner, {})
+            protocol._select_cell(runner, 1)
+            protocol.cleanup(runner, {"cell": "EC1"})
         self.assertFalse(runner._mb_spm_delivery_active)
         self.assertEqual(runner._mb_spm_contents, identity(op))
         self.assertAlmostEqual(sdk.volume, 3200)
         before = len(sdk.moves)
         protocol._prepare_spm_electrolyte(runner, op)
-        self.assertEqual(sdk.moves[before:], [(2, 5000, 1800, False)])
+        self.assertEqual(sdk.moves[before:], [(3, 5000, 1800, False)])
 
     def test_two_complete_preparations_use_the_new_refill_path(self):
         runner, sdk = make_runner(5000, initialized=False)
@@ -530,9 +537,9 @@ class ElectrolyteRefillTests(QuietTest):
             before = len(sdk.moves)
             params["electrolyte_concentration"] = 0.07
             protocol.prepare_hardware(runner, params)
-            self.assertEqual(sdk.moves[before:], [(2, 5000, 1800, False), (4, 0, -5000, False)])
+            self.assertEqual(sdk.moves[before:], [(3, 5000, 1800, False), (5, 0, -5000, False)])
             protocol.stop_pumps(runner, params)
-        self.assertEqual(runner._mb_spm_contents, ("NaCl", 0.4, 2))
+        self.assertEqual(runner._mb_spm_contents, ("NaCl", 0.4, 3))
         self.assertEqual(sdk.events.count(("home", 1, False)), 1)
         runner.turn_on_power_supply.assert_has_calls([call(), call()])
 
@@ -588,7 +595,7 @@ class ElectrolyteRefillTests(QuietTest):
         sdk.consume(1000)
         before = len(sdk.moves)
         protocol._prepare_spm_electrolyte(runner, op)
-        self.assertEqual(sdk.moves[before:], [(2, 5000, 1000, False)])
+        self.assertEqual(sdk.moves[before:], [(3, 5000, 1000, False)])
         self.assertFalse(runner._mb_spm_delivery_active)
 
     def test_uncertain_stop_still_attempts_to_stop_all_other_feed_pumps(self):

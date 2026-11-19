@@ -1,9 +1,9 @@
 # MB Protocol Manual
 
 **Virtual Optimization Lab (Streamlit_VOL)**  
-Operator and developer reference · Version 1.2 · 18 November 2026
+Operator and developer reference · Version 1.4 · 19 November 2026
 
-Based on the current working copy, including the inverse cleaning-valve mapping and automatic downstream UV/VIS dilution. This document describes implemented software behavior and identifies the analytical work that remains to be validated. Source references [S1]–[S17] appear in the final section.
+Based on the current working copy, including matched inlet/outlet cell routing, the inverse cleaning-valve mapping and automatic downstream UV/VIS dilution. This document describes implemented software behavior and identifies the analytical work that remains to be validated. Source references [S1]–[S17] appear in the final section.
 
 <!-- MANUAL BODY -->
 
@@ -18,10 +18,11 @@ The MB protocol automates methylene blue electrooxidation using six optimization
 | Protocol selected in VOL | `MB_6_variables.py` |
 | MB feed stock | 2,000 mg/L; molecular-weight assumption 319.85 g/mol |
 | Electrolyte stocks | Na₂SO₄, NaCl and NaNO₃, each 0.4 mol/L |
-| SPM syringe | 5,000 µL; internal port 1 waste, port 4 reactor delivery |
+| SPM syringe | 5,000 µL; internal port 1 waste, port 5 reactor delivery |
 | First preparation after start/resume | Home to waste, rinse twice with 1,000 µL incoming stock, fill to 5,000 µL |
 | Between matching-electrolyte experiments | Retain remaining stock and top up to 5,000 µL |
-| Water cleaning | Pump 6: 1 mL/min for 60 s; water selector port 1 |
+| Water cleaning | Direct water supply to Pump 6: 1 mL/min for 60 s; both cell selectors retained |
+| Cell routing | ROT_VALVE at the cell inlet and AMF at the outlet; matching ports 1/2/3 for EC1/EC2/EC3 |
 | Electrolysis mode | Both V_01 tags = 1; both V_02 tags = 0 |
 | Cleaning mode | Both V_01 tags = 0; both V_02 tags = 1 |
 | Real MB UV/VIS | mg/L calibration; direct first, automatic downstream water dilution if above range |
@@ -71,27 +72,27 @@ The Streamlit pages own the campaign and its optimizer. `ExperimentRunner` owns 
 | Pump 3 | Downstream analytical dilution water | µL/min; automatic only for real MB UV/VIS; excluded from reaction flow |
 | Pump 6 | Water cleaning | **mL/min**; a value of 1 means 1 mL/min, not 1,000 |
 
-## External cell-selection valve and BKK mapping
+## Inlet/outlet cell selectors and BKK mapping
 
-| Cell label | Structure | Area (cm²) | Cell volume (µL) | External port / BKK channel |
+| Cell label | Structure | Area (cm²) | Cell volume (µL) | Inlet / outlet ports / BKK channel |
 |---|---|---|---|---|
-| EC1 | Fin | 4.740 | 120.54 | 1 / 1 |
-| EC2 | Meandering | 6.310 | 160.38 | 2 / 2 |
-| EC3 | Tangential | 4.850 | 123.38 | 3 / 3 |
+| EC1 | Fin | 4.740 | 120.54 | 1 / 1 / 1 |
+| EC2 | Meandering | 6.310 | 160.38 | 2 / 2 / 2 |
+| EC3 | Tangential | 4.850 | 123.38 | 3 / 3 / 3 |
 
-The metadata also records a 0.254 mm gap, graphite anode and stainless-steel cathode. Area, volume, valve port and BKK channel are looked up from the cell label. [S1]
+The metadata also records a 0.254 mm gap, graphite anode and stainless-steel cathode. Area, volume, shared inlet/outlet port and BKK channel are looked up from the cell label. [S1]
 
 ## SPM internal valve
 
 | Port | Connection |
 |---|---|
 | 1 | Waste; mandatory for startup homing |
-| 2 | NaCl stock |
-| 3 | NaNO₃ stock |
-| 4 | Reactor delivery |
-| 5 | Na₂SO₄ stock |
+| 2 | Na₂SO₄ stock |
+| 3 | NaCl stock |
+| 4 | NaNO₃ stock |
+| 5 | Reactor delivery |
 
-`ROT_VALVE.POS = 1` is the separate water-inlet selector for Pump 6. It is not the SPM internal valve and is not the USB cell-selection valve. Confirm all three valve identities when checking the setup.
+ROT_VALVE.POS now selects the cell inlet; the external USB AMF valve selects the matching cell outlet. Ports 1, 2 and 3 correspond to EC1, EC2 and EC3 on both selectors. The flow path is reaction feeds or cleaning water → ROT_VALVE → selected cell → AMF outlet selector → downstream analytics. Pump 6 receives water directly. The SPM internal valve remains dedicated to electrolyte stock handling.
 
 <!-- pagebreak -->
 
@@ -212,11 +213,11 @@ Water cleaning is a separate Pump 6 operation after SPM shutdown. It does not co
 3. **Compute and print.** The protocol calculates current, flows, selected ports and waiting times. Invalid conditions stop here.
 4. **Establish a stopped state.** Power-off commands, Pump 6 stop and reaction-feed stops are issued and checked. The SPM is homed once for a new runner, or its stopped state is checked for a continuing runner.
 5. **Establish electrolysis routing.** V_01 OPEN/CLOSE = 1; V_02 OPEN/CLOSE = 0. Command readbacks must match.
-6. **Select the cell.** Move the USB external valve to port 1, 2 or 3 and update its OPC display value.
-7. **Prepare electrolyte.** Top up matching stock, or discard/rinse/fill when stock identity is unknown or different. End on SPM delivery port 4.
+6. **Select the cell.** With power and all pumps stopped, set the AMF outlet and ROT_VALVE inlet to the matching cell port (1, 2 or 3). Verify the inlet OPC command and the AMF reported position; update the AMF OPC display.
+7. **Prepare electrolyte.** Top up matching stock, or discard/rinse/fill when stock identity is unknown or different. End on SPM delivery port 5.
 8. **Start reaction feeds.** Write Pump 1 and Pump 2 flows; start nonblocking SPM delivery toward an empty syringe.
 9. **Flush without electrolysis.** Wait the calculated upstream/cell flush time.
-10. **Select electrical output.** Send BKK channel selection commands, write the calculated current in amperes, and enable the power supply.
+10. **Select electrical output.** Recheck both cell-routing readbacks after flushing. Send the matching BKK channel commands, write the calculated current in amperes, and enable the power supply.
 11. **Wait for response.** Wait the calculated post-power stabilization/transport time.
 12. **Measure and calculate.** For real MB UV/VIS, stop Pump 3, wait 10 s and collect fresh spectra. Above-range readings trigger bounded dilution retries, each with a 10 s wait. Return the dilution-corrected reactor-outlet concentration to the selected objective calculator. Stop Pump 3 and, after a diluted success, wait 10 s for undiluted flow before optional autosampling. Other measurement modes retain their existing acquisition path.
 13. **Stop and clean.** In the runner’s cleanup path, stop the power supply and all feeds. A successful experiment with verified shutdown receives the timed water clean and return to electrolysis routing.
@@ -257,7 +258,7 @@ USB operations remain on one execution thread. Nonblocking delivery uses the SDK
 
 ## Electrical selection
 
-The selected cell supplies the BKK channel: EC1 → 1, EC2 → 2, EC3 → 3. `_select_bkk_channel()` writes 1 to the selected channel tag and 0 to the other two, using the full OPC item IDs in Appendix A. Power is commanded off before preparation and enabled after channel selection and current setting.
+The selected cell supplies the BKK channel: EC1 → 1, EC2 → 2, EC3 → 3. `_select_bkk_channel()` writes 1 to the selected channel tag and 0 to the other two, using the full OPC item IDs in Appendix A. Power is commanded off before preparation and enabled after matching inlet/outlet readbacks, channel selection and current setting.
 
 The current command is sent in amperes. The MB protocol does not configure a BKK control-mode selector or voltage-compliance limit; establish the intended current-control configuration on the actual system before a campaign.
 
@@ -278,7 +279,7 @@ The channel-selection helper currently does not read the channel values back. It
 
 | LabVision item suffix | Meaning |
 |---|---|
-| `AMF_MULTIPORT_VALVE` | Reported position of the external USB valve |
+| `AMF_MULTIPORT_VALVE` | Reported position of the external USB cell-outlet selector |
 | `AMF_SPM_MULTIPORT` | Reported internal SPM valve position, including verified homing |
 | `AMF_PUMP_FLOW` | Device-configured motion rate in µL/min while commanded movement is active |
 
@@ -288,24 +289,23 @@ Configuring a speed while idle displays zero. A confirmed blocking movement comp
 
 # 10. Water cleaning between experiments
 
-The selected cell remains selected while the downstream water-cleaning path is used. Cleaning is automatic after each successful hardware experiment, including successful QC/reproducibility calls that use the same runner. It also runs after the final successful experiment. [S1, S3]
+Both inlet and outlet selectors remain on the selected cell while the water-cleaning path is used. Cleaning never commands a different rotary-valve port. Cleaning is automatic after each successful hardware experiment, including successful QC/reproducibility calls that use the same runner. It also runs after the final successful experiment. [S1, S3]
 
 1. Confirm power-off commands and stopped reagent feeds. The SPM must report a valid idle state.
 2. Ensure Pump 6 is stopped.
 3. Switch to cleaning mode: V_01 OPEN/CLOSE = 0; V_02 OPEN/CLOSE = 1. Verify command readbacks.
-4. Set the separate cleaning-liquid selector to `ROT_VALVE.POS = 1` and verify it.
+4. Verify that ROT_VALVE inlet and AMF outlet still match the selected cell. Do not move either selector to choose water.
 5. Set `PUMP_6.W1 = 1.0` mL/min and verify the flow command.
 6. Wait 60 s: nominal delivered water volume = 1 mL.
 7. Attempt to stop Pump 6 in the `finally` path, even if the timed step is interrupted.
-8. Restore electrolysis mode only after the Pump 6 stop command is verified.
+8. Restore electrolysis mode only after the Pump 6 stop command is verified, then recheck the retained inlet/outlet ports.
 
 | Setting | Default | Where to adapt |
 |---|---|---|
 | `CLEANING_FLOW_ML_MIN` | 1.0 | Protocol constant; adapter override `cleaning_flow_ml_min` |
 | `CLEANING_DURATION_S` | 60.0 | Protocol constant; adapter override `cleaning_duration_s` |
-| `CLEANING_WATER_PORT` | 1 | Protocol constant; adapter override `cleaning_water_port` |
 
-These adapter overrides belong in `process_adapter_config`; there is currently no dedicated cleaning-settings form. Editing the protocol constants is the straightforward way to adjust the initial rinse. Flow and duration must be finite and positive.
+These adapter overrides belong in `process_adapter_config`; there is currently no dedicated cleaning-settings form. Editing the protocol constants adjusts the initial rinse. Flow and duration must be finite and positive. Legacy cleaning_water_port settings are ignored because water is supplied directly; they cannot redirect the cell inlet.
 
 ## Failure behavior
 
@@ -540,7 +540,7 @@ The live run number can exceed the optimization experiment number because QC and
 
 Advanced mode can run repeated conditions before optimization. Reproducibility Studio supplies schedules, sentinel settings and acceptance policies; reports/logs can be written as `reproducibility_report.json` and `reproducibility_log.csv` in the run folder. [S16]
 
-> **Separate legacy cleaning path:** Reproducibility escalation currently calls the runner’s inherited `cleaning_electrochemical_cell()` method. That method contains older multi-solvent routes and is not the MB water-only cleanup hook. Review or adapt this path before enabling cleaning escalation for the rebuilt MB setup. The normal between-experiment water rinse described in Section 10 uses the MB hook.
+> **Protocol-aware cleaning escalation:** The runner’s cleaning_electrochemical_cell() method dispatches to the MB protocol hook for MB campaigns. Extra reproducibility/maintenance cleaning uses the same water-only sequence and retains both cell selectors. It requires a successfully completed experiment and a known selected cell, rechecks shutdown, and refuses mismatched routing. Other protocols without this hook retain their existing cleaning behavior.
 
 ## DOE execution
 
@@ -554,7 +554,7 @@ Use this map when changing or reviewing the implementation. Relative paths are f
 
 | File / area | Relevant responsibilities |
 |---|---|
-| `running_protocols/MB_6_variables.py` | `required_parameter_keys`, `_compute_operating_point`, `_prepare_spm_electrolyte`, `_set_flow_mode`, `_select_bkk_channel`, `prepare_hardware`, `stop_pumps`, `cleanup`, `emergency_shutdown`, `uvvis_dilution_settings`, `set_uvvis_dilution_flow` |
+| `running_protocols/MB_6_variables.py` | `required_parameter_keys`, `_compute_operating_point`, `_prepare_spm_electrolyte`, `_set_flow_mode`, `_select_bkk_channel`, `prepare_hardware`, `_select_cell`, `_verify_cell_route`, `stop_pumps`, `cleanup`, `cleaning_electrochemical_cell`, `emergency_shutdown`, `uvvis_dilution_settings`, `set_uvvis_dilution_flow` |
 | `core/hardware/experimental_run.py` | `ExperimentRunner`, protocol-hook selection, USB/OPC display helpers, measurement/objective fallback, success/cleanup status, raw-log writes |
 | `core/hardware/protocol_scripts.py` | Discovers/imports protocol Python files and reads optional protocol hooks/metadata |
 | `core/hardware/AMF_hardware/spm_pump.py` | USB discovery, homing, real-encoder volume conversion, absolute moves, verified stopping |
@@ -580,12 +580,12 @@ The MB protocol is loaded dynamically when selected. Having a file in `running_p
 |---|---|
 | MB stock concentration or molecular form | `MB_STOCK_CONCENTRATION_MG_L`, `MB_MW_G_MOL`; recompute concentration/flow and objective assumptions |
 | Electrolyte stocks or tubing | `ELECTROLYTE_METADATA`; match source ports and actual stock molarity |
-| Cell geometry or electrical wiring | `CELL_METADATA`; area, volume, external valve port and BKK channel must all match |
+| Cell geometry or electrical wiring | `CELL_METADATA`; area, volume, shared inlet/outlet port and BKK channel must all match |
 | Switching-valve polarity | `VALVE_ELECTROLYSIS_TAGS`; cleaning is calculated as its Boolean inverse |
-| Cleaning water source/rate/time | `CLEANING_WATER_PORT`, `CLEANING_FLOW_ML_MIN`, `CLEANING_DURATION_S` or their adapter overrides |
+| Cleaning water source/rate/time | Pump 6 has a direct water supply; adapt CLEANING_FLOW_ML_MIN and CLEANING_DURATION_S or their flow/duration overrides |
 | SPM rinse | `SPM_RINSE_VOLUME_UL`, `SPM_RINSE_CYCLES`; overrides `spm_rinse_volume_uL`, `spm_rinse_cycles` |
 | Homing waste connection | Must remain internal SPM port 1 for automatic homing; `spm_waste_port` is rejected if not 1 |
-| Transport and stabilization | Measured upstream/downstream dead volumes and cell-volume timing factors |
+| Transport and stabilization | Measured upstream/downstream dead volumes and cell-volume timing factors; remeasure after relocating the selectors |
 | Detector integration | Measurement UI; optional MB `measurement_tag()` hook for an explicit OPC source |
 | Analytical dilution | `ANALYTICAL_DILUTION_MAX_FLOW_ML_MIN`, `ANALYTICAL_DILUTION_WAIT_S`, `ANALYTICAL_DILUTION_MAX_ATTEMPTS`; adapter overrides below |
 | MB removal or another physical objective | Degradation is implemented in core/objectives.py; select it in the UI. Additional custom objectives may use calculate_real_result() |
@@ -594,7 +594,7 @@ A custom calculation hook receives `(runner, mean_measurement, parameters, objec
 
 Dilution adapter overrides are `uvvis_dilution_max_flow_ml_min`, `uvvis_dilution_wait_s` and `uvvis_dilution_max_attempts` in `process_adapter_config`. Saved effective settings are used when no override is supplied. The water limit may be lowered but cannot exceed the 6.25 mL/min protocol ceiling. Wait must be positive; attempts must be an integer from 1 to 20. There is no dedicated dilution-settings form.
 
-Relevant regression checks are in `tests/test_mb_cleaning.py`, `tests/test_amf_display.py`, `tests/test_spm_refill.py`, `tests/test_hardware_connections.py`, campaign setup tests, UV/VIS integration tests and `tests/test_uvvis_dilution.py` and `tests/test_degradation.py`. They use simulated devices and test behavior; passing them is not a validation of changed physical tubing or analytical chemistry.
+Relevant regression checks are in `tests/test_mb_cleaning.py`, `tests/test_amf_display.py`, `tests/test_spm_refill.py`, `tests/test_hardware_connections.py`, campaign setup tests, UV/VIS integration tests and `tests/test_uvvis_dilution.py` and `tests/test_degradation.py` and `tests/test_mb_cell_routing.py`. They use simulated devices and test behavior; passing them is not a validation of changed physical tubing or analytical chemistry.
 
 Keep the default project README general. This dedicated manual is the place for MB-specific operating details. Update it after changing wiring, stock assumptions, objective formulas or persistence behavior.
 
@@ -607,6 +607,7 @@ Keep the default project README general. This dedicated manual is the place for 
 | No RVMFS valve / no AMF pump detected | Check power, USB, device family and other applications holding serial ports. Discovery uses the first matching device if several are found. |
 | SPM status 145 | Out-of-range movement state. A fresh MB runner can perform controlled startup recovery through waste port 1; normal refill does not ignore the fault. |
 | SPM not homed, busy, encoder invalid or stop uncertain | Do not infer volume from a target position. Resolve the device state; the protocol blocks normal refill. |
+| Could not verify cell inlet/outlet port | Check ROT_VALVE and AMF outlet readbacks for the same cell. Preparation blocks feeds/power; cleaning blocks Pump 6. Neither selector is moved to repair a mismatch during cleaning. |
 | Could not verify electrolysis/cleaning valve commands | Check exact OPC items and read permissions, expected 0/1 mapping, connectivity and physical routing. |
 | Could not verify cleaning pump stopped | Pump 6 is not confirmed off. The code blocks route restoration and the campaign stops. Check the actual pump state. |
 | Display update failed | AMF USB control may still work; check the three display item IDs, permissions and LabVision display mapping. |
@@ -646,7 +647,7 @@ The code uses both raw `->` / `:` item strings and URL-encoded forms. The follow
 |---|---|
 | SPM flow; µL/min motion rate | `Hitec_OPC_DA20_Server->E_CHEM:AMF_PUMP_FLOW` |
 | SPM internal valve position | `Hitec_OPC_DA20_Server->E_CHEM:AMF_SPM_MULTIPORT` |
-| External cell-valve position | `Hitec_OPC_DA20_Server->E_CHEM:AMF_MULTIPORT_VALVE` |
+| External AMF cell-outlet valve position | `Hitec_OPC_DA20_Server->E_CHEM:AMF_MULTIPORT_VALVE` |
 
 These display items require writable OPC/LabVision variables. The USB device is controlled through its driver, not by writing to these display items. [S1, S3, S8]
 
@@ -657,7 +658,7 @@ These display items require writable OPC/LabVision variables. The USB device is 
 | Item | Literal OPC item ID |
 |---|---|
 | Pump 6; mL/min | `Hitec_OPC_DA20_Server-%3EE_CHEM%3APUMP_6.W1` |
-| Water inlet selector; port 1 | `Hitec_OPC_DA20_Server-%3EE_CHEM%3AROT_VALVE.POS` |
+| Cell inlet selector; matching port 1/2/3 | `Hitec_OPC_DA20_Server-%3EE_CHEM%3AROT_VALVE.POS` |
 | V_01 OPEN | `Hitec_OPC_DA20_Server-%3EE_CHEM%3AV_01_OPEN` |
 | V_01 CLOSE | `Hitec_OPC_DA20_Server-%3EE_CHEM%3AV_01_CLOSE` |
 | V_02 OPEN | `Hitec_OPC_DA20_Server-%3EE_CHEM%3AV_02_OPEN` |
@@ -681,14 +682,14 @@ Use the appropriate LabVision indications and laboratory checks to establish act
 
 # Appendix C. Source references and document control
 
-This manual was prepared from local source inspection on **18 November 2026**. It documents the working-copy behavior, including the corrected inverse valve mapping, automatic downstream UV/VIS dilution and the Degradation objective. It does not introduce code changes or validate a chemical method.
+This manual was prepared from local source inspection on **19 November 2026**. It documents the working-copy behavior, including matched inlet/outlet cell routing, protocol-aware water-only cleaning, the inverse switching-valve mapping, UV/VIS dilution and the Degradation objective. It does not introduce code changes or validate a chemical method.
 
-**Repository reference:** `afecdb7` plus the working-copy configuration captured by the protocol hash below.
+**Repository reference:** `11f74b3` plus the working-copy configuration captured by the protocol hash below.
 
 **MB protocol SHA-256:**
 
 ```text
-710d298a6ccc911daf923cb540f08ccf5de0b7979117add0aa492d6dc368c3dd
+4632b9dec0b526a0211b787c4bf84a8f2ae0d1fe0a62119ad7faa046a58ba8b5
 ```
 
 | Ref. | Source file or area |
@@ -700,7 +701,7 @@ This manual was prepared from local source inspection on **18 November 2026**. I
 | S5 | `core/hardware/connections.py` |
 | S6 | `core/hardware/process_adapters.py`, `core/objectives.py` |
 | S7 | `core/hardware/AMF_hardware/spm_pump.py`, `multiport_valve.py` |
-| S8 | `core/hardware/opc_communication.py`, `mixins/echem_mixin.py` |
+| S8 | `core/hardware/opc_communication.py`, `mixins/echem_mixin.py`, `mixins/maintenance_mixin.py` |
 | S9 | `core/campaigns/`, `core/optimization/` |
 | S10 | `core/hardware/mixins/measurement_mixin.py` |
 | S11 | `core/hardware/measurement_ui.py`, `uvvis_measurement.py` |

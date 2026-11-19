@@ -132,7 +132,7 @@ class AMFDisplayTests(unittest.TestCase):
         runner.move_spm_valve(2)
         runner.set_spm_flow(5000)
         self.assertEqual(runner.move_spm_to_volume(5000)["volume_uL"], 5000)
-        runner.move_spm_valve(4)
+        runner.move_spm_valve(5)
         runner.set_spm_flow(300)
         runner.move_spm_to_volume(0, block=False)
         sdk.consume(500)
@@ -150,8 +150,8 @@ class AMFDisplayTests(unittest.TestCase):
         writes = list(runner.opc.write_value.call_args_list)
         self.assertIn(call(CELL_MULTIPORT_TAG, 3, timeout=AMF_DISPLAY_TIMEOUT_S), writes)
         self.assertIn(call(SPM_INTERNAL_VALVE_TAG, 1, timeout=AMF_DISPLAY_TIMEOUT_S), writes)
+        self.assertIn(call(SPM_INTERNAL_VALVE_TAG, 2, timeout=AMF_DISPLAY_TIMEOUT_S), writes)
         self.assertIn(call(SPM_INTERNAL_VALVE_TAG, 5, timeout=AMF_DISPLAY_TIMEOUT_S), writes)
-        self.assertIn(call(SPM_INTERNAL_VALVE_TAG, 4, timeout=AMF_DISPLAY_TIMEOUT_S), writes)
         flow_writes = [args.args[1] for args in writes if args.args[0] == SPM_FLOW_TAG]
         self.assertIn(5000.0, flow_writes)  # Rinsing/filling motion.
         self.assertAlmostEqual(flow_writes[-1], op["flow_electrolyte_uL_min"])

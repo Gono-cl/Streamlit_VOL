@@ -83,10 +83,14 @@ class MaintenanceMixin:
             print("Simulation mode: skipping pump shutdown.")
 
     def cleaning_electrochemical_cell(self):
-        """Clean the electrochemical cell by flushing with different solvent."""
+        """Use a protocol-specific clean when available; otherwise use the legacy sequence."""
         if self.simulation_mode not in ["off", "hybrid"]:
             print("Simulation mode: skipping electrochemical-cell cleaning.")
             return
+        protocol = getattr(self, "running_protocol_module", None)
+        protocol_cleaning = getattr(protocol, "cleaning_electrochemical_cell", None)
+        if callable(protocol_cleaning):
+            return protocol_cleaning(self)
         print("Starting cleaning of electrochemical cell...")
         time.sleep(1)
 

@@ -57,6 +57,7 @@ DOWNSTREAM_DEAD_VOLUME_ML = 0.0
 # CELL METADATA
 # ============================================================
 
+# cell_port is shared by ROT_VALVE (inlet) and the external AMF valve (outlet).
 CELL_METADATA = {
     "EC1": {
         "structure": "fin",
@@ -100,14 +101,14 @@ CELL_METADATA = {
 # SPM+ internal valve:
 #
 # port 1 -> waste (homing always expels through port 1)
-# port 2 -> NaCl
-# port 3 -> NaNO3
-# port 4 -> reactor delivery
-# port 5 -> Na2SO4
+# port 2 -> Na2SO4
+# port 3 -> NaCl
+# port 4 -> NaNO3
+# port 5 -> reactor delivery
 #
-# This layout requires swapping the previous port 1/5 tubing. Each new or
-# resumed campaign homes the full SPM through waste port 1 once, then rinses
-# with the incoming electrolyte. Later experiments retain/top up matching stock.
+# Each new or resumed campaign homes the full SPM through waste port 1 once,
+# then rinses with the incoming electrolyte. Later experiments retain/top up
+# matching stock.
 # Z/Y homing always uses port 1; a prior valve selection cannot redirect it.
 #
 # Current stock concentration = 0.4 M
@@ -220,8 +221,10 @@ def set_uvvis_dilution_flow(runner, flow_ml_min):
 
 # Pump 6 uses mL/min (unlike the reagent pumps above, which use uL/min).
 PUMP_CLEANING_TAG = "Hitec_OPC_DA20_Server-%3EE_CHEM%3APUMP_6.W1"
-CLEANING_SOURCE_VALVE_TAG = "Hitec_OPC_DA20_Server-%3EE_CHEM%3AROT_VALVE.POS"
-CLEANING_WATER_PORT = 1
+# ROT_VALVE is now the cell INLET selector. The external USB AMF valve is
+# the matching OUTLET selector. Both use ports 1/2/3 for EC1/EC2/EC3.
+# Pump 6 has a direct water supply and does not select a cleaning-liquid port.
+CELL_INLET_VALVE_TAG = "Hitec_OPC_DA20_Server-%3EE_CHEM%3AROT_VALVE.POS"
 CLEANING_FLOW_ML_MIN = 1.0
 CLEANING_DURATION_S = 60.0
 
@@ -824,19 +827,46 @@ def _compute_operating_point(parameters):
 # CELL SELECTION
 # ============================================================
 
+def _verify_cell_route(runner, cell_port):
+    """Check the OPC inlet command and the AMF outlet's reported position."""
+    _verify_opc_values(runner, ((CELL_INLET_VALVE_TAG, cell_port),),
+                       f"cell inlet port {cell_port}")
+    valve = getattr(runner, "cell_valve", None)
+    if valve is None:
+        raise RuntimeError("AMF cell outlet valve is not configured.")
+    detail = "no position reported"
+    for attempt in range(OPC_CHECK_ATTEMPTS):
+        try:
+            position = valve.get_position()
+            if not isinstance(position, bool) and float(position) == cell_port:
+                return
+            detail = f"reported {position!r}"
+        except Exception as exc:
+            detail = f"position unavailable ({exc})"
+        if attempt + 1 < OPC_CHECK_ATTEMPTS:
+            time.sleep(OPC_CHECK_INTERVAL_S)
+    raise RuntimeError(f"Could not verify AMF cell outlet port {cell_port}: {detail}.")
+
+
 def _select_cell(runner, cell_port):
-    """
-    Move external AMF MultiportValve to selected cell.
-    """
+    """Select matching inlet/outlet paths with power and all feeds stopped."""
+    if isinstance(cell_port, bool) or not isinstance(cell_port, int) or cell_port not in (1, 2, 3):
+        raise ValueError("Cell routing port must be 1, 2 or 3.")
 
     if not hasattr(runner, "cell_valve") or runner.cell_valve is None:
         raise RuntimeError(
-            "runner.cell_valve is not configured."
+            "AMF cell outlet valve is not configured."
         )
 
-    runner.move_cell_valve(
-        cell_port
-    )
+    _verify_opc_values(runner, POWER_OFF_TAGS + FEED_STOP_TAGS + ((PUMP_CLEANING_TAG, 0),),
+                       "power and pumps stopped before cell routing")
+    runner.spm.get_syringe_state()
+    runner._mb_selected_cell_port = None
+    runner.move_cell_valve(cell_port)
+    _required_write(runner, CELL_INLET_VALVE_TAG, cell_port)
+    _verify_cell_route(runner, cell_port)
+    runner._mb_selected_cell_port = cell_port
+    print(f"Cell routing verified: ROT_VALVE inlet port {cell_port}; AMF outlet port {cell_port}.")
 
 
 # ============================================================
@@ -1229,7 +1259,7 @@ def _print_operating_point(op):
     )
 
     print(
-        f"Cell port             = {op['cell_port']}"
+        f"Cell inlet/outlet     = {op['cell_port']} / {op['cell_port']}"
     )
 
     print(
@@ -1355,7 +1385,7 @@ def prepare_hardware(
     2. Print and log conditions.
     3. Exit before hardware movement in full simulation.
     4. Ensure PSU and feed pumps OFF; initialize the SPM once via waste.
-    5. Establish/read back electrolysis mode, then select the cell.
+    5. Establish/read back electrolysis mode; select matching inlet/outlet cell ports.
     6. Load selected electrolyte into SPM+.
     7. Set Pump 1 MB flow.
     8. Set Pump 2 water flow.
@@ -1427,7 +1457,7 @@ def prepare_hardware(
 
         print(
             f"Selecting {op['cell']} "
-            f"on valve port "
+            f"on inlet and outlet port "
             f"{op['cell_port']}..."
         )
 
@@ -1521,6 +1551,8 @@ def prepare_hardware(
         # ====================================================
         # 8. SELECT BKK CHANNEL
         # ====================================================
+
+        _verify_cell_route(runner, op["cell_port"])
 
         _select_bkk_channel(
             runner,
@@ -1658,14 +1690,13 @@ def _cleaning_settings(runner):
     config = getattr(runner, "adapter_config", {}) or {}
     flow = float(config.get("cleaning_flow_ml_min", CLEANING_FLOW_ML_MIN))
     duration = float(config.get("cleaning_duration_s", CLEANING_DURATION_S))
-    water_port = config.get("cleaning_water_port", CLEANING_WATER_PORT)
     if not math.isfinite(flow) or flow <= 0:
         raise ValueError("Cleaning flow must be finite and positive, in mL/min.")
     if not math.isfinite(duration) or duration <= 0:
         raise ValueError("Cleaning duration must be finite and positive, in seconds.")
-    if isinstance(water_port, bool) or not isinstance(water_port, int) or water_port < 1:
-        raise ValueError("Cleaning water port must be a positive integer.")
-    return flow, duration, water_port
+    # Legacy cleaning_water_port settings have no effect: water is supplied
+    # directly, and changing ROT_VALVE would now select a different cell.
+    return flow, duration
 
 
 def cleanup(runner, parameters):
@@ -1673,7 +1704,9 @@ def cleanup(runner, parameters):
 
     Called after feed shutdown. Failed experiments or unverified shutdowns
     never start Pump 6. The same electrolysis commands are reasserted and
-    read back again at the start of every experiment.
+    read back again at the start of every experiment. Both cell selectors
+    stay on the selected cell; their readbacks are checked before water flow
+    and after Pump 6 stops. Pump 6 receives water directly.
     """
     if runner.simulation_mode not in ("off", "hybrid"):
         print("Full simulation mode: skipping water cleaning.")
@@ -1685,7 +1718,11 @@ def cleanup(runner, parameters):
         print("Feed shutdown is unverified: skipping automatic water cleaning.")
         return
 
-    flow, duration, water_port = _cleaning_settings(runner)
+    flow, duration = _cleaning_settings(runner)
+    cell_name = str((parameters or {}).get("cell", ""))
+    if cell_name not in CELL_METADATA:
+        raise ValueError("Water cleaning requires the selected cell (EC1, EC2 or EC3).")
+    cell_port = int(CELL_METADATA[cell_name]["cell_port"])
     error = None
     cleaning_stopped = False
     try:
@@ -1694,10 +1731,9 @@ def cleanup(runner, parameters):
         runner.spm.get_syringe_state()
         _stop_cleaning_pump(runner)
         _set_flow_mode(runner, "cleaning")
-        _required_write(runner, CLEANING_SOURCE_VALVE_TAG, water_port)
-        _verify_opc_values(runner, ((CLEANING_SOURCE_VALVE_TAG, water_port),), "water inlet selected")
+        _verify_cell_route(runner, cell_port)
         print(f"Water cleaning: Pump 6 at {flow:g} mL/min for {duration:g} s "
-              f"({flow * duration / 60.0:g} mL), source port {water_port}.")
+              f"({flow * duration / 60.0:g} mL), inlet/outlet cell port {cell_port} retained.")
         # Set the flag before attempting start: a lost reply leaves motion uncertain.
         runner._mb_cleaning_active = True
         _required_write(runner, PUMP_CLEANING_TAG, flow)
@@ -1718,12 +1754,30 @@ def cleanup(runner, parameters):
         if cleaning_stopped:
             try:
                 _set_flow_mode(runner, "electrolysis")
+                _verify_cell_route(runner, cell_port)
             except Exception as exc:
                 if error is None:
                     error = exc
                 else:
-                    print(f"Restoring electrolysis mode also failed: {exc}")
+                    print(f"Restoring electrolysis mode or confirming the cell route also failed: {exc}")
     if error is not None:
         runner._mb_feed_shutdown_confirmed = False
         raise error
     print("Water cleaning complete; Pump 6 stopped and electrolysis mode restored.")
+
+
+def cleaning_electrochemical_cell(runner):
+    """Route reproducibility/maintenance cleaning through the MB water-only path."""
+    if runner.simulation_mode not in ("off", "hybrid"):
+        return
+    if getattr(runner, "closed", False):
+        raise RuntimeError("The MB runner is disconnected; reconnect before cleaning.")
+    if not getattr(runner, "_experiment_completed", False):
+        raise RuntimeError("Additional MB cleaning requires a successfully completed experiment.")
+    port = getattr(runner, "_mb_selected_cell_port", None)
+    cell = next((name for name, info in CELL_METADATA.items() if info["cell_port"] == port), None)
+    if cell is None:
+        raise RuntimeError("No verified MB cell route is available for additional cleaning.")
+    parameters = {"cell": cell}
+    stop_pumps(runner, parameters)
+    cleanup(runner, parameters)
