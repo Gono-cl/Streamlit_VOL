@@ -1,0 +1,120 @@
+{
+  "schema_version": 2,
+  "mode": "single",
+  "name": "MB 6 variables test with 2EC SD",
+  "variables": [
+    {
+      "name": "current_density",
+      "unit": "mA",
+      "type": "continuous",
+      "lower": 3.0,
+      "upper": 6.0
+    },
+    {
+      "name": "applied_charge",
+      "unit": "F/mol",
+      "type": "continuous",
+      "lower": 6.0,
+      "upper": 10.0
+    },
+    {
+      "name": "substrate_concentration",
+      "unit": "mg/L",
+      "type": "continuous",
+      "lower": 300.0,
+      "upper": 600.0
+    },
+    {
+      "name": "electrolyte_concentration",
+      "unit": "M",
+      "type": "continuous",
+      "lower": 0.05,
+      "upper": 0.2
+    },
+    {
+      "name": "cell",
+      "unit": "",
+      "type": "categorical",
+      "categories": [
+        "EC2",
+        "EC3"
+      ]
+    },
+    {
+      "name": "electrolyte",
+      "unit": "",
+      "type": "categorical",
+      "categories": [
+        "Na2SO4",
+        "NaCl",
+        "NaNO3"
+      ]
+    }
+  ],
+  "optimization": {
+    "initial_experiments": 5,
+    "total_iterations": 10,
+    "acq_func": "EI",
+    "init_strategy": "Random",
+    "random_seed": 42,
+    "initial_sort_by": "Do not sort",
+    "initial_sort_direction": "Ascending",
+    "reference_categories": {
+      "cell": "EC2",
+      "electrolyte": "Na2SO4"
+    },
+    "bo_qc_sentinel_enabled": false,
+    "bo_qc_sentinel_every_n_runs": 5,
+    "ui_mode": "Quick",
+    "reproducibility": {
+      "enabled": false,
+      "method": "LHS",
+      "n_points": 8,
+      "patterns": [
+        "Immediate (A->A)",
+        "Bracketed (A->B->A)"
+      ],
+      "cyclic_repeats": 3,
+      "use_sentinel": true,
+      "sentinel_every_n_runs": 5,
+      "escalate_cleaning": true,
+      "max_cleaning_level": 2,
+      "block_on_fail": true,
+      "outlier_repeat_enabled": false,
+      "outlier_pair_rsd_pct": 5.0,
+      "outlier_gap_pct": 10.0,
+      "outlier_downgrade_conditional": true
+    },
+    "response": "Degradation"
+  },
+  "hardware": {
+    "simulation_mode": "off",
+    "opc_url": "http://em-nun:57080",
+    "use_autosampler": false,
+    "volume_to_collect": 3.0,
+    "process_adapter": "echem_4pump",
+    "process_adapter_config": {},
+    "running_protocol_script": "MB_6_variables.py",
+    "measurement_source_prefix": "OpusOPCSvr.HP-CZC3484P17->",
+    "measurement_source_signal": "PDA - mM",
+    "measurement_backend": "uvvis",
+    "uvvis_config": {
+      "spectra_folder": "C:\\Users\\Labvision\\Desktop\\spectraMB",
+      "file_pattern": "my_acquired_spectra_*.csv",
+      "calibration_file": "InlineAnalytics/calibration_model.json",
+      "concentration_unit": "mg/L",
+      "n_replicates": 5,
+      "replicate_interval": 3.0,
+      "cv_threshold": 5.0,
+      "stability_mode": "sd",
+      "sd_threshold": 1.0,
+      "max_extra_measurements": 10,
+      "spectrum_timeout": 30.0
+    }
+  },
+  "metadata": {
+    "experiment_name": "MB 6 variables test with 2EC SD",
+    "experiment_date": "2026-11-20",
+    "notes": "Only use EC2 and EC3"
+  }
+}

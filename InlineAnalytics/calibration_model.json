@@ -1,6 +1,6 @@
 {
-    "slope": 0.00206,
-    "intercept": 0.00357,
+    "slope": 0.0206,
+    "intercept": 0.0357,
     "r2": 0.9926,
     "range_min": 0.0,
     "range_max": 50.0,
