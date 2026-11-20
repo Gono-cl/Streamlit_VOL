@@ -1,4 +1,8 @@
 import json
+import csv
+import math
+import os
+import tempfile
 import time
 import statistics
 from datetime import datetime
@@ -17,7 +21,9 @@ class SampleMeasurement:
         replicate_interval=2.0,
         cv_threshold=5.0,
         max_extra_measurements=10,
-        results_file="sample_results.csv"
+        results_file="sample_results.csv",
+        stability_mode="cv",
+        sd_threshold=None,
     ):
 
         self.reader = reader
@@ -27,6 +33,9 @@ class SampleMeasurement:
         self.replicate_interval = replicate_interval
 
         self.cv_threshold = cv_threshold
+        self.validate_stability_settings(stability_mode, cv_threshold, sd_threshold)
+        self.stability_mode = stability_mode
+        self.sd_threshold = float(sd_threshold) if sd_threshold is not None else None
         self.max_extra_measurements = max_extra_measurements
 
         self.results_file = Path(results_file) if results_file is not None else None
@@ -41,6 +50,38 @@ class SampleMeasurement:
         self.wavelength = None
 
         self.load_calibration_model()
+
+    @staticmethod
+    def validate_stability_settings(mode, cv_threshold, sd_threshold):
+        if mode not in ("cv", "sd", "auto"):
+            raise ValueError("UV/VIS stability mode must be cv, sd or auto.")
+        if isinstance(cv_threshold, bool) or not math.isfinite(float(cv_threshold)) or float(cv_threshold) < 0:
+            raise ValueError("UV/VIS CV limit must be finite and nonnegative.")
+        if sd_threshold is None:
+            if mode != "cv":
+                raise ValueError("Set a maximum absorbance SD (AU) before using SD or automatic stability mode.")
+        elif isinstance(sd_threshold, bool) or not math.isfinite(float(sd_threshold)) or float(sd_threshold) <= 0:
+            raise ValueError("UV/VIS SD limit must be finite and positive, in AU.")
+
+    def stability_decision(self, mean, sd, cv):
+        """Use sample SD near zero; automatic mode applies the larger SD allowance."""
+        criterion = self.stability_mode
+        if criterion == "auto":
+            relative_sd_limit = abs(mean) * float(self.cv_threshold) / 100.0
+            criterion = "sd" if self.sd_threshold >= relative_sd_limit else "cv"
+        threshold = self.sd_threshold if criterion == "sd" else float(self.cv_threshold)
+        value = sd if criterion == "sd" else cv
+        accepted = (math.isfinite(mean) and math.isfinite(sd) and sd >= 0
+                    and math.isfinite(value) and value <= threshold)
+        return {
+            "stability_mode": self.stability_mode,
+            "stability_criterion": criterion,
+            "stability_threshold": threshold,
+            "stability_units": "AU" if criterion == "sd" else "%",
+            "stability_cv_threshold_pct": float(self.cv_threshold),
+            "stability_sd_threshold_au": self.sd_threshold,
+            "accepted": accepted,
+        }
 
 
     # =====================================================
@@ -169,7 +210,33 @@ class SampleMeasurement:
 
         if self.results_file.exists():
 
-            row.to_csv(
+            # Preserve old sample logs when new stability fields expand the schema.
+            with self.results_file.open("r", encoding="utf-8-sig", newline="") as existing:
+                reader = csv.DictReader(existing)
+                old_fields = reader.fieldnames or []
+                fields = list(dict.fromkeys(old_fields + list(result)))
+                if fields != old_fields:
+                    temporary = None
+                    try:
+                        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", newline="",
+                                                         dir=self.results_file.parent, delete=False) as output:
+                            temporary = Path(output.name)
+                            writer = csv.DictWriter(output, fieldnames=fields)
+                            writer.writeheader()
+                            for previous in reader:
+                                if None in previous or any(value is None for value in previous.values()):
+                                    raise ValueError("Existing sample results have inconsistent columns.")
+                                writer.writerow(previous)
+                            writer.writerow(result)
+                        existing.close()  # Windows requires the original handle closed before replace.
+                        os.replace(temporary, self.results_file)
+                        temporary = None
+                    finally:
+                        if temporary is not None:
+                            temporary.unlink(missing_ok=True)
+                    return
+
+            row.reindex(columns=old_fields).to_csv(
                 self.results_file,
                 mode="a",
                 header=False,
@@ -277,14 +344,15 @@ class SampleMeasurement:
 
 
         # -------------------------------------------------
-        # Rolling CV validation
+        # Rolling stability validation
         # -------------------------------------------------
 
         extra_measurements = 0
+        stability = self.stability_decision(mean_absorbance, sd_absorbance, cv_absorbance)
 
 
         while (
-            cv_absorbance > self.cv_threshold
+            not stability["accepted"]
             and
             extra_measurements
             < self.max_extra_measurements
@@ -292,8 +360,8 @@ class SampleMeasurement:
 
             print()
             print(
-                f"CV > "
-                f"{self.cv_threshold:.1f}%"
+                f"{stability['stability_criterion'].upper()} exceeds "
+                f"{stability['stability_threshold']:g} {stability['stability_units']}"
             )
 
             print(
@@ -349,6 +417,7 @@ class SampleMeasurement:
             ) = self.calculate_statistics(
                 absorbance_values
             )
+            stability = self.stability_decision(mean_absorbance, sd_absorbance, cv_absorbance)
 
 
             print(
@@ -357,8 +426,8 @@ class SampleMeasurement:
             )
 
             print(
-                f"Rolling CV: "
-                f"{cv_absorbance:.2f} %"
+                f"Rolling SD: {sd_absorbance:.6g} AU; CV: {cv_absorbance:.2f}%; "
+                f"criterion: {stability['stability_criterion'].upper()}"
             )
 
 
@@ -366,18 +435,15 @@ class SampleMeasurement:
         # Stability result
         # -------------------------------------------------
 
-        if (
-            cv_absorbance
-            <= self.cv_threshold
-        ):
+        if stability["accepted"]:
 
             accepted = True
 
             print()
             print(
                 f"Measurement accepted "
-                f"(CV = "
-                f"{cv_absorbance:.2f}%)"
+                f"({stability['stability_criterion'].upper()} criterion; limit "
+                f"{stability['stability_threshold']:g} {stability['stability_units']})"
             )
 
         else:
@@ -427,6 +493,8 @@ class SampleMeasurement:
         # -------------------------------------------------
 
         result = {
+
+            **stability,
 
             "timestamp":
                 datetime.now().isoformat(

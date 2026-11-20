@@ -1,9 +1,9 @@
 # MB Protocol Manual
 
 **Virtual Optimization Lab (Streamlit_VOL)**  
-Operator and developer reference · Version 1.5 · 20 November 2026
+Operator and developer reference · Version 1.6 · 20 November 2026
 
-Based on the current working copy, including matched inlet/outlet cell routing, waste diversion during startup, a volume-based UV/VIS branch flush and automatic downstream dilution. This document describes implemented software behavior and identifies the analytical work that remains to be validated. Source references [S1]–[S17] appear in the final section.
+Based on the current working copy, including matched inlet/outlet cell routing, waste diversion during startup, a volume-based UV/VIS branch flush and automatic downstream dilution, with selectable CV/SD spectral stability. This document describes implemented software behavior and identifies the analytical work that remains to be validated. Source references [S1]–[S17] appear in the final section.
 
 <!-- MANUAL BODY -->
 
@@ -353,7 +353,7 @@ The `uvvis` backend reads Spectragryph CSV exports, applies a saved linear calib
 2. Configure Spectragryph to export continuously to the chosen folder with incrementing filenames.
 3. Select **UV/VIS (Spectragryph CSV)**, the export folder, filename pattern and calibration file in VOL.
 4. For MB automatic dilution, select **mg/L** and use the MB calibration fitted with mg/L standards. Other units are rejected before hardware preparation. A label change does not convert calibration coefficients or concentrations.
-5. Use **Test UV/VIS measurement** with a known sample, then inspect concentration, absorbance, wavelength, CV and calibration-range status.
+5. Choose CV, SD or Automatic CV / SD under UV/VIS acquisition settings. SD and automatic mode require a positive maximum absorbance SD in AU; it starts unset. Use Test UV/VIS measurement with a known sample and inspect concentration, absorbance, SD, CV, the decision criterion and calibration-range status.
 6. Select real hardware mode for a campaign that must use these measurements.
 
 | Configuration key | Default |
@@ -363,13 +363,25 @@ The `uvvis` backend reads Spectragryph CSV exports, applies a saved linear calib
 | `calibration_file` | `InlineAnalytics/calibration_model.json` |
 | `concentration_unit` | `mM` |
 | `n_replicates` / `replicate_interval` | 5 / 2 s |
+| `stability_mode` | cv; options cv, sd, auto |
 | `cv_threshold` | 5% absorbance CV |
+| `sd_threshold` | Unset; positive AU limit required for sd/auto |
 | `max_extra_measurements` | 10 |
 | `spectrum_timeout` | 30 s per new spectrum |
 
 The model must contain finite `slope`, `intercept`, `r2`, `range_min`, `range_max` and `wavelength` values. Concentration is `(absorbance − intercept) / slope`. The slope must be nonzero, the concentration range ordered, wavelength positive and R² between 0 and 1.
 
-At measurement start, existing filenames are marked as already seen. The reader waits for a distinct new, stable CSV, checks that it covers the calibration wavelength and uses its nearest wavelength point. Reusing one fixed filename is therefore unsuitable. A final in-range reading must also pass the absorbance-CV stability check. In a real MB experiment, an above-range reading can trigger the dilution procedure in Section 13; it is never accepted as a final result. The standalone test and protocols without dilution hooks do not retry using a pump. Unresolved range, stability or acquisition failures prevent a normal optimizer observation.
+<!-- pagebreak -->
+
+## Spectral stability and fresh acquisition
+
+| Mode | Acceptance criterion |
+|---|---|
+| CV (%) | CV must not exceed the configured percentage limit. |
+| SD (AU) | Sample SD must not exceed the configured absolute AU limit. |
+| Automatic CV / SD | Use the larger SD allowance: the absolute AU limit or abs(mean absorbance) * CV limit / 100. |
+
+At measurement start, existing filenames are marked as already seen. The reader waits for a distinct new, stable CSV, checks that it covers the calibration wavelength and uses its nearest wavelength point. Reusing one fixed filename is therefore unsuitable. A final in-range reading must also pass the selected stability check: CV (%), SD (AU), or automatic s_A <= max(SD_limit_AU, abs(mean_A) * CV_limit_pct / 100). Set a positive SD tolerance from blanks and low standards before using SD/automatic mode. Automatic mode uses the absolute allowance near zero and the CV allowance at higher signals. The rolling-window limits and whole-experiment reproducibility gate are unchanged. In a real MB experiment, an above-range reading can trigger the dilution procedure in Section 13; it is never accepted as a final result. The standalone test and protocols without dilution hooks do not retry using a pump. Unresolved range, stability or acquisition failures prevent a normal optimizer observation.
 
 A SHA-256 calibration ID is stored with the run. Resume checks it against the current saved model. Relative UV/VIS paths resolve from the project root. The original spectral CSVs stay in their export folder and must be archived separately.
 
@@ -504,7 +516,7 @@ CSV/Excel download buttons generate browser downloads; the advertised export fil
 
 A typical single-objective row includes `Experiment #`, `Timestamp`, all six proposed parameters, `Measurement`, and the selected objective column. Multi-objective rows contain each selected objective instead. These values are saved after the runner returns successfully, including its shutdown and cleaning. Selecting Degradation also records Inlet Concentration, Outlet Concentration, Degradation (%) and Degradation Basis. The selected objective is stored as Degradation; the separate percentage field always contains the physical value.
 
-UV/VIS adds fields such as `Measurement Source`, `Concentration Unit`, `UV/VIS Concentration`, absorbance, absorbance SD, CV, acceptance/range status, extra measurements, calibration path and calibration ID. The raw UV/VIS CSV includes the original spectrum filename and acquisition wavelength. Automatic MB dilution also adds `UV/VIS Measured Concentration`, `UV/VIS Corrected Concentration`, `UV/VIS Dilution Factor`, three flow fields, attempt count, wait, history and stop verification. `UV/VIS Concentration` is the corrected value in this mode. Raw `Value` and `Measured Concentration` are detector values; raw corrected values are supplied only for optically valid attempts. The final successful attempt is marked separately from rejected or incomplete attempts. With Degradation selected, raw rows also record the inlet, accepted outlet and per-reading percentage. Rejected optical attempts receive no degradation value. Their original detector readings remain preserved.
+UV/VIS adds fields such as `Measurement Source`, `Concentration Unit`, `UV/VIS Concentration`, absorbance, absorbance SD, CV, acceptance/range status, extra measurements, calibration path and calibration ID. The raw UV/VIS CSV includes the original spectrum filename and acquisition wavelength, final-window SD and CV, configured stability mode, governing criterion, limit and units, and both configured thresholds. Used for Stability Window identifies spectra in the final rolling window. Earlier acquisitions remain in the log; stability statistics describe the final window. These settings are saved with the campaign and restored on resume. Existing campaigns retain CV mode until changed. Automatic MB dilution also adds `UV/VIS Measured Concentration`, `UV/VIS Corrected Concentration`, `UV/VIS Dilution Factor`, three flow fields, attempt count, wait, history and stop verification. `UV/VIS Concentration` is the corrected value in this mode. Raw `Value` and `Measured Concentration` are detector values; raw corrected values are supplied only for optically valid attempts. The final successful attempt is marked separately from rejected or incomplete attempts. With Degradation selected, raw rows also record the inlet, accepted outlet and per-reading percentage. Rejected optical attempts receive no degradation value. Their original detector readings remain preserved.
 
 ## Metadata and optimizer state
 
@@ -597,7 +609,7 @@ A custom calculation hook receives `(runner, mean_measurement, parameters, objec
 
 Dilution adapter overrides are `uvvis_dilution_max_flow_ml_min`, `uvvis_dilution_wait_s` and `uvvis_dilution_max_attempts` in `process_adapter_config`. Saved effective settings are used when no override is supplied. The water limit may be lowered but cannot exceed the 6.25 mL/min protocol ceiling. Wait must be positive; attempts must be an integer from 1 to 20. There is no dedicated dilution-settings form.
 
-Relevant regression checks are in `tests/test_mb_cleaning.py`, `tests/test_amf_display.py`, `tests/test_spm_refill.py`, `tests/test_hardware_connections.py`, campaign setup tests, UV/VIS integration tests and `tests/test_uvvis_dilution.py` and `tests/test_degradation.py`, `tests/test_mb_cell_routing.py` and `tests/test_mb_uvvis_routing.py`. They use simulated devices and test behavior; passing them is not a validation of changed physical tubing or analytical chemistry.
+Relevant regression checks are in `tests/test_mb_cleaning.py`, `tests/test_amf_display.py`, `tests/test_spm_refill.py`, `tests/test_hardware_connections.py`, campaign setup tests, UV/VIS integration tests and `tests/test_uvvis_dilution.py` and `tests/test_degradation.py`, `tests/test_mb_cell_routing.py` and `tests/test_mb_uvvis_routing.py` and `tests/test_uvvis_stability.py`. They use simulated devices and test behavior; passing them is not a validation of changed physical tubing or analytical chemistry.
 
 Keep the default project README general. This dedicated manual is the place for MB-specific operating details. Update it after changing wiring, stock assumptions, objective formulas or persistence behavior.
 
@@ -686,9 +698,9 @@ Use the appropriate LabVision indications and laboratory checks to establish act
 
 # Appendix C. Source references and document control
 
-This manual was prepared from local source inspection on **20 November 2026**. It documents the working-copy behavior, including matched inlet/outlet cell routing, protocol-aware water-only cleaning, independent V_02 electrolysis/cleaning and V_01 UV/VIS/waste timing, the analytical branch flush, UV/VIS dilution and the Degradation objective. It does not introduce code changes or validate a chemical method.
+This manual was prepared from local source inspection on **20 November 2026**. It documents the working-copy behavior, including matched inlet/outlet cell routing, protocol-aware water-only cleaning, independent V_02 electrolysis/cleaning and V_01 UV/VIS/waste timing, the analytical branch flush, selectable CV/SD spectral stability, UV/VIS dilution and the Degradation objective. It does not introduce code changes or validate a chemical method.
 
-**Repository reference:** `90d1c06` plus the working-copy configuration captured by the protocol hash below.
+**Repository reference:** `3097c9b` plus the working-copy configuration captured by the protocol hash below.
 
 **MB protocol SHA-256:**
 

@@ -40,7 +40,20 @@ def render_measurement_settings():
         st.text_input("Spectrum filename pattern", key="uvvis_file_pattern")
         st.number_input("Replicate spectra", min_value=2, step=1, key="uvvis_n_replicates")
         st.number_input("Replicate interval (s)", min_value=0.0, step=0.5, key="uvvis_replicate_interval")
+        mode = st.selectbox(
+            "Stability criterion", ["cv", "sd", "auto"], key="uvvis_stability_mode",
+            format_func=lambda value: {"cv": "CV (%)", "sd": "Standard deviation (AU)",
+                                       "auto": "Automatic CV / SD"}[value])
         st.number_input("Maximum absorbance CV (%)", min_value=0.0, step=0.5, key="uvvis_cv_threshold")
+        sd_limit = st.number_input(
+            "Maximum absorbance SD (AU)", min_value=0.0, value=None, step=0.0001,
+            format="%.6f", key="uvvis_sd_threshold", placeholder="Enter a validated SD limit",
+            help="Required for SD and automatic mode. Choose from blank and low-standard repeatability measurements.")
+        if mode != "cv" and (sd_limit is None or sd_limit <= 0):
+            st.warning("Enter a positive SD limit before running SD or automatic measurements.")
+        if mode == "auto":
+            st.caption("Accept when SD is within the larger of the absolute SD limit and the CV-based allowance. "
+                       "The absolute limit governs low signals; the CV limit governs higher signals.")
         st.number_input("Maximum extra spectra", min_value=0, step=1, key="uvvis_max_extra_measurements")
         st.number_input("Timeout per new spectrum (s)", min_value=0.1, step=1.0, key="uvvis_spectrum_timeout")
     config = {name: st.session_state[f"uvvis_{name}"] for name in UVVIS_DEFAULTS}
@@ -63,7 +76,11 @@ def render_measurement_settings():
         st.sidebar.metric("Measured concentration", f"{result['concentration']:.5g} {result['concentration_unit']}")
         cv = result["absorbance_cv"]
         cv_text = f"{cv:.2f}%" if math.isfinite(cv) else "undefined"
-        st.sidebar.caption(f"Absorbance: {result['absorbance']:.5g} AU · CV: {cv_text} · {result['wavelength']:.3f} nm")
+        st.sidebar.caption(f"Absorbance: {result['absorbance']:.5g} AU · "
+                           f"SD: {result['absorbance_sd']:.5g} AU · CV: {cv_text} · {result['wavelength']:.3f} nm")
+        if "stability_criterion" in result:
+            st.sidebar.caption(f"Decision: {result['stability_criterion'].upper()} ≤ "
+                               f"{result['stability_threshold']:g} {result['stability_units']}")
         if result["accepted"] and result["status"] == "valid":
             st.sidebar.success("Validated measurement: stable and within calibration range.")
         else:

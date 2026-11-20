@@ -23,6 +23,8 @@ UVVIS_DEFAULTS = {
     "n_replicates": 5,
     "replicate_interval": 2.0,
     "cv_threshold": 5.0,
+    "stability_mode": "cv",
+    "sd_threshold": None,
     "max_extra_measurements": 10,
     "spectrum_timeout": 30.0,
 }
@@ -125,7 +127,7 @@ class FreshSpectragryphReader(SpectragryphReader):
 
 
 class UVVisMeasurement:
-    """Reuse inline analytics replicate/CV validation with fresh-file acquisition."""
+    """Reuse inline analytics replicate stability checks with fresh-file acquisition."""
 
     def __init__(self, config: dict):
         self.config = {**UVVIS_DEFAULTS, **dict(config or {})}
@@ -144,6 +146,8 @@ class UVVisMeasurement:
             n_replicates=int(self.config["n_replicates"]),
             replicate_interval=float(self.config["replicate_interval"]),
             cv_threshold=float(self.config["cv_threshold"]),
+            stability_mode=self.config["stability_mode"],
+            sd_threshold=self.config["sd_threshold"],
             max_extra_measurements=int(self.config["max_extra_measurements"]),
             results_file=None,
         )
@@ -164,6 +168,8 @@ class UVVisMeasurement:
         self.last_result = None
 
     def _validate_settings(self):
+        SampleMeasurement.validate_stability_settings(
+            self.config["stability_mode"], self.config["cv_threshold"], self.config["sd_threshold"])
         for key in ("spectra_folder", "file_pattern", "calibration_file", "concentration_unit"):
             if not str(self.config[key]).strip():
                 raise ValueError(f"UV/VIS setting '{key}' is required.")
@@ -210,9 +216,13 @@ class UVVisMeasurement:
 
     def require_valid(self, result: dict) -> float:
         if not result["accepted"]:
+            criterion = result.get("stability_criterion", "cv")
+            value = result["absorbance_sd"] if criterion == "sd" else result["absorbance_cv"]
+            threshold = result.get("stability_threshold", float(self.config["cv_threshold"]))
+            units = result.get("stability_units", "%")
             raise MeasurementValidationError(
-                f"UV/VIS stability failed: CV {result['absorbance_cv']:.2f}% "
-                f"exceeds {float(self.config['cv_threshold']):g}% after "
+                f"UV/VIS stability failed: {criterion.upper()} {value:.6g} {units} "
+                f"exceeds {threshold:g} {units} after "
                 f"{result['extra_measurements']} extra measurements."
             )
         concentration = float(result["concentration"])

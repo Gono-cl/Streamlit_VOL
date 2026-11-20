@@ -89,6 +89,9 @@ def collect_with_dilution(provider, settings, set_water_flow, on_attempt):
                 "attempt": attempt, "dilution_factor": factor,
                 "water_flow_ml_min": current_water, "status": raw["status"],
                 "accepted": bool(raw["accepted"]),
+                "stability_criterion": raw.get("stability_criterion", "cv"),
+                "stability_threshold": raw.get("stability_threshold"),
+                "absorbance_sd": raw.get("absorbance_sd"),
                 "measured_concentration": measured if math.isfinite(measured) else None,
             })
             result["dilution_history"] = list(history)
