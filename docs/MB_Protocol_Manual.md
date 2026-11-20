@@ -1,9 +1,9 @@
 # MB Protocol Manual
 
 **Virtual Optimization Lab (Streamlit_VOL)**  
-Operator and developer reference · Version 1.4 · 19 November 2026
+Operator and developer reference · Version 1.5 · 20 November 2026
 
-Based on the current working copy, including matched inlet/outlet cell routing, the inverse cleaning-valve mapping and automatic downstream UV/VIS dilution. This document describes implemented software behavior and identifies the analytical work that remains to be validated. Source references [S1]–[S17] appear in the final section.
+Based on the current working copy, including matched inlet/outlet cell routing, waste diversion during startup, a volume-based UV/VIS branch flush and automatic downstream dilution. This document describes implemented software behavior and identifies the analytical work that remains to be validated. Source references [S1]–[S17] appear in the final section.
 
 <!-- MANUAL BODY -->
 
@@ -23,12 +23,13 @@ The MB protocol automates methylene blue electrooxidation using six optimization
 | Between matching-electrolyte experiments | Retain remaining stock and top up to 5,000 µL |
 | Water cleaning | Direct water supply to Pump 6: 1 mL/min for 60 s; both cell selectors retained |
 | Cell routing | ROT_VALVE at the cell inlet and AMF at the outlet; matching ports 1/2/3 for EC1/EC2/EC3 |
-| Electrolysis mode | Both V_01 tags = 1; both V_02 tags = 0 |
+| Electrolysis mode | Both V_02 tags = 0; V_01 stays at waste (0) until the measurement phase |
 | Cleaning mode | Both V_01 tags = 0; both V_02 tags = 1 |
+| UV/VIS branch flush | 1 mL after switching V_01 to UV/VIS; time = 60 * volume / reactor flow |
 | Real MB UV/VIS | mg/L calibration; direct first, automatic downstream water dilution if above range |
 | Analytical dilution | Pump 3 maximum 6.25 mL/min; 10 s wait per flow setting; up to 6 attempts including direct |
 
-> **Latest valve mapping:** “Both tags” means OPEN and CLOSE. Cleaning is the exact inverse of electrolysis. These are the rebuilt MB setup’s command values; do not substitute settings from an older PDA protocol.
+> **Latest valve mapping:** “Both tags” means OPEN and CLOSE. V_02 selects electrolysis/cleaning; V_01 independently selects UV/VIS/waste. These are the rebuilt MB setup’s command values; do not substitute settings from an older PDA protocol.
 
 ## What is already automated
 
@@ -164,9 +165,9 @@ t_wait = 3 × t_cell + 60 × V_downstream / Q
 t_SPM_capacity,min = 5000 / Q_SPM,µL/min
 ```
 
-`t_flush` occurs before power is enabled. `t_wait` occurs after current is set and power is enabled. The defaults use two cell volumes for the first flush and three cell residence times after power-on.
+`t_flush` occurs before power is enabled. `t_wait` occurs after current is set and power is enabled, with V_01 still directed to waste. Then V_01 switches to UV/VIS and the branch is flushed for `60 * V_UVVIS_flush / Q` seconds. The default branch flush is 1.0 mL; Pump 3 remains stopped. The existing acquisition/dilution settling wait follows this flush.
 
-> **Dead-volume placeholders:** `UPSTREAM_DEAD_VOLUME_ML` and `DOWNSTREAM_DEAD_VOLUME_ML` are both currently 0.0. The calculated waits therefore omit unmeasured tubing, mixer, separator and detector transport volumes. Enter measured values in the protocol when available. A stable detector signal alone does not prove that a new formulation has reached the detector.
+> **Dead-volume placeholders:** `UPSTREAM_DEAD_VOLUME_ML` and `DOWNSTREAM_DEAD_VOLUME_ML` are both currently 0.0. The calculated startup waits therefore omit unmeasured transport volumes. DOWNSTREAM_DEAD_VOLUME_ML now covers the reactor outlet to the diversion valve, including any separator. Enter the measured volumes. Separately validate that the 1 mL analytical branch flush clears the tubing after V_01 and the flow cell. A stable detector signal alone does not prove that a new formulation has reached the detector.
 
 <!-- pagebreak -->
 
@@ -191,14 +192,15 @@ This example uses a previously tested condition and is recalculated from the cur
 | SPM electrolyte | 0.2328 mL/min (232.8 µL/min) |
 | Cell residence time | 5.29 s |
 | Pre-electrolysis flush | 10.59 s |
-| Post-power measurement wait | 15.88 s |
+| Post-power response wait to waste | 15.88 s |
+| UV/VIS branch flush (1 mL) | 42.92 s |
 | Nominal SPM delivery capacity | 21.48 min |
 
 The current depends on the selected cell’s area. Changing EC3 to another cell while retaining the same current density changes both current and calculated total flow. Cell selection is therefore part of the operating-point calculation, not only a valve change.
 
 ## Reading the timing estimate
 
-The syringe capacity estimate covers delivery at the calculated reaction electrolyte rate. Actual electrolyte consumption also includes the pre-electrolysis flush, the post-power wait, measurement acquisition and any enabled sample collection before the SPM is stopped.
+The syringe capacity estimate covers delivery at the calculated reaction electrolyte rate. Actual electrolyte consumption also includes the pre-electrolysis flush, the post-power wait to waste, the 1 mL UV/VIS branch flush, measurement acquisition and any enabled sample collection before the SPM is stopped.
 
 No automatic mid-experiment refill or remaining-volume watchdog is implemented. If the syringe reaches its zero target, the physical movement ends; the code does not automatically load another syringe during that experiment. Compare the full experiment duration with capacity before choosing long acquisition or sample-collection settings.
 
@@ -212,15 +214,15 @@ Water cleaning is a separate Pump 6 operation after SPM shutdown. It does not co
 2. **Enter the runner.** `run_experiment()` validates the selected UV/VIS provider when applicable, then calls the MB preparation hook.
 3. **Compute and print.** The protocol calculates current, flows, selected ports and waiting times. Invalid conditions stop here.
 4. **Establish a stopped state.** Power-off commands, Pump 6 stop and reaction-feed stops are issued and checked. The SPM is homed once for a new runner, or its stopped state is checked for a continuing runner.
-5. **Establish electrolysis routing.** V_01 OPEN/CLOSE = 1; V_02 OPEN/CLOSE = 0. Command readbacks must match.
+5. **Establish electrolysis and waste routing.** V_02 OPEN/CLOSE = 0; V_01 OPEN/CLOSE = 0 (waste). Command readbacks must match before feeds start.
 6. **Select the cell.** With power and all pumps stopped, set the AMF outlet and ROT_VALVE inlet to the matching cell port (1, 2 or 3). Verify the inlet OPC command and the AMF reported position; update the AMF OPC display.
 7. **Prepare electrolyte.** Top up matching stock, or discard/rinse/fill when stock identity is unknown or different. End on SPM delivery port 5.
 8. **Start reaction feeds.** Write Pump 1 and Pump 2 flows; start nonblocking SPM delivery toward an empty syringe.
 9. **Flush without electrolysis.** Wait the calculated upstream/cell flush time.
 10. **Select electrical output.** Recheck both cell-routing readbacks after flushing. Send the matching BKK channel commands, write the calculated current in amperes, and enable the power supply.
-11. **Wait for response.** Wait the calculated post-power stabilization/transport time.
+11. **Wait to waste, then flush UV/VIS.** Keep V_01 at waste during the calculated post-power stabilization/transport wait. Switch only V_01 to UV/VIS (both tags = 1), verify its commands, then pass 1 mL at the calculated reactor flow before acquisition. Discard spectra exported during these waits.
 12. **Measure and calculate.** For real MB UV/VIS, stop Pump 3, wait 10 s and collect fresh spectra. Above-range readings trigger bounded dilution retries, each with a 10 s wait. Return the dilution-corrected reactor-outlet concentration to the selected objective calculator. Stop Pump 3 and, after a diluted success, wait 10 s for undiluted flow before optional autosampling. Other measurement modes retain their existing acquisition path.
-13. **Stop and clean.** In the runner’s cleanup path, stop the power supply and all feeds. A successful experiment with verified shutdown receives the timed water clean and return to electrolysis routing.
+13. **Divert, stop and clean.** Return V_01 to waste before normal power/feed shutdown. A failed diversion still allows all shutdown attempts and blocks automatic cleaning. A successful experiment with verified shutdown receives the existing timed water clean, then V_02 returns to electrolysis while V_01 remains at waste.
 14. **Accept and persist.** Only after the runner returns successfully does the page observe the result in the optimizer and write its campaign checkpoint.
 
 > **Cleanup is part of success.** If measurement succeeds but cleaning or final shutdown fails, the runner raises an error. The result is not accepted as a normal optimizer observation. Raw measurements can still exist for that attempted run. [S1, S3]
@@ -268,12 +270,12 @@ The channel-selection helper currently does not read the channel values back. It
 
 | Tag | Electrolysis | Cleaning |
 |---|---|---|
-| V_01_OPEN | 1 | 0 |
-| V_01_CLOSE | 1 | 0 |
+| V_01_OPEN | 0 startup; 1 measurement | 0 |
+| V_01_CLOSE | 0 startup; 1 measurement | 0 |
 | V_02_OPEN | 0 | 1 |
 | V_02_CLOSE | 0 | 1 |
 
-`_set_flow_mode()` writes all four commands and reads the same OPC command items back. It tries up to three checks, with a 0.25 s interval; control reads/writes use a 2 s request timeout. A mismatch or unavailable readback blocks the next phase. These checks do not use independent mechanical position sensors. [S1, S8]
+`_set_flow_mode()` controls V_02 only. `_set_uvvis_route()` controls V_01 only; 0 selects waste and 1 selects UV/VIS. Each helper writes its two tags and reads the same OPC command items back. It tries up to three checks, with a 0.25 s interval; control reads/writes use a 2 s request timeout. A mismatch or unavailable readback blocks the next phase. These checks do not use independent mechanical position sensors. [S1, S8]
 
 ## AMF display values
 
@@ -298,7 +300,7 @@ Both inlet and outlet selectors remain on the selected cell while the water-clea
 5. Set `PUMP_6.W1 = 1.0` mL/min and verify the flow command.
 6. Wait 60 s: nominal delivered water volume = 1 mL.
 7. Attempt to stop Pump 6 in the `finally` path, even if the timed step is interrupted.
-8. Restore electrolysis mode only after the Pump 6 stop command is verified, then recheck the retained inlet/outlet ports.
+8. Restore V_02 to electrolysis only after the Pump 6 stop command is verified, then recheck the retained inlet/outlet ports. Keep V_01 at waste. This preserves the existing cleaning path; the UV/VIS branch has its own sample flush before measurement.
 
 | Setting | Default | Where to adapt |
 |---|---|---|
@@ -581,12 +583,13 @@ The MB protocol is loaded dynamically when selected. Having a file in `running_p
 | MB stock concentration or molecular form | `MB_STOCK_CONCENTRATION_MG_L`, `MB_MW_G_MOL`; recompute concentration/flow and objective assumptions |
 | Electrolyte stocks or tubing | `ELECTROLYTE_METADATA`; match source ports and actual stock molarity |
 | Cell geometry or electrical wiring | `CELL_METADATA`; area, volume, shared inlet/outlet port and BKK channel must all match |
-| Switching-valve polarity | `VALVE_ELECTROLYSIS_TAGS`; cleaning is calculated as its Boolean inverse |
+| Switching-valve polarity | `VALVE_ELECTROLYSIS_TAGS` for V_02; `UVVIS_MEASUREMENT_TAGS` for V_01; their opposite positions are Boolean inverses |
 | Cleaning water source/rate/time | Pump 6 has a direct water supply; adapt CLEANING_FLOW_ML_MIN and CLEANING_DURATION_S or their flow/duration overrides |
 | SPM rinse | `SPM_RINSE_VOLUME_UL`, `SPM_RINSE_CYCLES`; overrides `spm_rinse_volume_uL`, `spm_rinse_cycles` |
 | Homing waste connection | Must remain internal SPM port 1 for automatic homing; `spm_waste_port` is rejected if not 1 |
 | Transport and stabilization | Measured upstream/downstream dead volumes and cell-volume timing factors; remeasure after relocating the selectors |
 | Detector integration | Measurement UI; optional MB `measurement_tag()` hook for an explicit OPC source |
+| UV/VIS branch flush | `UVVIS_FLUSH_VOLUME_ML` (1.0 mL); adapter override `uvvis_flush_volume_ml`; finite and positive |
 | Analytical dilution | `ANALYTICAL_DILUTION_MAX_FLOW_ML_MIN`, `ANALYTICAL_DILUTION_WAIT_S`, `ANALYTICAL_DILUTION_MAX_ATTEMPTS`; adapter overrides below |
 | MB removal or another physical objective | Degradation is implemented in core/objectives.py; select it in the UI. Additional custom objectives may use calculate_real_result() |
 
@@ -594,7 +597,7 @@ A custom calculation hook receives `(runner, mean_measurement, parameters, objec
 
 Dilution adapter overrides are `uvvis_dilution_max_flow_ml_min`, `uvvis_dilution_wait_s` and `uvvis_dilution_max_attempts` in `process_adapter_config`. Saved effective settings are used when no override is supplied. The water limit may be lowered but cannot exceed the 6.25 mL/min protocol ceiling. Wait must be positive; attempts must be an integer from 1 to 20. There is no dedicated dilution-settings form.
 
-Relevant regression checks are in `tests/test_mb_cleaning.py`, `tests/test_amf_display.py`, `tests/test_spm_refill.py`, `tests/test_hardware_connections.py`, campaign setup tests, UV/VIS integration tests and `tests/test_uvvis_dilution.py` and `tests/test_degradation.py` and `tests/test_mb_cell_routing.py`. They use simulated devices and test behavior; passing them is not a validation of changed physical tubing or analytical chemistry.
+Relevant regression checks are in `tests/test_mb_cleaning.py`, `tests/test_amf_display.py`, `tests/test_spm_refill.py`, `tests/test_hardware_connections.py`, campaign setup tests, UV/VIS integration tests and `tests/test_uvvis_dilution.py` and `tests/test_degradation.py`, `tests/test_mb_cell_routing.py` and `tests/test_mb_uvvis_routing.py`. They use simulated devices and test behavior; passing them is not a validation of changed physical tubing or analytical chemistry.
 
 Keep the default project README general. This dedicated manual is the place for MB-specific operating details. Update it after changing wiring, stock assumptions, objective formulas or persistence behavior.
 
@@ -668,9 +671,10 @@ These display items require writable OPC/LabVision variables. The USB device is 
 
 | Phase | V_01 OPEN | V_01 CLOSE | V_02 OPEN | V_02 CLOSE | Pump 6 |
 |---|---|---|---|---|---|
-| Electrolysis | 1 | 1 | 0 | 0 | 0 |
+| Startup / stabilization to waste | 0 | 0 | 0 | 0 | 0 |
+| Electrolysis / UV/VIS flush and measurement | 1 | 1 | 0 | 0 | 0 |
 | Cleaning | 0 | 0 | 1 | 1 | 1 mL/min for 60 s |
-| Normal end of cleaning | 1 | 1 | 0 | 0 | 0, verified before changing mode |
+| Normal end of cleaning | 0 | 0 | 0 | 0 | 0, verified before changing mode |
 
 ## Interpreting a verification message
 
@@ -682,14 +686,14 @@ Use the appropriate LabVision indications and laboratory checks to establish act
 
 # Appendix C. Source references and document control
 
-This manual was prepared from local source inspection on **19 November 2026**. It documents the working-copy behavior, including matched inlet/outlet cell routing, protocol-aware water-only cleaning, the inverse switching-valve mapping, UV/VIS dilution and the Degradation objective. It does not introduce code changes or validate a chemical method.
+This manual was prepared from local source inspection on **20 November 2026**. It documents the working-copy behavior, including matched inlet/outlet cell routing, protocol-aware water-only cleaning, independent V_02 electrolysis/cleaning and V_01 UV/VIS/waste timing, the analytical branch flush, UV/VIS dilution and the Degradation objective. It does not introduce code changes or validate a chemical method.
 
-**Repository reference:** `11f74b3` plus the working-copy configuration captured by the protocol hash below.
+**Repository reference:** `90d1c06` plus the working-copy configuration captured by the protocol hash below.
 
 **MB protocol SHA-256:**
 
 ```text
-4632b9dec0b526a0211b787c4bf84a8f2ae0d1fe0a62119ad7faa046a58ba8b5
+2745e8a56bffa187f173d1e74eebb0d2830aec1fa3ae26f622668130426c1b09
 ```
 
 | Ref. | Source file or area |

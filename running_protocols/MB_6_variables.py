@@ -43,14 +43,17 @@ STEADY_STATE_CELL_RESIDENCE_TIMES = 3.0
 UPSTREAM_DEAD_VOLUME_ML = 0.0
 
 # TODO:
-# Measure total volume between electrochemical cell outlet
-# and UV/Vis measurement point:
+# Measure the volume between the electrochemical cell outlet
+# and the UV/Vis-waste diversion valve:
 #
 # outlet tubing
 # + gas/liquid separator
-# + tubing to UV/Vis
-# + relevant flow cell volume if desired
+# + tubing up to the diversion valve
 DOWNSTREAM_DEAD_VOLUME_ML = 0.0
+
+# After switching from waste to UV/Vis, pass this volume through the
+# analytical branch before acquisition. Validate against tubing/cell carryover.
+UVVIS_FLUSH_VOLUME_ML = 1.0
 
 
 # ============================================================
@@ -228,15 +231,19 @@ CELL_INLET_VALVE_TAG = "Hitec_OPC_DA20_Server-%3EE_CHEM%3AROT_VALVE.POS"
 CLEANING_FLOW_ML_MIN = 1.0
 CLEANING_DURATION_S = 60.0
 
-# Rebuilt MB routing: electrolysis V_02=0/V_01=1; cleaning V_02=1/V_01=0.
+# V_02 selects electrolysis (0) or cleaning (1).
+# V_01 independently selects UV/Vis (1) or waste (0).
 # Readbacks below confirm OPC command values, not mechanical position sensors.
 VALVE_ELECTROLYSIS_TAGS = (
     ("Hitec_OPC_DA20_Server-%3EE_CHEM%3AV_02_CLOSE", 0),
     ("Hitec_OPC_DA20_Server-%3EE_CHEM%3AV_02_OPEN", 0),
+)
+VALVE_CLEANING_TAGS = tuple((tag, 1 - value) for tag, value in VALVE_ELECTROLYSIS_TAGS)
+UVVIS_MEASUREMENT_TAGS = (
     ("Hitec_OPC_DA20_Server-%3EE_CHEM%3AV_01_CLOSE", 1),
     ("Hitec_OPC_DA20_Server-%3EE_CHEM%3AV_01_OPEN", 1),
 )
-VALVE_CLEANING_TAGS = tuple((tag, 1 - value) for tag, value in VALVE_ELECTROLYSIS_TAGS)
+UVVIS_WASTE_TAGS = tuple((tag, 1 - value) for tag, value in UVVIS_MEASUREMENT_TAGS)
 POWER_OFF_TAGS = (
     ("Hitec_OPC_DA20_Server-%3EE_CHEM%3ABKK_P.OUTON", 0),
     ("Hitec_OPC_DA20_Server-%3EE_CHEM%3ABKK_P.OUTOFF", 1),
@@ -285,7 +292,44 @@ def _set_flow_mode(runner, mode):
     for tag, value in commands:
         _required_write(runner, tag, value)
     _verify_opc_values(runner, commands, f"{mode} valve commands")
-    print(f"Switching valves: {mode} mode commands verified.")
+    print(f"Electrolysis/cleaning valve: {mode} mode commands verified.")
+
+
+def _set_uvvis_route(runner, destination):
+    """Move only V_01; preserve the electrolysis and cell-selector positions."""
+    if destination not in ("waste", "uvvis"):
+        raise ValueError(f"Unknown UV/VIS destination: {destination!r}.")
+    commands = UVVIS_WASTE_TAGS if destination == "waste" else UVVIS_MEASUREMENT_TAGS
+    for tag, value in commands:
+        _required_write(runner, tag, value)
+    _verify_opc_values(runner, commands, f"UV/VIS {destination} route commands")
+    print(f"UV/VIS diversion valve: {destination} route commands verified.")
+
+
+def _uvvis_flush_volume(runner):
+    config = getattr(runner, "adapter_config", {}) or {}
+    volume = config.get("uvvis_flush_volume_ml", UVVIS_FLUSH_VOLUME_ML)
+    if isinstance(volume, bool):
+        raise ValueError("UV/VIS flush volume must be finite and positive, in mL.")
+    volume = float(volume)
+    if not math.isfinite(volume) or volume <= 0:
+        raise ValueError("UV/VIS flush volume must be finite and positive, in mL.")
+    return volume
+
+
+def _flush_uvvis_path(runner, op):
+    """Switch the stabilized stream to UV/Vis and displace the branch contents."""
+    _verify_cell_route(runner, op["cell_port"])
+    _verify_opc_values(runner, VALVE_ELECTROLYSIS_TAGS, "electrolysis valve commands")
+    # The initial reading is undiluted; Pump 3 starts only for later retries.
+    _verify_opc_values(runner, ((PUMP_ANALYTICAL_DILUTION_TAG, 0),),
+                       "analytical dilution stopped before UV/VIS flush")
+    _set_uvvis_route(runner, "uvvis")
+    print(f"UV/VIS branch flush: {op['uvvis_flush_volume_ml']:g} mL at "
+          f"{op['total_flow_ml_min']:.6g} mL/min; "
+          f"waiting {op['uvvis_flush_time_s']:.2f} s before acquisition.")
+    time.sleep(op["uvvis_flush_time_s"])
+    _verify_opc_values(runner, UVVIS_MEASUREMENT_TAGS, "UV/VIS uvvis route commands")
 
 
 def _stop_cleaning_pump(runner):
@@ -1124,6 +1168,12 @@ def emergency_shutdown(runner):
     except Exception as exc:
         print(f"Warning: cleaning-pump stop could not be verified: {exc}")
 
+    # Do not delay power/feed shutdown for an analytical-valve failure.
+    try:
+        _set_uvvis_route(runner, "waste")
+    except Exception as exc:
+        print(f"Warning: UV/VIS waste route could not be verified: {exc}")
+
     print("!!! SAFE SHUTDOWN ATTEMPT COMPLETE — CHECK ANY WARNINGS ABOVE !!!")
     print("")
 
@@ -1394,13 +1444,17 @@ def prepare_hardware(
     11. Select BKK channel.
     12. Set current.
     13. Turn PSU ON.
-    14. Wait until new electrochemical condition should
-        have reached UV/Vis.
+    14. Wait to waste until the new electrochemical condition should
+        have reached the diversion valve.
+    15. Switch V_01 to UV/Vis and flush the analytical branch before acquisition.
     """
 
     op = _compute_operating_point(
         parameters
     )
+
+    op["uvvis_flush_volume_ml"] = _uvvis_flush_volume(runner)
+    op["uvvis_flush_time_s"] = 60.0 * op["uvvis_flush_volume_ml"] / op["total_flow_ml_min"]
 
     _print_operating_point(
         op
@@ -1446,6 +1500,7 @@ def prepare_hardware(
         _ensure_power_off(runner)
         _stop_cleaning_pump(runner)
         _stop_reagent_feeds(runner)
+        _set_uvvis_route(runner, "waste")
         waste, _, _, _ = _spm_refill_settings(runner, runner.spm)
         _initialize_spm_campaign(runner, waste)
         _set_flow_mode(runner, "electrolysis")
@@ -1475,6 +1530,9 @@ def prepare_hardware(
             runner,
             op
         )
+
+        _verify_opc_values(runner, VALVE_ELECTROLYSIS_TAGS + UVVIS_WASTE_TAGS,
+                           "electrolysis and waste route before reaction feeds")
 
 
         # ====================================================
@@ -1592,12 +1650,14 @@ def prepare_hardware(
         print(
             f"Waiting "
             f"{op['measurement_ready_time_s']:.1f} s "
-            f"before UV/Vis measurement..."
+            f"with the outlet directed to waste before the UV/Vis branch flush..."
         )
 
         time.sleep(
             op["measurement_ready_time_s"]
         )
+
+        _flush_uvvis_path(runner, op)
 
 
         # ====================================================
@@ -1642,6 +1702,7 @@ def stop_pumps(runner, parameters):
     runner._mb_feed_shutdown_confirmed = False
     errors = []
     for action in (
+        lambda: _set_uvvis_route(runner, "waste"),
         lambda: _ensure_power_off(runner),
         lambda: _stop_spm_delivery(runner),
         lambda: _stop_reagent_feeds(runner),
@@ -1730,6 +1791,7 @@ def cleanup(runner, parameters):
         _verify_opc_values(runner, FEED_STOP_TAGS, "reagent feeds stopped before cleaning")
         runner.spm.get_syringe_state()
         _stop_cleaning_pump(runner)
+        _set_uvvis_route(runner, "waste")
         _set_flow_mode(runner, "cleaning")
         _verify_cell_route(runner, cell_port)
         print(f"Water cleaning: Pump 6 at {flow:g} mL/min for {duration:g} s "
