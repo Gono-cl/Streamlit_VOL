@@ -823,8 +823,10 @@ if st.session_state.get("doe_exec_results"):
     doe_section_header("Execution Results", accent="#22c55e", background="#f0fdf4")
     df_results = pd.DataFrame(st.session_state.doe_exec_results)
     st.dataframe(df_results, use_container_width=True)
-    export_to_csv(df_results, filename=f"{st.session_state.doe_exec_run_name}_results.csv")
-    export_to_excel(df_results, filename=f"{st.session_state.doe_exec_run_name}_results.xlsx")
+    export_to_csv(df_results, filename=f"{st.session_state.doe_exec_run_name}_results.csv",
+                    protocol_script=st.session_state.get("running_protocol_script"))
+    export_to_excel(df_results, filename=f"{st.session_state.doe_exec_run_name}_results.xlsx",
+                    protocol_script=st.session_state.get("running_protocol_script"))
 
     if st.button("Save Current Results to Experiment Database", key="doe_exec_save_db"):
         plan_df = ensure_plan_columns(st.session_state.get("doe_exec_plan_df", pd.DataFrame()))

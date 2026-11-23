@@ -34,6 +34,7 @@ from core.hardware.uvvis_measurement import measurement_settings
 from core.hardware.AMF_hardware.multiport_valve import MultiportValve
 from core.hardware.AMF_hardware.spm_pump import SPMPump
 from core.hardware.connections import close_runner, disconnect_devices, disconnect_on_error
+from core.utils.log_units import unit_labeled_row, variable_units
 
 
 # ---------------------------------------------------------------------------
@@ -69,6 +70,7 @@ class ExperimentRunner(
         measurement_source_tag: str | None = None,
         measurement_backend: str = "opc",
         uvvis_config: dict | None = None,
+        variables: list | None = None,
     ):
         self._closed = False
         self.opc = opc_client
@@ -106,6 +108,7 @@ class ExperimentRunner(
         self.adapter_config = dict(adapter_config or {})
         self.process_adapter = create_process_adapter(self.process_adapter_name, config=self.adapter_config)
         self.running_protocol_script = running_protocol_script or None
+        self.logging_variable_units = variable_units(variables, self.running_protocol_script)
         self.running_protocol_module = None
         self.measurement_source_prefix = measurement_source_prefix
         self.measurement_source_signal = measurement_source_signal
@@ -515,15 +518,32 @@ class ExperimentRunner(
         filename = f"raw_measurements/{experiment_name.replace(' ', '_')}{suffix}_measurements.csv"
         if not self.full_measurement_log:
             return filename
+        units = getattr(self, "logging_variable_units", variable_units(
+            protocol_script=getattr(self, "running_protocol_script", None)))
+        # Only the serialized copy gets unit labels. Internal keys are used by
+        # degradation calculations, optimizer state, and the live UI.
+        def label(row):
+            return unit_labeled_row(row, units=units)
+        rows_to_write = [label(row) for row in self.full_measurement_log]
         file_exists = os.path.isfile(filename) and os.path.getsize(filename) > 0
         old_keys = []
+        converted_keys = []
+        renamed = False
         if file_exists:
             with open(filename, newline="", encoding="utf-8-sig") as f:
-                old_keys = next(csv.reader(f))
-        keys = list(dict.fromkeys(old_keys + [key for row in self.full_measurement_log for key in row]))
-        if file_exists and old_keys != keys:
-            # Resume may add dilution columns to an older measurement log.
-            # Expand its header atomically instead of appending misaligned rows.
+                reader = csv.DictReader(f)
+                old_keys = reader.fieldnames or []
+                if len(set(old_keys)) != len(old_keys):
+                    raise ValueError("Existing measurement CSV has duplicate columns; log not overwritten.")
+                for row in reader:
+                    if None in row or any(value is None for value in row.values()):
+                        raise ValueError("Existing measurement CSV has inconsistent columns; log not overwritten.")
+                    converted = label(row)
+                    converted_keys.extend(converted)
+                    renamed = renamed or list(converted) != old_keys
+        keys = list(dict.fromkeys(converted_keys + [key for row in rows_to_write for key in row]))
+        if file_exists and (renamed or old_keys != keys):
+            # Add units and new telemetry atomically, retaining historical rows.
             temporary = None
             try:
                 with tempfile.NamedTemporaryFile(mode="w", newline="", encoding="utf-8",
@@ -533,10 +553,10 @@ class ExperimentRunner(
                     writer.writeheader()
                     with open(filename, newline="", encoding="utf-8-sig") as previous:
                         for row in csv.DictReader(previous):
-                            if None in row:
+                            if None in row or any(value is None for value in row.values()):
                                 raise ValueError("Existing measurement CSV has inconsistent columns; log not overwritten.")
-                            writer.writerow(row)
-                    writer.writerows(self.full_measurement_log)
+                            writer.writerow(label(row))
+                    writer.writerows(rows_to_write)
                     f.flush()
                     os.fsync(f.fileno())
                 os.replace(temporary, filename)
@@ -551,7 +571,7 @@ class ExperimentRunner(
             writer = csv.DictWriter(f, fieldnames=keys)
             if not file_exists:
                 writer.writeheader()
-            writer.writerows(self.full_measurement_log)
+            writer.writerows(rows_to_write)
         print(f"Full measurement log saved to {filename}")
         self.full_measurement_log.clear()
         return filename

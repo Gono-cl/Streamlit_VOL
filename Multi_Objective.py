@@ -530,6 +530,7 @@ if resume_file != "None" and st.sidebar.button("Load Previous Run"):
         running_protocol_script=st.session_state.get("running_protocol_script"),
         measurement_source_prefix=loaded_measurement_prefix,
         measurement_source_signal=loaded_measurement_signal,
+        variables=st.session_state.get("variables", []),
         **measurement_settings(metadata),
     )
     st.session_state.optimization_running = True
@@ -885,6 +886,7 @@ if start_clicked:
             running_protocol_script=st.session_state.get("running_protocol_script"),
             measurement_source_prefix=st.session_state.get("measurement_source_prefix"),
             measurement_source_signal=st.session_state.get("measurement_source_signal"),
+            variables=st.session_state.get("variables", []),
             **measurement_settings(st.session_state),
         )
         st.session_state.optimization_running = True
@@ -1493,6 +1495,10 @@ if st.session_state.get("optimization_running", False):
 
         # Save results to CSV and metadata as before...
         df_results = pd.DataFrame(experiment_data)
+
+        export_to_csv(df_results, f"{run_name}_final_results.csv",
+                      variables=st.session_state.get("variables", []),
+                      protocol_script=st.session_state.get("running_protocol_script"))
 
         # --- Compute Pareto front for saving ---
         if len(objectives) == 2 and not df_results.empty:

@@ -95,7 +95,7 @@ class DegradationAcquisitionTests(unittest.TestCase):
                 saved = list(csv.DictReader(stream))
             self.assertEqual(saved[0]["Degradation (%)"], "")
             self.assertAlmostEqual(float(saved[-1]["Degradation (%)"]), expected)
-            self.assertEqual(float(saved[-1]["Inlet Concentration"]), inlet)
+            self.assertEqual(float(saved[-1]["Inlet Concentration (mg/L)"]), inlet)
         finally:
             os.chdir(old_cwd)
 

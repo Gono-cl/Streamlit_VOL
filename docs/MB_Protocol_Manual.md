@@ -1,7 +1,7 @@
 # MB Protocol Manual
 
 **Virtual Optimization Lab (Streamlit_VOL)**
-Operator and developer reference · Version 1.9 · 23 November 2026
+Operator and developer reference · Version 1.10 · 23 November 2026
 
 Based on the current working copy, including matched inlet/outlet cell routing, waste diversion during startup, a volume-based UV/VIS branch flush and automatic downstream dilution, with selectable CV/SD spectral stability, a timestamp-based absorbance drift check and per-spectrum electrical snapshots. This document describes implemented software behavior and identifies the analytical work that remains to be validated. Source references [S1]–[S17] appear in the final section.
 
@@ -604,6 +604,35 @@ The database is useful for browsing completed experiments; the checkpoint folder
 
 <!-- pagebreak -->
 
+## Units in measurement logs and campaign exports
+
+Raw measurement CSVs and downloaded campaign results now include units in physical column titles. Values and optimizer parameter IDs are unchanged internally. The CSV writer labels a copy of the data, and the campaign resume files retain their original internal column names.
+
+| Example exported column | Meaning |
+|---|---|
+| current_density (mA/cm2) | MB current-density input |
+| applied_charge (F/mol) | Applied charge per mole |
+| substrate_concentration (mg/L) | MB inlet concentration |
+| electrolyte_concentration (mol/L) | Electrolyte molarity |
+| Absorbance (AU) | Individual spectral absorbance |
+| Value (mg/L), Measured Concentration (mg/L) | Calibrated detector concentration |
+| Corrected Concentration (mg/L) | Outlet concentration after dilution correction |
+| Inlet Concentration (mg/L), Outlet Concentration (mg/L) | Concentrations used for degradation |
+| Stability Limit (%), Stability Limit (AU) | Separate CV and SD limits |
+| Measurement (%), Degradation (%) | A single-objective degradation response and degradation objective |
+
+Concentration headers use each row's recorded Concentration Unit. For example, an mM calibration produces Value (mM), not Value (mg/L). Labels do not perform conversions. A file containing different concentration units or both SD and CV decisions uses separate columns, with blanks where a column does not apply. All detector-versus-corrected distinctions remain intact.
+
+Existing electrical columns already state A or V. Flow, wavelength, timing and drift columns retain their existing units. Categorical labels such as cell and electrolyte and metadata such as status and file names receive no physical unit. Timestamp becomes Timestamp (UTC) only for a timestamp with an explicit zero UTC offset; older local timestamps are not relabelled as UTC.
+
+Continuous-variable units come from the campaign definitions. For the fixed MB protocol, the four input units above follow the protocol's actual calculations. Units for unidentified signals or objectives are not invented. Generic optimizer scores should still be interpreted using their objective definitions in Section 14.
+
+When an existing raw log is next saved, known unitless headers are upgraded through an atomic rewrite that preserves earlier rows. Historical concentrations without a recorded unit remain in the original unlabelled column; subsequent readings with known units occupy the labelled column. Malformed rows or conflicting populated column names block saving and leave the original file and buffered measurements available for recovery. Existing datasets are not bulk-rewritten by installing this change.
+
+Single-objective and multi-objective completion exports and DOE result CSV/Excel downloads use the same labelling rules. Internal campaign checkpoints and the source DataFrames are preserved for optimization and resume.
+
+<!-- pagebreak -->
+
 # 18. Initialization, QC, reproducibility and DOE
 
 ## Initialization and categorical variables
@@ -768,7 +797,7 @@ Use the appropriate LabVision indications and laboratory checks to establish act
 
 This manual was prepared from local source inspection on **23 November 2026**. It documents the working-copy behavior, including matched inlet/outlet cell routing, protocol-aware water/ethanol/water cleaning, independent V_02 electrolysis/cleaning and V_01 UV/VIS/waste timing, the analytical branch flush, selectable CV/SD spectral stability, timestamp-based drift validation, updated transport volumes and cleaning durations, UV/VIS dilution, per-spectrum BKK snapshots and the Degradation objective. It does not introduce code changes or validate a chemical method.
 
-**Repository reference:** `4288444` plus the current user edits and the UV/VIS trend-check changes. The protocol hash below captures its current constants and messages.
+**Repository reference:** `d05db08` plus the CSV unit-label changes. The protocol hash below captures its current constants and messages.
 
 **MB protocol SHA-256:**
 
@@ -791,7 +820,7 @@ bd7755a54bd73d1bed8f3dbc44ad4aed82371827402582454128fbb1a1ee033b
 | S11 | `core/hardware/measurement_ui.py`, `uvvis_measurement.py` |
 | S12 | `InlineAnalytics/SampleMeasurement/sample_measurement.py`, `Spectrometer/spectragryph_reader.py` |
 | S13 | `core/utils/db_handler.py` |
-| S14 | `core/utils/export_tools.py`, `logger.py` |
+| S14 | `core/utils/export_tools.py`, `log_units.py`, `logger.py` |
 | S15 | `core/campaigns/templates.py`, `setup.py`, `setup_ui.py` |
 | S16 | `Reproducibility.py`, `src/repro/`, and optimization-page escalation callbacks |
 | S17 | `core/hardware/uvvis_dilution.py`, `tests/test_uvvis_dilution.py` |

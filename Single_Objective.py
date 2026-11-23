@@ -504,6 +504,7 @@ if resume_file != "None" and st.sidebar.button("Load Previous Run"):
         running_protocol_script=st.session_state.get("running_protocol_script"),
         measurement_source_prefix=loaded_measurement_prefix,
         measurement_source_signal=loaded_measurement_signal,
+        variables=st.session_state.get("variables", []),
         **measurement_settings(metadata),
     )
     st.session_state.optimization_running = True
@@ -870,6 +871,7 @@ if col_start.button("▶ Start Optimization"):
         running_protocol_script=st.session_state.get("running_protocol_script"),
         measurement_source_prefix=st.session_state.get("measurement_source_prefix"),
         measurement_source_signal=st.session_state.get("measurement_source_signal"),
+        variables=st.session_state.get("variables", []),
         **measurement_settings(st.session_state),
     )
     st.session_state.optimization_running = True
@@ -1486,7 +1488,10 @@ if st.session_state.get("optimization_running", False):
         st.markdown("### 🥇 Best Result")
         st.json(best_row_payload)
 
-        export_to_csv(df_results, f"{run_name}_final_results.csv")
+        export_to_csv(df_results, f"{run_name}_final_results.csv",
+                      variables=st.session_state.get("variables", []),
+                      protocol_script=st.session_state.get("running_protocol_script"),
+                      objective=response_to_optimize)
 
 
         optimization_settings = {
