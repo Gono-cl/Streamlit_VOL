@@ -1,7 +1,7 @@
 # MB Protocol Manual
 
 **Virtual Optimization Lab (Streamlit_VOL)**  
-Operator and developer reference · Version 1.6 · 20 November 2026
+Operator and developer reference · Version 1.7 · 23 November 2026
 
 Based on the current working copy, including matched inlet/outlet cell routing, waste diversion during startup, a volume-based UV/VIS branch flush and automatic downstream dilution, with selectable CV/SD spectral stability. This document describes implemented software behavior and identifies the analytical work that remains to be validated. Source references [S1]–[S17] appear in the final section.
 
@@ -21,10 +21,10 @@ The MB protocol automates methylene blue electrooxidation using six optimization
 | SPM syringe | 5,000 µL; internal port 1 waste, port 5 reactor delivery |
 | First preparation after start/resume | Home to waste, rinse twice with 1,000 µL incoming stock, fill to 5,000 µL |
 | Between matching-electrolyte experiments | Retain remaining stock and top up to 5,000 µL |
-| Water cleaning | Direct water supply to Pump 6: 1 mL/min for 60 s; both cell selectors retained |
+| Water/ethanol/water cleaning | Water / ethanol / water: Pump 2 for 60 s, Pump 6 for 60 s, Pump 2 for 90 s; each at 2 mL/min; through the selected cell and UV/VIS |
 | Cell routing | ROT_VALVE at the cell inlet and AMF at the outlet; matching ports 1/2/3 for EC1/EC2/EC3 |
 | Electrolysis mode | Both V_02 tags = 0; V_01 stays at waste (0) until the measurement phase |
-| Cleaning mode | Both V_01 tags = 0; both V_02 tags = 1 |
+| Cleaning mode | Both V_01 tags = 1; V_02 = 0 for water and 1 for ethanol |
 | UV/VIS branch flush | 1 mL after switching V_01 to UV/VIS; time = 60 * volume / reactor flow |
 | Real MB UV/VIS | mg/L calibration; direct first, automatic downstream water dilution if above range |
 | Analytical dilution | Pump 3 maximum 6.25 mL/min; 10 s wait per flow setting; up to 6 attempts including direct |
@@ -33,7 +33,7 @@ The MB protocol automates methylene blue electrooxidation using six optimization
 
 ## What is already automated
 
-Cell selection, electrolyte routing and syringe preparation, current and flow calculations, reagent delivery, BKK channel commands, waiting periods, measurement collection with optional automatic UV/VIS dilution, feed shutdown, water cleaning, result handling and serial-connection cleanup are coordinated by the software.
+Cell selection, electrolyte routing and syringe preparation, current and flow calculations, reagent delivery, BKK channel commands, waiting periods, measurement collection with optional automatic UV/VIS dilution, feed shutdown, water/ethanol/water cleaning, result handling and serial-connection cleanup are coordinated by the software.
 
 ## What needs analytical validation
 
@@ -53,7 +53,7 @@ The Streamlit pages own the campaign and its optimizer. `ExperimentRunner` owns 
 | `Single_Objective.py`, `Multi_Objective.py` | Build initialization points, suggest conditions, execute runs and persist optimizer/results |
 | `DoE_Executor.py` | Executes rows from an externally prepared matrix |
 | `core/hardware/experimental_run.py` | Creates devices, calls hooks, measures, calculates results, shuts down and cleans |
-| `running_protocols/MB_6_variables.py` | MB-specific calculations, routing, syringe handling and water cleaning |
+| `running_protocols/MB_6_variables.py` | MB-specific calculations, routing, syringe handling and water/ethanol/water cleaning |
 | AMF driver wrappers | Control the SPM+ and external RVMFS valve over USB |
 | `OPCClient` | Sends reads/writes through the configured OPC Expert HTTP endpoint |
 
@@ -68,10 +68,10 @@ The Streamlit pages own the campaign and its optimizer. `ExperimentRunner` owns 
 | Device | Role | Command units / behavior |
 |---|---|---|
 | Pump 1 | 2,000 mg/L MB stock | µL/min; calculated mL/min × 1,000, rounded to whole µL/min |
-| Pump 2 | Reaction dilution water | µL/min; calculated mL/min × 1,000, rounded to whole µL/min |
+| Pump 2 | Reaction dilution and cleaning water | µL/min; calculated mL/min × 1,000, rounded to whole µL/min |
 | SPM+ | Selected 0.4 M electrolyte stock | µL and µL/min; USB commands |
 | Pump 3 | Downstream analytical dilution water | µL/min; automatic only for real MB UV/VIS; excluded from reaction flow |
-| Pump 6 | Water cleaning | **mL/min**; a value of 1 means 1 mL/min, not 1,000 |
+| Pump 6 | Ethanol cleaning | **mL/min**; a value of 2 means 2 mL/min, not 2,000 |
 
 ## Inlet/outlet cell selectors and BKK mapping
 
@@ -93,7 +93,7 @@ The metadata also records a 0.254 mm gap, graphite anode and stainless-steel cat
 | 4 | NaNO₃ stock |
 | 5 | Reactor delivery |
 
-ROT_VALVE.POS now selects the cell inlet; the external USB AMF valve selects the matching cell outlet. Ports 1, 2 and 3 correspond to EC1, EC2 and EC3 on both selectors. The flow path is reaction feeds or cleaning water → ROT_VALVE → selected cell → AMF outlet selector → downstream analytics. Pump 6 receives water directly. The SPM internal valve remains dedicated to electrolyte stock handling.
+ROT_VALVE.POS now selects the cell inlet; the external USB AMF valve selects the matching cell outlet. Ports 1, 2 and 3 correspond to EC1, EC2 and EC3 on both selectors. The flow path is reaction feeds or cleaning liquids → ROT_VALVE → selected cell → AMF outlet selector → downstream analytics. Pump 6 receives ethanol directly; Pump 2 supplies water. The SPM internal valve remains dedicated to electrolyte stock handling.
 
 <!-- pagebreak -->
 
@@ -204,7 +204,7 @@ The syringe capacity estimate covers delivery at the calculated reaction electro
 
 No automatic mid-experiment refill or remaining-volume watchdog is implemented. If the syringe reaches its zero target, the physical movement ends; the code does not automatically load another syringe during that experiment. Compare the full experiment duration with capacity before choosing long acquisition or sample-collection settings.
 
-Water cleaning is a separate Pump 6 operation after SPM shutdown. It does not consume the retained electrolyte in the SPM syringe. [S1, S3, S7]
+Cleaning alternates Pump 2 water and Pump 6 ethanol after SPM shutdown. It does not consume the retained electrolyte in the SPM syringe. [S1, S3, S7]
 
 <!-- pagebreak -->
 
@@ -222,7 +222,7 @@ Water cleaning is a separate Pump 6 operation after SPM shutdown. It does not co
 10. **Select electrical output.** Recheck both cell-routing readbacks after flushing. Send the matching BKK channel commands, write the calculated current in amperes, and enable the power supply.
 11. **Wait to waste, then flush UV/VIS.** Keep V_01 at waste during the calculated post-power stabilization/transport wait. Switch only V_01 to UV/VIS (both tags = 1), verify its commands, then pass 1 mL at the calculated reactor flow before acquisition. Discard spectra exported during these waits.
 12. **Measure and calculate.** For real MB UV/VIS, stop Pump 3, wait 10 s and collect fresh spectra. Above-range readings trigger bounded dilution retries, each with a 10 s wait. Return the dilution-corrected reactor-outlet concentration to the selected objective calculator. Stop Pump 3 and, after a diluted success, wait 10 s for undiluted flow before optional autosampling. Other measurement modes retain their existing acquisition path.
-13. **Divert, stop and clean.** Return V_01 to waste before normal power/feed shutdown. A failed diversion still allows all shutdown attempts and blocks automatic cleaning. A successful experiment with verified shutdown receives the existing timed water clean, then V_02 returns to electrolysis while V_01 remains at waste.
+13. **Divert, stop and clean.** Return V_01 to waste before normal power/feed shutdown. A failed diversion still allows all shutdown attempts and blocks automatic cleaning. A successful experiment with verified shutdown receives the water/ethanol/water sequence through the selected cell and UV/VIS. Afterwards both cleaning pumps stop, V_02 returns to electrolysis and V_01 returns to waste.
 14. **Accept and persist.** Only after the runner returns successfully does the page observe the result in the optimizer and write its campaign checkpoint.
 
 > **Cleanup is part of success.** If measurement succeeds but cleaning or final shutdown fails, the runner raises an error. The result is not accepted as a normal optimizer observation. Raw measurements can still exist for that attempted run. [S1, S3]
@@ -270,10 +270,10 @@ The channel-selection helper currently does not read the channel values back. It
 
 | Tag | Electrolysis | Cleaning |
 |---|---|---|
-| V_01_OPEN | 0 startup; 1 measurement | 0 |
-| V_01_CLOSE | 0 startup; 1 measurement | 0 |
-| V_02_OPEN | 0 | 1 |
-| V_02_CLOSE | 0 | 1 |
+| V_01_OPEN | 0 startup; 1 measurement | 1 for every rinse |
+| V_01_CLOSE | 0 startup; 1 measurement | 1 for every rinse |
+| V_02_OPEN | 0 | 0 water; 1 ethanol |
+| V_02_CLOSE | 0 | 0 water; 1 ethanol |
 
 `_set_flow_mode()` controls V_02 only. `_set_uvvis_route()` controls V_01 only; 0 selects waste and 1 selects UV/VIS. Each helper writes its two tags and reads the same OPC command items back. It tries up to three checks, with a 0.25 s interval; control reads/writes use a 2 s request timeout. A mismatch or unavailable readback blocks the next phase. These checks do not use independent mechanical position sensors. [S1, S8]
 
@@ -289,31 +289,41 @@ Configuring a speed while idle displays zero. A confirmed blocking movement comp
 
 <!-- pagebreak -->
 
-# 10. Water cleaning between experiments
+# 10. Water/ethanol/water cleaning between experiments
 
-Both inlet and outlet selectors remain on the selected cell while the water-cleaning path is used. Cleaning never commands a different rotary-valve port. Cleaning is automatic after each successful hardware experiment, including successful QC/reproducibility calls that use the same runner. It also runs after the final successful experiment. [S1, S3]
+Both rotary selectors retain the selected cell throughout cleaning. All three rinses pass through UV/VIS with V_01 OPEN/CLOSE = 1. Pump 2 supplies water through V_02 = 0; Pump 6 supplies ethanol through V_02 = 1. Cleaning runs after each successful hardware experiment, including QC, the final experiment and protocol-aware maintenance calls. [S1, S3]
 
-1. Confirm power-off commands and stopped reagent feeds. The SPM must report a valid idle state.
-2. Ensure Pump 6 is stopped.
-3. Switch to cleaning mode: V_01 OPEN/CLOSE = 0; V_02 OPEN/CLOSE = 1. Verify command readbacks.
-4. Verify that ROT_VALVE inlet and AMF outlet still match the selected cell. Do not move either selector to choose water.
-5. Set `PUMP_6.W1 = 1.0` mL/min and verify the flow command.
-6. Wait 60 s: nominal delivered water volume = 1 mL.
-7. Attempt to stop Pump 6 in the `finally` path, even if the timed step is interrupted.
-8. Restore V_02 to electrolysis only after the Pump 6 stop command is verified, then recheck the retained inlet/outlet ports. Keep V_01 at waste. This preserves the existing cleaning path; the UV/VIS branch has its own sample flush before measurement.
+| Stage | Liquid | Pump | Flow (mL/min) | Time (s) | Volume (mL) |
+|---|---|---|---|---|---|
+| 1 | Water | 2 | 2 | 60 | 2 |
+| 2 | Ethanol | 6 | 2 | 60 | 2 |
+| 3 | Water | 2 | 2 | 90 | 3 |
 
-| Setting | Default | Where to adapt |
+The default sequence takes 210 s (3.5 min) and delivers a nominal 7 mL. Pump 2 commands use uL/min: 2 mL/min is written as 2000. Pump 6 commands use mL/min: 2 mL/min is written as 2. Timers begin after each flow command is verified; solvent-change and verification overhead is additional.
+
+1. Confirm power-off commands, all reagent feeds stopped and the SPM ready/idle. Confirm the retained inlet/outlet cell ports.
+2. Before each stage, confirm Pump 2 and Pump 6 are stopped. Select V_02 = 0 for water or 1 for ethanol, then verify V_01 = 1 for UV/VIS.
+3. Start only the designated pump and run its timer. Stop and verify both cleaning pumps before any next valve change; recheck the retained cell ports and stage routing.
+4. After the final water rinse, confirm stopped pumps, restore V_01 to waste (0) and V_02 to electrolysis (0). Recheck the retained cell ports. The next experiment still performs its normal startup-to-waste and analytical-branch flush.
+
+<!-- pagebreak -->
+
+## Cleaning settings
+
+| Setting | Default | Adapter override |
 |---|---|---|
-| `CLEANING_FLOW_ML_MIN` | 1.0 | Protocol constant; adapter override `cleaning_flow_ml_min` |
-| `CLEANING_DURATION_S` | 60.0 | Protocol constant; adapter override `cleaning_duration_s` |
+| CLEANING_FLOW_ML_MIN | 2.0 mL/min | cleaning_flow_ml_min |
+| CLEANING_WATER_PRE_DURATION_S | 60 s | cleaning_water_pre_duration_s |
+| CLEANING_ETHANOL_DURATION_S | 60 s | cleaning_ethanol_duration_s |
+| CLEANING_WATER_POST_DURATION_S | 90 s | cleaning_water_post_duration_s |
 
-These adapter overrides belong in `process_adapter_config`; there is currently no dedicated cleaning-settings form. Editing the protocol constants adjusts the initial rinse. Flow and duration must be finite and positive. Legacy cleaning_water_port settings are ignored because water is supplied directly; they cannot redirect the cell inlet.
+Overrides belong in process_adapter_config. Per-stage flow overrides are cleaning_water_pre_flow_ml_min, cleaning_ethanol_flow_ml_min and cleaning_water_post_flow_ml_min; each overrides the common flow. Explicit cleaning_ethanol_duration_s takes precedence over the older cleaning_duration_s alias, which now applies only to the Pump 6 ethanol step. All flows and durations must be finite and positive; all three stages are validated before any cleaning flow starts. cleaning_water_port remains ignored because ROT_VALVE selects the cell, not a solvent.
 
 ## Failure behavior
 
-An experiment failure or an unverified feed shutdown does not start an automatic water clean. If Pump 6 cannot be confirmed stopped, the code does not switch its water path back to electrolysis. The error propagates and the campaign stops. Shutdown commands are attempts; an unavailable OPC connection cannot guarantee that a remote pump physically stopped.
+Failed experiments and unverified feed shutdowns do not start automatic cleaning. An interrupted stage, failed start or failed readback aborts all remaining stages. Both cleaning-pump stops are attempted even if one fails. If either stop is uncertain, neither switching valve is moved. Confirmed stopped pumps allow restoration of the waste/electrolysis route; the original error still propagates and blocks normal optimizer acceptance. OPC command readbacks do not independently measure physical pump flow or valve position.
 
-SPM electrolyte is retained separately. The water rinse does not wash the SPM syringe. Its two incoming-electrolyte rinses occur during stock changeover. Cleaning effectiveness and carryover reduction must be assessed from the actual hydraulic setup and analytical results.
+The SPM retains its separate electrolyte contents. These rinses do not aspirate ethanol into the syringe; SPM stock changeover remains a separate operation. Validate removal of blue residue and ethanol carryover on the actual setup. Spectragryph can continue exporting during rinses; the next measurement uses fresh spectra after the next startup and UV/VIS branch flush.
 
 <!-- pagebreak -->
 
@@ -546,7 +556,7 @@ Single- and multi-objective pages support Random and Latin hypercube initializat
 
 ## Periodic QC reference runs
 
-QC uses a fixed reference point: continuous-variable midpoints and category labels selected in the UI. A QC run uses the same runner and MB hardware sequence. Successful QC therefore includes normal shutdown and water cleaning. QC results do not update the optimizer and do not count toward the optimization iteration budget.
+QC uses a fixed reference point: continuous-variable midpoints and category labels selected in the UI. A QC run uses the same runner and MB hardware sequence. Successful QC therefore includes normal shutdown and water/ethanol/water cleaning. QC results do not update the optimizer and do not count toward the optimization iteration budget.
 
 The live run number can exceed the optimization experiment number because QC and reproducibility runs add physical experiments. QC history is recorded in metadata; supporting readings use the raw-measurement path. A QC failure stops the campaign.
 
@@ -554,7 +564,7 @@ The live run number can exceed the optimization experiment number because QC and
 
 Advanced mode can run repeated conditions before optimization. Reproducibility Studio supplies schedules, sentinel settings and acceptance policies; reports/logs can be written as `reproducibility_report.json` and `reproducibility_log.csv` in the run folder. [S16]
 
-> **Protocol-aware cleaning escalation:** The runner’s cleaning_electrochemical_cell() method dispatches to the MB protocol hook for MB campaigns. Extra reproducibility/maintenance cleaning uses the same water-only sequence and retains both cell selectors. It requires a successfully completed experiment and a known selected cell, rechecks shutdown, and refuses mismatched routing. Other protocols without this hook retain their existing cleaning behavior.
+> **Protocol-aware cleaning escalation:** The runner’s cleaning_electrochemical_cell() method dispatches to the MB protocol hook for MB campaigns. Extra reproducibility/maintenance cleaning uses the same water/ethanol/water sequence and retains both cell selectors. It requires a successfully completed experiment and a known selected cell, rechecks shutdown, and refuses mismatched routing. Other protocols without this hook retain their existing cleaning behavior.
 
 ## DOE execution
 
@@ -596,7 +606,7 @@ The MB protocol is loaded dynamically when selected. Having a file in `running_p
 | Electrolyte stocks or tubing | `ELECTROLYTE_METADATA`; match source ports and actual stock molarity |
 | Cell geometry or electrical wiring | `CELL_METADATA`; area, volume, shared inlet/outlet port and BKK channel must all match |
 | Switching-valve polarity | `VALVE_ELECTROLYSIS_TAGS` for V_02; `UVVIS_MEASUREMENT_TAGS` for V_01; their opposite positions are Boolean inverses |
-| Cleaning water source/rate/time | Pump 6 has a direct water supply; adapt CLEANING_FLOW_ML_MIN and CLEANING_DURATION_S or their flow/duration overrides |
+| Cleaning liquids/rates/times | Pump 2 supplies water and Pump 6 supplies ethanol. Adapt CLEANING_FLOW_ML_MIN and the three stage-duration constants or adapter overrides. |
 | SPM rinse | `SPM_RINSE_VOLUME_UL`, `SPM_RINSE_CYCLES`; overrides `spm_rinse_volume_uL`, `spm_rinse_cycles` |
 | Homing waste connection | Must remain internal SPM port 1 for automatic homing; `spm_waste_port` is rejected if not 1 |
 | Transport and stabilization | Measured upstream/downstream dead volumes and cell-volume timing factors; remeasure after relocating the selectors |
@@ -622,9 +632,9 @@ Keep the default project README general. This dedicated manual is the place for 
 | No RVMFS valve / no AMF pump detected | Check power, USB, device family and other applications holding serial ports. Discovery uses the first matching device if several are found. |
 | SPM status 145 | Out-of-range movement state. A fresh MB runner can perform controlled startup recovery through waste port 1; normal refill does not ignore the fault. |
 | SPM not homed, busy, encoder invalid or stop uncertain | Do not infer volume from a target position. Resolve the device state; the protocol blocks normal refill. |
-| Could not verify cell inlet/outlet port | Check ROT_VALVE and AMF outlet readbacks for the same cell. Preparation blocks feeds/power; cleaning blocks Pump 6. Neither selector is moved to repair a mismatch during cleaning. |
+| Could not verify cell inlet/outlet port | Check ROT_VALVE and AMF outlet readbacks for the same cell. Preparation blocks feeds/power; cleaning blocks all rinses. Neither selector is moved to repair a mismatch during cleaning. |
 | Could not verify electrolysis/cleaning valve commands | Check exact OPC items and read permissions, expected 0/1 mapping, connectivity and physical routing. |
-| Could not verify cleaning pump stopped | Pump 6 is not confirmed off. The code blocks route restoration and the campaign stops. Check the actual pump state. |
+| Could not verify cleaning pump stopped | A Pump 2 or Pump 6 stop is not confirmed. The code blocks route restoration and the campaign stops. Check the actual pump state. |
 | Display update failed | AMF USB control may still work; check the three display item IDs, permissions and LabVision display mapping. |
 | Negative water flow / flow below minimum | Proposed concentration/charge/current combination is infeasible under the stock and flow assumptions. Adjust campaign bounds or formulation. |
 | No new complete UV/VIS spectrum | Check continuous export, incrementing filenames, folder/pattern, wavelength coverage and timeout. |
@@ -681,12 +691,14 @@ These display items require writable OPC/LabVision variables. The USB device is 
 
 ## Final routing reference
 
-| Phase | V_01 OPEN | V_01 CLOSE | V_02 OPEN | V_02 CLOSE | Pump 6 |
-|---|---|---|---|---|---|
-| Startup / stabilization to waste | 0 | 0 | 0 | 0 | 0 |
-| Electrolysis / UV/VIS flush and measurement | 1 | 1 | 0 | 0 | 0 |
-| Cleaning | 0 | 0 | 1 | 1 | 1 mL/min for 60 s |
-| Normal end of cleaning | 0 | 0 | 0 | 0 | 0, verified before changing mode |
+| Phase | V_01 OPEN | V_01 CLOSE | V_02 OPEN | V_02 CLOSE | Pump 2 (mL/min) | Pump 6 (mL/min) |
+|---|---|---|---|---|---|---|
+| Startup / stabilization | 0 | 0 | 0 | 0 | Reaction setting | 0 |
+| UV/VIS flush / measurement | 1 | 1 | 0 | 0 | Reaction setting | 0 |
+| Water before ethanol | 1 | 1 | 0 | 0 | 2 | 0 |
+| Ethanol | 1 | 1 | 1 | 1 | 0 | 2 |
+| Final water | 1 | 1 | 0 | 0 | 2 | 0 |
+| After cleaning | 0 | 0 | 0 | 0 | 0 | 0 |
 
 ## Interpreting a verification message
 
@@ -698,14 +710,14 @@ Use the appropriate LabVision indications and laboratory checks to establish act
 
 # Appendix C. Source references and document control
 
-This manual was prepared from local source inspection on **20 November 2026**. It documents the working-copy behavior, including matched inlet/outlet cell routing, protocol-aware water-only cleaning, independent V_02 electrolysis/cleaning and V_01 UV/VIS/waste timing, the analytical branch flush, selectable CV/SD spectral stability, UV/VIS dilution and the Degradation objective. It does not introduce code changes or validate a chemical method.
+This manual was prepared from local source inspection on **23 November 2026**. It documents the working-copy behavior, including matched inlet/outlet cell routing, protocol-aware water/ethanol/water cleaning, independent V_02 electrolysis/cleaning and V_01 UV/VIS/waste timing, the analytical branch flush, selectable CV/SD spectral stability, UV/VIS dilution and the Degradation objective. It does not introduce code changes or validate a chemical method.
 
-**Repository reference:** `3097c9b` plus the working-copy configuration captured by the protocol hash below.
+**Repository reference:** `b66c134` plus the working-copy configuration captured by the protocol hash below.
 
 **MB protocol SHA-256:**
 
 ```text
-2745e8a56bffa187f173d1e74eebb0d2830aec1fa3ae26f622668130426c1b09
+1161aa7e233c8e307c263029969b6263ddaf0f98bace2310450bf22e2dcbd1aa
 ```
 
 | Ref. | Source file or area |

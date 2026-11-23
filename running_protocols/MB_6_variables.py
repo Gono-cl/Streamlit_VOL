@@ -226,10 +226,12 @@ def set_uvvis_dilution_flow(runner, flow_ml_min):
 PUMP_CLEANING_TAG = "Hitec_OPC_DA20_Server-%3EE_CHEM%3APUMP_6.W1"
 # ROT_VALVE is now the cell INLET selector. The external USB AMF valve is
 # the matching OUTLET selector. Both use ports 1/2/3 for EC1/EC2/EC3.
-# Pump 6 has a direct water supply and does not select a cleaning-liquid port.
+# Pump 6 supplies ethanol directly; Pump 2 supplies water.
 CELL_INLET_VALVE_TAG = "Hitec_OPC_DA20_Server-%3EE_CHEM%3AROT_VALVE.POS"
-CLEANING_FLOW_ML_MIN = 1.0
-CLEANING_DURATION_S = 60.0
+CLEANING_FLOW_ML_MIN = 2.0
+CLEANING_WATER_PRE_DURATION_S = 60.0
+CLEANING_ETHANOL_DURATION_S = 60.0
+CLEANING_WATER_POST_DURATION_S = 90.0
 
 # V_02 selects electrolysis (0) or cleaning (1).
 # V_01 independently selects UV/Vis (1) or waste (0).
@@ -1749,87 +1751,138 @@ def autosampler_flow_rate(
 
 def _cleaning_settings(runner):
     config = getattr(runner, "adapter_config", {}) or {}
-    flow = float(config.get("cleaning_flow_ml_min", CLEANING_FLOW_ML_MIN))
-    duration = float(config.get("cleaning_duration_s", CLEANING_DURATION_S))
-    if not math.isfinite(flow) or flow <= 0:
-        raise ValueError("Cleaning flow must be finite and positive, in mL/min.")
-    if not math.isfinite(duration) or duration <= 0:
-        raise ValueError("Cleaning duration must be finite and positive, in seconds.")
-    # Legacy cleaning_water_port settings have no effect: water is supplied
-    # directly, and changing ROT_VALVE would now select a different cell.
-    return flow, duration
+
+    def positive(value, description):
+        try:
+            number = float(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"{description} must be finite and positive.") from exc
+        if isinstance(value, bool) or not math.isfinite(number) or number <= 0:
+            raise ValueError(f"{description} must be finite and positive.")
+        return number
+
+    stages = []
+    for key, label, tag, mode, default_duration in (
+        ("water_pre", "Water before ethanol", PUMP_WATER_TAG, "electrolysis", CLEANING_WATER_PRE_DURATION_S),
+        ("ethanol", "Ethanol", PUMP_CLEANING_TAG, "cleaning", CLEANING_ETHANOL_DURATION_S),
+        ("water_post", "Final water", PUMP_WATER_TAG, "electrolysis", CLEANING_WATER_POST_DURATION_S),
+    ):
+        flow = positive(config.get(f"cleaning_{key}_flow_ml_min", config.get(
+            "cleaning_flow_ml_min", CLEANING_FLOW_ML_MIN)), "Cleaning flow (mL/min)")
+        # Preserve explicit older Pump 6 duration overrides for its ethanol step.
+        fallback_duration = config.get("cleaning_duration_s", default_duration) if key == "ethanol" else default_duration
+        duration = positive(config.get(f"cleaning_{key}_duration_s", fallback_duration), "Cleaning duration (s)")
+        command = round(flow * (1000.0 if tag == PUMP_WATER_TAG else 1.0), 4)
+        if not math.isfinite(command) or command <= 0:
+            raise ValueError("Cleaning flow cannot be represented by the pump command.")
+        stages.append({"label": label, "tag": tag, "mode": mode,
+                       "flow_ml_min": flow, "command": command, "duration_s": duration})
+    # cleaning_water_port is ignored; ROT_VALVE always selects the cell inlet.
+    return stages
+
+
+def _stop_cleaning_flows(runner):
+    """Attempt both stops; neither valve may move while either pump is uncertain."""
+    errors = []
+    for tag, name in ((PUMP_WATER_TAG, "Pump 2 water"), (PUMP_CLEANING_TAG, "Pump 6 ethanol")):
+        try:
+            _required_write(runner, tag, 0)
+            _verify_opc_values(runner, ((tag, 0),), f"{name} stopped")
+        except Exception as exc:
+            errors.append(exc)
+            print(f"Warning: {name} stop could not be verified: {exc}")
+    runner._mb_cleaning_active = bool(errors)
+    if errors:
+        raise RuntimeError("Cleaning-pump shutdown is uncertain: " + "; ".join(map(str, errors))) from errors[0]
+
+
+def _verify_cleaning_idle(runner, cell_port):
+    _verify_opc_values(runner, POWER_OFF_TAGS + FEED_STOP_TAGS + ((PUMP_CLEANING_TAG, 0),),
+                       "power and pumps stopped before cleaning valve change")
+    runner.spm.get_syringe_state()
+    _verify_cell_route(runner, cell_port)
 
 
 def cleanup(runner, parameters):
-    """Rinse the selected cell with water; retain the separate SPM contents.
+    """Rinse the selected cell and UV/Vis path with water, ethanol, then water.
 
     Called after feed shutdown. Failed experiments or unverified shutdowns
-    never start Pump 6. The same electrolysis commands are reasserted and
-    read back again at the start of every experiment. Both cell selectors
-    stay on the selected cell; their readbacks are checked before water flow
-    and after Pump 6 stops. Pump 6 receives water directly.
+    never start cleaning flows. Pump 2 supplies water through V_02=0 and
+    Pump 6 supplies ethanol through V_02=1. V_01=1 sends all three rinses
+    through UV/Vis. Pumps stop before switching V_02; both cell selectors
+    stay on the selected cell. The separate SPM contents are retained.
     """
     if runner.simulation_mode not in ("off", "hybrid"):
-        print("Full simulation mode: skipping water cleaning.")
+        print("Full simulation mode: skipping water/ethanol/water cleaning.")
         return
     if not getattr(runner, "_experiment_completed", True):
-        print("Experiment failed: skipping automatic water cleaning; shutdown only.")
+        print("Experiment failed: skipping automatic cleaning; shutdown only.")
         return
     if not getattr(runner, "_mb_feed_shutdown_confirmed", False):
-        print("Feed shutdown is unverified: skipping automatic water cleaning.")
+        print("Feed shutdown is unverified: skipping automatic cleaning.")
         return
 
-    flow, duration = _cleaning_settings(runner)
+    stages = _cleaning_settings(runner)
     cell_name = str((parameters or {}).get("cell", ""))
     if cell_name not in CELL_METADATA:
-        raise ValueError("Water cleaning requires the selected cell (EC1, EC2 or EC3).")
+        raise ValueError("Cleaning requires the selected cell (EC1, EC2 or EC3).")
     cell_port = int(CELL_METADATA[cell_name]["cell_port"])
     error = None
     cleaning_stopped = False
     try:
         _ensure_power_off(runner)
-        _verify_opc_values(runner, FEED_STOP_TAGS, "reagent feeds stopped before cleaning")
-        runner.spm.get_syringe_state()
-        _stop_cleaning_pump(runner)
-        _set_uvvis_route(runner, "waste")
-        _set_flow_mode(runner, "cleaning")
-        _verify_cell_route(runner, cell_port)
-        print(f"Water cleaning: Pump 6 at {flow:g} mL/min for {duration:g} s "
-              f"({flow * duration / 60.0:g} mL), inlet/outlet cell port {cell_port} retained.")
-        # Set the flag before attempting start: a lost reply leaves motion uncertain.
-        runner._mb_cleaning_active = True
-        _required_write(runner, PUMP_CLEANING_TAG, flow)
-        _verify_opc_values(runner, ((PUMP_CLEANING_TAG, flow),), "cleaning flow command")
-        time.sleep(duration)
+        _stop_cleaning_flows(runner)
+        for index, stage in enumerate(stages, 1):
+            _verify_cleaning_idle(runner, cell_port)
+            _set_flow_mode(runner, stage["mode"])
+            _set_uvvis_route(runner, "uvvis")
+            print(f"Cleaning {index}/{len(stages)}: {stage['label']}, "
+                  f"{stage['flow_ml_min']:g} mL/min for {stage['duration_s']:g} s "
+                  f"({stage['flow_ml_min'] * stage['duration_s'] / 60.0:g} mL); "
+                  f"cell port {cell_port}, outlet through UV/Vis.")
+            # Mark motion uncertain before starting; a lost reply can leave a pump running.
+            runner._mb_cleaning_active = True
+            runner._mb_feed_shutdown_confirmed = False
+            _required_write(runner, stage["tag"], stage["command"])
+            _verify_opc_values(runner, ((stage["tag"], stage["command"]),), "cleaning flow command")
+            time.sleep(stage["duration_s"])
+            _stop_cleaning_flows(runner)
+            _verify_cell_route(runner, cell_port)
+            commands = VALVE_ELECTROLYSIS_TAGS if stage["mode"] == "electrolysis" else VALVE_CLEANING_TAGS
+            _verify_opc_values(runner, commands + UVVIS_MEASUREMENT_TAGS, "cleaning route commands")
     except BaseException as exc:
         error = exc
     finally:
         try:
-            _stop_cleaning_pump(runner)
+            _stop_cleaning_flows(runner)
+            _verify_cleaning_idle(runner, cell_port)
             cleaning_stopped = True
         except Exception as exc:
             if error is None:
                 error = exc
             else:
-                print(f"Cleaning-pump shutdown also failed: {exc}")
-        # Never switch the water path while Pump 6 might still be flowing.
+                print(f"Cleaning shutdown or idle verification also failed: {exc}")
+        # Never move either switching valve if a cleaning pump may still be flowing.
         if cleaning_stopped:
-            try:
-                _set_flow_mode(runner, "electrolysis")
-                _verify_cell_route(runner, cell_port)
-            except Exception as exc:
-                if error is None:
-                    error = exc
-                else:
-                    print(f"Restoring electrolysis mode or confirming the cell route also failed: {exc}")
+            for restore in (lambda: _set_uvvis_route(runner, "waste"),
+                            lambda: _set_flow_mode(runner, "electrolysis"),
+                            lambda: _verify_cell_route(runner, cell_port)):
+                try:
+                    restore()
+                except Exception as exc:
+                    if error is None:
+                        error = exc
+                    else:
+                        print(f"Restoring the stopped route also failed: {exc}")
     if error is not None:
         runner._mb_feed_shutdown_confirmed = False
         raise error
-    print("Water cleaning complete; Pump 6 stopped and electrolysis mode restored.")
+    runner._mb_feed_shutdown_confirmed = True
+    print("Water/ethanol/water cleaning complete; pumps stopped, electrolysis mode and waste route restored.")
 
 
 def cleaning_electrochemical_cell(runner):
-    """Route reproducibility/maintenance cleaning through the MB water-only path."""
+    """Use the same MB water/ethanol/water sequence for maintenance cleaning."""
     if runner.simulation_mode not in ("off", "hybrid"):
         return
     if getattr(runner, "closed", False):

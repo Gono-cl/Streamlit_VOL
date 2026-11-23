@@ -162,7 +162,9 @@ class CellRoutingTests(unittest.TestCase):
 
                 def during_clean(seconds):
                     self.assert_route(port)
-                    self.assertEqual(self.runner.opc.values[protocol.PUMP_CLEANING_TAG], 1)
+                    water = self.runner.opc.values[protocol.PUMP_WATER_TAG]
+                    ethanol = self.runner.opc.values[protocol.PUMP_CLEANING_TAG]
+                    self.assertIn((water, ethanol), [(2000.0, 0), (0, 2.0)])
                 self.sleep.side_effect = during_clean
                 protocol.cleanup(self.runner, params)
                 self.sleep.side_effect = None
@@ -210,7 +212,7 @@ class CellRoutingTests(unittest.TestCase):
         self.runner.opc.write_value.assert_not_called()
         self.runner.opc.read_value.assert_not_called()
 
-    def test_reproducibility_cleaning_uses_water_only_and_retains_cell_three(self):
+    def test_reproducibility_cleaning_uses_three_stages_and_retains_cell_three(self):
         self.prepare_and_stop()
         self.runner.running_protocol_module = protocol
         moves = self.runner.cell_valve.move_to.call_count
@@ -221,7 +223,10 @@ class CellRoutingTests(unittest.TestCase):
                              for args in self.runner.opc.write_value.call_args_list))
         flows = [args.args[1] for args in self.runner.opc.write_value.call_args_list
                  if args.args[0] == protocol.PUMP_CLEANING_TAG and args.args[1] > 0]
-        self.assertEqual(flows, [1.0])
+        self.assertEqual(flows, [2.0])
+        water = [c.args[1] for c in self.runner.opc.write_value.call_args_list
+                 if c.args[0] == protocol.PUMP_WATER_TAG and c.args[1] > 0]
+        self.assertEqual(water, [2000.0, 2000.0])
         self.assertEqual(self.runner.opc.values[protocol.PUMP_CLEANING_TAG], 0)
 
     def test_additional_cleaning_cannot_fall_back_after_an_mb_error(self):
