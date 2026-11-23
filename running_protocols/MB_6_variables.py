@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import csv
+import json
 import math
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 
@@ -361,6 +362,42 @@ BKK_CHANNEL_TAGS = {
     2: "Hitec_OPC_DA20_Server->E_CHEM:BKK_USER_DEFINE.CHANNEL2",
     3: "Hitec_OPC_DA20_Server->E_CHEM:BKK_USER_DEFINE.CHANNEL3",
 }
+
+# Read-only electrical snapshots attached to each UV/Vis spectrum.
+BKK_TELEMETRY_TAGS = (
+    ("BKK Set Voltage (V)", "Hitec_OPC_DA20_Server->E_CHEM:BKK_P.SETVOLT"),
+    ("BKK Read Voltage (V)", "Hitec_OPC_DA20_Server->E_CHEM:BKK_P.VOLT"),
+    ("BKK Set Current (A)", "Hitec_OPC_DA20_Server->E_CHEM:BKK_P.SETCURR"),
+    ("BKK Read Current (A)", "Hitec_OPC_DA20_Server->E_CHEM:BKK_P.CURR"),
+)
+BKK_TELEMETRY_TIMEOUT_S = 1.0
+
+
+def uvvis_acquisition_metadata(runner, parameters):
+    """Read each BKK value after a fresh spectrum is read; never command hardware."""
+    if runner.simulation_mode != "off":
+        return {}
+    snapshot = {column: None for column, _ in BKK_TELEMETRY_TAGS}
+    snapshot["BKK Telemetry Start (UTC)"] = datetime.now(timezone.utc).isoformat(timespec="milliseconds")
+    errors = {}
+    for column, tag in BKK_TELEMETRY_TAGS:
+        try:
+            value = runner.opc.read_value(tag, timeout=BKK_TELEMETRY_TIMEOUT_S)
+            if value is None or isinstance(value, bool):
+                raise ValueError("No numeric OPC value returned.")
+            number = float(value.strip().replace(",", ".")) if isinstance(value, str) else float(value)
+            if not math.isfinite(number):
+                raise ValueError("OPC value is not finite.")
+            snapshot[column] = number
+        except Exception as exc:
+            errors[column] = f"{type(exc).__name__}: {exc}"
+    snapshot["BKK Telemetry End (UTC)"] = datetime.now(timezone.utc).isoformat(timespec="milliseconds")
+    snapshot["BKK Telemetry Status"] = (
+        "ok" if not errors else "unavailable" if len(errors) == len(BKK_TELEMETRY_TAGS) else "partial")
+    snapshot["BKK Telemetry Errors"] = json.dumps(errors, sort_keys=True) if errors else ""
+    if errors:
+        print(f"BKK telemetry {snapshot['BKK Telemetry Status']}: " + ", ".join(errors))
+    return snapshot
 
 
 # ============================================================

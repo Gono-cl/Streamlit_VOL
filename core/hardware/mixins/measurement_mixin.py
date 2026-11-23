@@ -119,6 +119,8 @@ class MeasurementMixin:
                 **(parameters or {}), "Measurement #": index, "Value": value,
                 "Absorbance": acquisition["absorbance"], "Wavelength (nm)": acquisition["wavelength"],
                 "Spectrum File": acquisition["file"], "Concentration Unit": provider.concentration_unit,
+                "Spectrum Read Timestamp (UTC)": acquisition.get("read_timestamp_utc", ""),
+                "Acquisition Telemetry Error": acquisition.get("metadata_error", ""),
                 "Accepted": accepted, "Range Status": result["status"] if result else "acquisition_failed",
                 "Absorbance CV (%)": result["absorbance_cv"] if result else "",
                 "Absorbance SD (AU)": result["absorbance_sd"] if result else "",
@@ -145,31 +147,37 @@ class MeasurementMixin:
                     "Dilution Max Attempts": context["max_attempts"],
                     "Attempt Used for Result": False,
                 })
+            # Optional protocol fields must not overwrite optical or dilution data.
+            for key, value in acquisition.get("metadata", {}).items():
+                row.setdefault(key, value)
             self.full_measurement_log.append(row)
 
     def _collect_uvvis_measurements(self, iteration, parameters):
         provider = self._get_uvvis_measurement()
-        config = self._get_uvvis_dilution_settings(provider, parameters)
-        if config is not None:
-            start = len(self.full_measurement_log)
-            result = collect_with_dilution(
-                provider, config,
-                set_water_flow=lambda flow: self.protocol_uvvis_set_flow_fn(self, flow),
-                on_attempt=lambda outcome, acquisitions, context: self._log_uvvis_attempt(
-                    provider, outcome, acquisitions, iteration, parameters, context),
-            )
-            self.last_measurement_result = result
-            for row in self.full_measurement_log[start:]:
-                row["Attempt Used for Result"] = bool(
-                    row["Dilution Attempt"] == result["attempt"] and row["Accepted"])
-            return result["corrected_concentration"]
-        result = None
-        try:
-            result = provider.measure()
-            self.last_measurement_result = result
-            return provider.require_valid(result)
-        finally:
-            self._log_uvvis_attempt(provider, result, provider.reader.acquisitions, iteration, parameters)
+        hook = getattr(self, "protocol_uvvis_acquisition_metadata_fn", None)
+        callback = (lambda: hook(self, parameters)) if callable(hook) and self.simulation_mode == "off" else None
+        with provider.capture_acquisition_metadata(callback):
+            config = self._get_uvvis_dilution_settings(provider, parameters)
+            if config is not None:
+                start = len(self.full_measurement_log)
+                result = collect_with_dilution(
+                    provider, config,
+                    set_water_flow=lambda flow: self.protocol_uvvis_set_flow_fn(self, flow),
+                    on_attempt=lambda outcome, acquisitions, context: self._log_uvvis_attempt(
+                        provider, outcome, acquisitions, iteration, parameters, context),
+                )
+                self.last_measurement_result = result
+                for row in self.full_measurement_log[start:]:
+                    row["Attempt Used for Result"] = bool(
+                        row["Dilution Attempt"] == result["attempt"] and row["Accepted"])
+                return result["corrected_concentration"]
+            result = None
+            try:
+                result = provider.measure()
+                self.last_measurement_result = result
+                return provider.require_valid(result)
+            finally:
+                self._log_uvvis_attempt(provider, result, provider.reader.acquisitions, iteration, parameters)
 
     def calculate_rsd(self, measurements: List[float]):
         return (np.std(measurements) / np.mean(measurements)) * 100 if np.mean(measurements) != 0 else float("inf")

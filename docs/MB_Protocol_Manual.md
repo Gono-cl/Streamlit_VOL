@@ -1,9 +1,9 @@
 # MB Protocol Manual
 
 **Virtual Optimization Lab (Streamlit_VOL)**  
-Operator and developer reference · Version 1.7 · 23 November 2026
+Operator and developer reference · Version 1.8 · 23 November 2026
 
-Based on the current working copy, including matched inlet/outlet cell routing, waste diversion during startup, a volume-based UV/VIS branch flush and automatic downstream dilution, with selectable CV/SD spectral stability. This document describes implemented software behavior and identifies the analytical work that remains to be validated. Source references [S1]–[S17] appear in the final section.
+Based on the current working copy, including matched inlet/outlet cell routing, waste diversion during startup, a volume-based UV/VIS branch flush and automatic downstream dilution, with selectable CV/SD spectral stability and per-spectrum electrical snapshots. This document describes implemented software behavior and identifies the analytical work that remains to be validated. Source references [S1]–[S17] appear in the final section.
 
 <!-- MANUAL BODY -->
 
@@ -508,7 +508,7 @@ Launch `streamlit run main.py` from the project directory. Most result paths are
 | DOE checkpoint | `resumable_doe_executor_runs/<run>/` | `input_plan.csv`, results CSV and metadata; no optimizer state |
 | MB operating-point log | `MB_experiment_log.csv` | Shared, append-only preparation records with calculated flows/timing and status |
 | Raw OPC measurements | `raw_measurements/<name>_measurements.csv` | Individual readings appended at explicit raw-log save calls |
-| Raw UV/VIS measurements | `raw_measurements/<name>_uvvis_measurements.csv` | Individual acquisitions, concentration, absorbance and validation/calibration fields |
+| Raw UV/VIS measurements | `raw_measurements/<name>_uvvis_measurements.csv` | Individual acquisitions, optical validation/calibration fields and MB electrical snapshots |
 | Experiment database | `experiments.db` | SQLite experiment records, with results and settings serialized as JSON |
 | Original spectra / calibration | Configured folder and calibration JSON path | Source analytical evidence; not automatically copied into a run folder |
 
@@ -520,13 +520,32 @@ CSV/Excel download buttons generate browser downloads; the advertised export fil
 
 <!-- pagebreak -->
 
+## Electrical snapshots with each spectrum
+
+For real MB UV/VIS experiments, uvvis_acquisition_metadata() reads four BKK OPC values immediately after each distinct, validated spectral CSV is read. This happens before calculating the replicate mean, including extra stability readings and every dilution attempt. Each snapshot stays attached to its spectrum, including partial acquisitions retained after a later optical timeout.
+
+| Raw CSV column | OPC item ID |
+|---|---|
+| BKK Set Voltage (V) | Hitec_OPC_DA20_Server->E_CHEM:BKK_P.SETVOLT |
+| BKK Read Voltage (V) | Hitec_OPC_DA20_Server->E_CHEM:BKK_P.VOLT |
+| BKK Set Current (A) | Hitec_OPC_DA20_Server->E_CHEM:BKK_P.SETCURR |
+| BKK Read Current (A) | Hitec_OPC_DA20_Server->E_CHEM:BKK_P.CURR |
+
+Timestamp retains the spectral file's modification time in UTC. Spectrum Read Timestamp (UTC) records when VOL read the valid CSV. BKK Telemetry Start (UTC) and BKK Telemetry End (UTC) bound four sequential OPC reads, each with a 1 s timeout. These are software timestamps, not hardware-synchronized optical/electrical acquisitions. OPC update timing can add further lag; the existing client returns tag values without independent quality/source-timestamp validation.
+
+BKK Telemetry Status is ok when all four reads yield finite numeric values, partial when some are unavailable and unavailable when none can be read. Missing, nonnumeric or nonfinite values remain blank, while a real numeric zero stays zero. BKK Telemetry Errors records per-field failures as JSON. An unexpected metadata-hook failure is recorded in Acquisition Telemetry Error. Electrical telemetry is optional logging: its failure does not discard a valid optical result or bypass optical stability/range checks.
+
+The fields are written with their corresponding rows to raw_measurements/<name>_uvvis_measurements.csv at the existing raw-log save calls. Older CSVs gain the new columns while retaining previous rows; historical electrical fields remain blank. Snapshots occur during acquisition, before normal power shutdown and cleaning. This read-only hook is scoped to real MB measurements; standalone UV/VIS tests and simulation do not read the power supply. Other protocols can opt in with the same optional hook.
+
+<!-- pagebreak -->
+
 # 17. Reading and preserving the data
 
 ## Campaign result rows
 
 A typical single-objective row includes `Experiment #`, `Timestamp`, all six proposed parameters, `Measurement`, and the selected objective column. Multi-objective rows contain each selected objective instead. These values are saved after the runner returns successfully, including its shutdown and cleaning. Selecting Degradation also records Inlet Concentration, Outlet Concentration, Degradation (%) and Degradation Basis. The selected objective is stored as Degradation; the separate percentage field always contains the physical value.
 
-UV/VIS adds fields such as `Measurement Source`, `Concentration Unit`, `UV/VIS Concentration`, absorbance, absorbance SD, CV, acceptance/range status, extra measurements, calibration path and calibration ID. The raw UV/VIS CSV includes the original spectrum filename and acquisition wavelength, final-window SD and CV, configured stability mode, governing criterion, limit and units, and both configured thresholds. Used for Stability Window identifies spectra in the final rolling window. Earlier acquisitions remain in the log; stability statistics describe the final window. These settings are saved with the campaign and restored on resume. Existing campaigns retain CV mode until changed. Automatic MB dilution also adds `UV/VIS Measured Concentration`, `UV/VIS Corrected Concentration`, `UV/VIS Dilution Factor`, three flow fields, attempt count, wait, history and stop verification. `UV/VIS Concentration` is the corrected value in this mode. Raw `Value` and `Measured Concentration` are detector values; raw corrected values are supplied only for optically valid attempts. The final successful attempt is marked separately from rejected or incomplete attempts. With Degradation selected, raw rows also record the inlet, accepted outlet and per-reading percentage. Rejected optical attempts receive no degradation value. Their original detector readings remain preserved.
+UV/VIS adds fields such as `Measurement Source`, `Concentration Unit`, `UV/VIS Concentration`, absorbance, absorbance SD, CV, acceptance/range status, extra measurements, calibration path and calibration ID. The raw UV/VIS CSV includes the original spectrum filename and acquisition wavelength, with MB set/read voltage and current snapshots captured per spectrum (Section 16), final-window SD and CV, configured stability mode, governing criterion, limit and units, and both configured thresholds. Used for Stability Window identifies spectra in the final rolling window. Earlier acquisitions remain in the log; stability statistics describe the final window. These settings are saved with the campaign and restored on resume. Existing campaigns retain CV mode until changed. Automatic MB dilution also adds `UV/VIS Measured Concentration`, `UV/VIS Corrected Concentration`, `UV/VIS Dilution Factor`, three flow fields, attempt count, wait, history and stop verification. `UV/VIS Concentration` is the corrected value in this mode. Raw `Value` and `Measured Concentration` are detector values; raw corrected values are supplied only for optically valid attempts. The final successful attempt is marked separately from rejected or incomplete attempts. With Degradation selected, raw rows also record the inlet, accepted outlet and per-reading percentage. Rejected optical attempts receive no degradation value. Their original detector readings remain preserved.
 
 ## Metadata and optimizer state
 
@@ -578,7 +597,7 @@ Use this map when changing or reviewing the implementation. Relative paths are f
 
 | File / area | Relevant responsibilities |
 |---|---|
-| `running_protocols/MB_6_variables.py` | `required_parameter_keys`, `_compute_operating_point`, `_prepare_spm_electrolyte`, `_set_flow_mode`, `_select_bkk_channel`, `prepare_hardware`, `_select_cell`, `_verify_cell_route`, `stop_pumps`, `cleanup`, `cleaning_electrochemical_cell`, `emergency_shutdown`, `uvvis_dilution_settings`, `set_uvvis_dilution_flow` |
+| `running_protocols/MB_6_variables.py` | `required_parameter_keys`, `_compute_operating_point`, `_prepare_spm_electrolyte`, `_set_flow_mode`, `_select_bkk_channel`, `prepare_hardware`, `_select_cell`, `_verify_cell_route`, `stop_pumps`, `cleanup`, `cleaning_electrochemical_cell`, `emergency_shutdown`, `uvvis_dilution_settings`, `set_uvvis_dilution_flow`, `uvvis_acquisition_metadata` |
 | `core/hardware/experimental_run.py` | `ExperimentRunner`, protocol-hook selection, USB/OPC display helpers, measurement/objective fallback, success/cleanup status, raw-log writes |
 | `core/hardware/protocol_scripts.py` | Discovers/imports protocol Python files and reads optional protocol hooks/metadata |
 | `core/hardware/AMF_hardware/spm_pump.py` | USB discovery, homing, real-encoder volume conversion, absolute moves, verified stopping |
@@ -619,7 +638,7 @@ A custom calculation hook receives `(runner, mean_measurement, parameters, objec
 
 Dilution adapter overrides are `uvvis_dilution_max_flow_ml_min`, `uvvis_dilution_wait_s` and `uvvis_dilution_max_attempts` in `process_adapter_config`. Saved effective settings are used when no override is supplied. The water limit may be lowered but cannot exceed the 6.25 mL/min protocol ceiling. Wait must be positive; attempts must be an integer from 1 to 20. There is no dedicated dilution-settings form.
 
-Relevant regression checks are in `tests/test_mb_cleaning.py`, `tests/test_amf_display.py`, `tests/test_spm_refill.py`, `tests/test_hardware_connections.py`, campaign setup tests, UV/VIS integration tests and `tests/test_uvvis_dilution.py` and `tests/test_degradation.py`, `tests/test_mb_cell_routing.py` and `tests/test_mb_uvvis_routing.py` and `tests/test_uvvis_stability.py`. They use simulated devices and test behavior; passing them is not a validation of changed physical tubing or analytical chemistry.
+Relevant regression checks are in `tests/test_mb_cleaning.py`, `tests/test_amf_display.py`, `tests/test_spm_refill.py`, `tests/test_hardware_connections.py`, campaign setup tests, UV/VIS integration tests and `tests/test_uvvis_dilution.py` and `tests/test_degradation.py`, `tests/test_mb_cell_routing.py` and `tests/test_mb_uvvis_routing.py`, `tests/test_uvvis_stability.py` and `tests/test_uvvis_bkk_logging.py`. They use simulated devices and test behavior; passing them is not a validation of changed physical tubing or analytical chemistry.
 
 Keep the default project README general. This dedicated manual is the place for MB-specific operating details. Update it after changing wiring, stock assumptions, objective formulas or persistence behavior.
 
@@ -710,14 +729,14 @@ Use the appropriate LabVision indications and laboratory checks to establish act
 
 # Appendix C. Source references and document control
 
-This manual was prepared from local source inspection on **23 November 2026**. It documents the working-copy behavior, including matched inlet/outlet cell routing, protocol-aware water/ethanol/water cleaning, independent V_02 electrolysis/cleaning and V_01 UV/VIS/waste timing, the analytical branch flush, selectable CV/SD spectral stability, UV/VIS dilution and the Degradation objective. It does not introduce code changes or validate a chemical method.
+This manual was prepared from local source inspection on **23 November 2026**. It documents the working-copy behavior, including matched inlet/outlet cell routing, protocol-aware water/ethanol/water cleaning, independent V_02 electrolysis/cleaning and V_01 UV/VIS/waste timing, the analytical branch flush, selectable CV/SD spectral stability, UV/VIS dilution, per-spectrum BKK snapshots and the Degradation objective. It does not introduce code changes or validate a chemical method.
 
-**Repository reference:** `b66c134` plus the working-copy configuration captured by the protocol hash below.
+**Repository reference:** `5ba2bcf` plus the working-copy configuration captured by the protocol hash below.
 
 **MB protocol SHA-256:**
 
 ```text
-1161aa7e233c8e307c263029969b6263ddaf0f98bace2310450bf22e2dcbd1aa
+c90d18fc0348c8a54aabf5a54b12c8a276129d9a6cf070efb9cf64ecda3db3d0
 ```
 
 | Ref. | Source file or area |

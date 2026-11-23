@@ -80,6 +80,7 @@ class AutoDilutionTests(unittest.TestCase):
         self.runner.full_measurement_log = []
         self.runner.protocol_uvvis_dilution_fn = protocol.uvvis_dilution_settings
         self.runner.protocol_uvvis_set_flow_fn = protocol.set_uvvis_dilution_flow
+        self.runner.protocol_uvvis_acquisition_metadata_fn = protocol.uvvis_acquisition_metadata
         self.runner.protocol_prepare_fn = Mock()
         self.runner.protocol_calculate_fn = Mock(side_effect=lambda runner, value, *args: {"Concentration": value})
         self.runner.protocol_stop_pumps_fn = Mock()

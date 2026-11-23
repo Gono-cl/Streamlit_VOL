@@ -147,6 +147,7 @@ class ExperimentRunner(
         self.protocol_measurement_tag_fn = self._protocol_callable("measurement_tag")
         self.protocol_uvvis_dilution_fn = self._protocol_callable("uvvis_dilution_settings")
         self.protocol_uvvis_set_flow_fn = self._protocol_callable("set_uvvis_dilution_flow")
+        self.protocol_uvvis_acquisition_metadata_fn = self._protocol_callable("uvvis_acquisition_metadata")
         self.experiment_status_placeholder = st.sidebar.empty()
         self.countdown_placeholder = st.empty()
         self.timer_placeholder = st.sidebar.empty()

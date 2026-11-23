@@ -5,6 +5,7 @@ import hashlib
 import json
 import math
 import time
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -66,6 +67,7 @@ class FreshSpectragryphReader(SpectragryphReader):
         self.poll_interval = poll_interval
         self.acquisitions = []
         self._seen = set()
+        self.acquisition_metadata_callback = None
 
     def begin_measurement(self):
         self._seen = set(self.folder.glob(self.file_pattern))
@@ -110,12 +112,23 @@ class FreshSpectragryphReader(SpectragryphReader):
                     else:
                         # Skip older exports from this poll as well as the selected file.
                         self._seen.update(candidate_path for candidate_time, candidate_path, _ in candidates if candidate_time <= modified)
-                        self.acquisitions.append({
+                        acquisition = {
                             "file": str(path),
                             "timestamp": datetime.fromtimestamp(modified / 1e9, timezone.utc).isoformat(),
+                            "read_timestamp_utc": datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
                             "wavelength": measured_wavelength,
                             "absorbance": value,
-                        })
+                        }
+                        self.acquisitions.append(acquisition)
+                        if self.acquisition_metadata_callback is not None:
+                            try:
+                                metadata = self.acquisition_metadata_callback()
+                                if not isinstance(metadata, dict):
+                                    raise TypeError("Acquisition metadata hook must return a dictionary.")
+                                acquisition["metadata"] = dict(metadata)
+                            except Exception as exc:
+                                # Optical data remain usable when optional telemetry fails.
+                                acquisition["metadata_error"] = f"{type(exc).__name__}: {exc}"
                         return path, measured_wavelength, value
             time.sleep(min(self.poll_interval, max(0.0, deadline - time.monotonic())))
         detail = f" Last export error: {last_error}" if last_error else ""
@@ -213,6 +226,16 @@ class UVVisMeasurement:
         })
         self.last_result = result
         return result
+
+    @contextmanager
+    def capture_acquisition_metadata(self, callback):
+        """Attach a runner's optional telemetry only for its acquisition scope."""
+        previous = self.reader.acquisition_metadata_callback
+        self.reader.acquisition_metadata_callback = callback
+        try:
+            yield
+        finally:
+            self.reader.acquisition_metadata_callback = previous
 
     def require_valid(self, result: dict) -> float:
         if not result["accepted"]:
