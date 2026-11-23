@@ -49,6 +49,8 @@ class FlowSpectra:
                 path.write_text(f"Simulated flow spectrum\nWavelength [nm],Absorbance\n"
                                 f"663,{value * .01:.12g}\n664,{value * .01:.12g}\n665,{value * .01:.12g}\n",
                                 encoding="utf-8")
+                timestamp = 1700000000.0 + self.next_export
+                os.utime(path, (timestamp, timestamp))
             self.next_export += 0.5
 
     @contextlib.contextmanager
@@ -285,7 +287,7 @@ class AutoDilutionTests(unittest.TestCase):
         self.run_measurement()
         config = json.loads(json.dumps(measurement_settings(self.runner.__dict__)))
         effective = config["uvvis_config"]["auto_dilution"]
-        self.assertEqual(effective["max_water_flow_ml_min"], 6.25)
+        self.assertEqual(effective["max_water_flow_ml_min"], 3.33)
         self.assertEqual(effective["settle_time_s"], 10)
         self.assertEqual(effective["max_attempts"], 6)
 

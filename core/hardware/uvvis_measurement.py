@@ -26,6 +26,8 @@ UVVIS_DEFAULTS = {
     "cv_threshold": 5.0,
     "stability_mode": "cv",
     "sd_threshold": None,
+    "trend_enabled": True,
+    "trend_threshold": 0.01,
     "max_extra_measurements": 10,
     "spectrum_timeout": 30.0,
 }
@@ -68,10 +70,12 @@ class FreshSpectragryphReader(SpectragryphReader):
         self.acquisitions = []
         self._seen = set()
         self.acquisition_metadata_callback = None
+        self.last_acquisition_timestamp = None
 
     def begin_measurement(self):
         self._seen = set(self.folder.glob(self.file_pattern))
         self.acquisitions = []
+        self.last_acquisition_timestamp = None
 
     def get_latest_absorbance(self, target_wavelength=664.0):
         deadline = time.monotonic() + self.timeout
@@ -120,6 +124,7 @@ class FreshSpectragryphReader(SpectragryphReader):
                             "absorbance": value,
                         }
                         self.acquisitions.append(acquisition)
+                        self.last_acquisition_timestamp = acquisition["timestamp"]
                         if self.acquisition_metadata_callback is not None:
                             try:
                                 metadata = self.acquisition_metadata_callback()
@@ -161,6 +166,8 @@ class UVVisMeasurement:
             cv_threshold=float(self.config["cv_threshold"]),
             stability_mode=self.config["stability_mode"],
             sd_threshold=self.config["sd_threshold"],
+            trend_enabled=self.config["trend_enabled"],
+            trend_threshold=self.config["trend_threshold"],
             max_extra_measurements=int(self.config["max_extra_measurements"]),
             results_file=None,
         )
@@ -183,6 +190,7 @@ class UVVisMeasurement:
     def _validate_settings(self):
         SampleMeasurement.validate_stability_settings(
             self.config["stability_mode"], self.config["cv_threshold"], self.config["sd_threshold"])
+        SampleMeasurement.validate_trend_settings(self.config["trend_enabled"], self.config["trend_threshold"])
         for key in ("spectra_folder", "file_pattern", "calibration_file", "concentration_unit"):
             if not str(self.config[key]).strip():
                 raise ValueError(f"UV/VIS setting '{key}' is required.")
@@ -239,13 +247,8 @@ class UVVisMeasurement:
 
     def require_valid(self, result: dict) -> float:
         if not result["accepted"]:
-            criterion = result.get("stability_criterion", "cv")
-            value = result["absorbance_sd"] if criterion == "sd" else result["absorbance_cv"]
-            threshold = result.get("stability_threshold", float(self.config["cv_threshold"]))
-            units = result.get("stability_units", "%")
             raise MeasurementValidationError(
-                f"UV/VIS stability failed: {criterion.upper()} {value:.6g} {units} "
-                f"exceeds {threshold:g} {units} after "
+                f"UV/VIS stability failed: {self.sample.stability_failure_message(result)} after "
                 f"{result['extra_measurements']} extra measurements."
             )
         concentration = float(result["concentration"])

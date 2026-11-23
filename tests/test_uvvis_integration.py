@@ -2,6 +2,7 @@
 import contextlib
 import io
 import json
+import os
 import shutil
 import unittest
 import uuid
@@ -35,6 +36,8 @@ class ExportClock:
             self.index += 1
             path = self.folder / f"my_acquired_spectra_{self.index:03d}.csv"
             path.write_text(f"Synthetic spectrum\nWavelength [nm],Absorbance\n663,{value}\n664,{value}\n665,{value}\n", encoding="utf-8")
+            timestamp = 1700000000.0 + 0.1 + (self.index - 1) * self.spacing
+            os.utime(path, (timestamp, timestamp))
 
     @contextlib.contextmanager
     def running(self):
@@ -59,6 +62,7 @@ class UVVisIntegrationTests(unittest.TestCase):
             "spectra_folder": str(self.root), "calibration_file": str(self.model_path),
             "concentration_unit": "mM", "n_replicates": 3, "replicate_interval": 0.0,
             "cv_threshold": 5.0, "max_extra_measurements": 2, "spectrum_timeout": 1.0,
+            "trend_enabled": False,  # These tests isolate the original dispersion/range rules.
         }
 
     def tearDown(self):

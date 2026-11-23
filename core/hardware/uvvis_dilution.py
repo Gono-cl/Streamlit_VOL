@@ -92,10 +92,19 @@ def collect_with_dilution(provider, settings, set_water_flow, on_attempt):
                 "stability_criterion": raw.get("stability_criterion", "cv"),
                 "stability_threshold": raw.get("stability_threshold"),
                 "absorbance_sd": raw.get("absorbance_sd"),
+                "trend_enabled": raw.get("trend_enabled"),
+                "trend_accepted": raw.get("trend_accepted"),
+                "trend_threshold_au": raw.get("trend_threshold_au"),
+                "trend_fitted_change_au": raw.get("trend_fitted_change_au"),
+                "trend_slope_au_per_min": raw.get("trend_slope_au_per_min"),
+                "trend_error": raw.get("trend_error", ""),
                 "measured_concentration": measured if math.isfinite(measured) else None,
             })
             result["dilution_history"] = list(history)
             on_attempt(result, list(provider.reader.acquisitions), context)
+            if raw.get("trend_enabled") and not raw.get("trend_accepted"):
+                # A drifting or invalid-time window is not a dilution range result.
+                provider.require_valid(raw)
             if not math.isfinite(measured):
                 provider.require_valid(raw)
                 raise MeasurementValidationError("Invalid UV/VIS acquisition.")

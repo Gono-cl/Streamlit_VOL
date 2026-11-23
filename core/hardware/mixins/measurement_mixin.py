@@ -38,6 +38,7 @@ class MeasurementMixin:
             "UV/VIS Stability Units": result.get("stability_units", "%"),
             "UV/VIS CV Limit (%)": result.get("stability_cv_threshold_pct"),
             "UV/VIS SD Limit (AU)": result.get("stability_sd_threshold_au"),
+            **self._uvvis_trend_fields(result, "UV/VIS "),
             "UV/VIS Accepted": result["accepted"],
             "UV/VIS Range Status": result["status"],
             "UV/VIS Extra Measurements": result["extra_measurements"],
@@ -62,6 +63,26 @@ class MeasurementMixin:
             })
         fields.update(degradation)
         return fields
+
+    @staticmethod
+    def _uvvis_trend_fields(result, prefix=""):
+        keys = {
+            "Dispersion Accepted": "dispersion_accepted",
+            "Trend Enabled": "trend_enabled",
+            "Drift Limit (AU)": "trend_threshold_au",
+            "Trend Accepted": "trend_accepted",
+            "Trend Slope (AU/min)": "trend_slope_au_per_min",
+            "Fitted Drift (AU)": "trend_fitted_change_au",
+            "Absolute Fitted Drift (AU)": "trend_absolute_change_au",
+            "Trend Direction": "trend_direction",
+            "Trend R2": "trend_r2",
+            "Trend Window Duration (s)": "trend_window_duration_s",
+            "Trend Window Start (UTC)": "trend_window_start_utc",
+            "Trend Window End (UTC)": "trend_window_end_utc",
+            "Trend Timestamp Source": "trend_timestamp_source",
+            "Trend Error": "trend_error",
+        }
+        return {prefix + label: (result or {}).get(key) for label, key in keys.items()}
 
     def _degradation_inlet(self, parameters):
         adapter = getattr(self, "process_adapter", None)
@@ -130,10 +151,14 @@ class MeasurementMixin:
                 "Stability Units": result.get("stability_units", "%") if result else "",
                 "CV Limit (%)": provider.config["cv_threshold"],
                 "SD Limit (AU)": provider.config.get("sd_threshold"),
+                **self._uvvis_trend_fields(result),
                 "Used for Stability Window": bool(result and index > len(acquisitions) - int(provider.config["n_replicates"])),
                 "Calibration ID": provider.calibration_id,
                 "Calibration Model": json.dumps(provider.sample.calibration_model, sort_keys=True),
             }
+            # Keep configured settings even when acquisition fails before a window exists.
+            row["Trend Enabled"] = provider.config.get("trend_enabled", True)
+            row["Drift Limit (AU)"] = provider.config.get("trend_threshold", 0.01)
             if context is not None:
                 row.update({
                     "Dilution Attempt": context["attempt"], "Dilution Factor": context["dilution_factor"],

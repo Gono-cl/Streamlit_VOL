@@ -59,14 +59,14 @@ class WaterCleaningTests(unittest.TestCase):
         runner.protocol_cleanup_fn = protocol.cleanup
         runner.collect_measurements = Mock(return_value=result, side_effect=failure)
 
-    def test_seven_millilitre_sequence_preserves_syringe_and_uses_correct_pump_units(self):
+    def test_ten_millilitre_sequence_preserves_syringe_and_uses_correct_pump_units(self):
         self.prepared_and_stopped()
         before = self.sdk.volume
         moves = list(self.sdk.moves)
         contents = self.runner._mb_spm_contents
 
-        stages = iter([(60.0, 2000.0, 0.0, "electrolysis"),
-                       (60.0, 0.0, 2.0, "cleaning"),
+        stages = iter([(90.0, 2000.0, 0.0, "electrolysis"),
+                       (120.0, 0.0, 2.0, "cleaning"),
                        (90.0, 2000.0, 0.0, "electrolysis")])
 
         def during_clean(seconds):
@@ -86,7 +86,7 @@ class WaterCleaningTests(unittest.TestCase):
             self.assertIsNone(self.sdk.pending)
         self.sleep.side_effect = during_clean
         protocol.cleanup(self.runner, PARAMS)
-        self.assertEqual(self.sleep.call_args_list, [call(60.0), call(60.0), call(90.0)])
+        self.assertEqual(self.sleep.call_args_list, [call(90.0), call(120.0), call(90.0)])
         self.assertEqual(len(self.cleaning_starts()), 1)
         self.assertEqual(self.runner.opc.values[protocol.PUMP_CLEANING_TAG], 0)
         self.assertEqual(self.runner.opc.values[protocol.PUMP_WATER_TAG], 0)
@@ -101,7 +101,7 @@ class WaterCleaningTests(unittest.TestCase):
         self.prepared_and_stopped()
         self.runner.adapter_config = {"cleaning_flow_ml_min": 1.5, "cleaning_duration_s": 20}
         protocol.cleanup(self.runner, PARAMS)
-        self.assertEqual(self.sleep.call_args_list, [call(60.0), call(20.0), call(90.0)])
+        self.assertEqual(self.sleep.call_args_list, [call(90.0), call(20.0), call(90.0)])
         self.assertEqual(self.cleaning_starts()[0].args[1], 1.5)
         water = [c.args[1] for c in self.runner.opc.write_value.call_args_list
                  if c.args[0] == protocol.PUMP_WATER_TAG and c.args[1] > 0]
@@ -233,7 +233,7 @@ class WaterCleaningTests(unittest.TestCase):
         self.runner.opc.write_value.side_effect = write
         with self.assertRaisesRegex(RuntimeError, "Required OPC write failed"):
             protocol.cleanup(self.runner, PARAMS)
-        self.assertEqual(self.sleep.call_args_list, [call(60)])
+        self.assertEqual(self.sleep.call_args_list, [call(90)])
         self.assertEqual(self.runner.opc.values[protocol.PUMP_WATER_TAG], 0)
         self.assertEqual(self.runner.opc.values[protocol.PUMP_CLEANING_TAG], 0)
         self.assertFalse(self.runner._mb_feed_shutdown_confirmed)

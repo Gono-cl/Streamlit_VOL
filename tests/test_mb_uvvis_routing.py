@@ -28,7 +28,7 @@ class UVVisRoutingTests(unittest.TestCase):
         for tag, value in commands:
             self.assertEqual(self.runner.opc.values[tag], value)
 
-    def test_waste_during_both_startup_waits_then_one_ml_through_uvvis(self):
+    def test_waste_during_both_startup_waits_then_two_ml_through_uvvis(self):
         op = protocol._compute_operating_point(PARAMS)
         waits = []
         original_write = self.runner.opc.write_value.side_effect
@@ -56,8 +56,8 @@ class UVVisRoutingTests(unittest.TestCase):
         self.sleep.side_effect = wait
         prepared = protocol.prepare_hardware(self.runner, PARAMS)
         self.assertEqual(len(waits), 3)
-        self.assertAlmostEqual(waits[-1], 60.0 / op["total_flow_ml_min"])
-        self.assertEqual(prepared["uvvis_flush_volume_ml"], 1.0)
+        self.assertAlmostEqual(waits[-1], 120.0 / op["total_flow_ml_min"])
+        self.assertEqual(prepared["uvvis_flush_volume_ml"], 2.0)
         self.assertAlmostEqual(prepared["uvvis_flush_time_s"], waits[-1])
 
     def test_diversion_commands_preserve_electrolysis_valve_and_cell_selectors(self):

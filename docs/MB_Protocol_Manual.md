@@ -1,9 +1,9 @@
 # MB Protocol Manual
 
-**Virtual Optimization Lab (Streamlit_VOL)**  
-Operator and developer reference · Version 1.8 · 23 November 2026
+**Virtual Optimization Lab (Streamlit_VOL)**
+Operator and developer reference · Version 1.9 · 23 November 2026
 
-Based on the current working copy, including matched inlet/outlet cell routing, waste diversion during startup, a volume-based UV/VIS branch flush and automatic downstream dilution, with selectable CV/SD spectral stability and per-spectrum electrical snapshots. This document describes implemented software behavior and identifies the analytical work that remains to be validated. Source references [S1]–[S17] appear in the final section.
+Based on the current working copy, including matched inlet/outlet cell routing, waste diversion during startup, a volume-based UV/VIS branch flush and automatic downstream dilution, with selectable CV/SD spectral stability, a timestamp-based absorbance drift check and per-spectrum electrical snapshots. This document describes implemented software behavior and identifies the analytical work that remains to be validated. Source references [S1]–[S17] appear in the final section.
 
 <!-- MANUAL BODY -->
 
@@ -21,13 +21,15 @@ The MB protocol automates methylene blue electrooxidation using six optimization
 | SPM syringe | 5,000 µL; internal port 1 waste, port 5 reactor delivery |
 | First preparation after start/resume | Home to waste, rinse twice with 1,000 µL incoming stock, fill to 5,000 µL |
 | Between matching-electrolyte experiments | Retain remaining stock and top up to 5,000 µL |
-| Water/ethanol/water cleaning | Water / ethanol / water: Pump 2 for 60 s, Pump 6 for 60 s, Pump 2 for 90 s; each at 2 mL/min; through the selected cell and UV/VIS |
+| Water/ethanol/water cleaning | Water / ethanol / water: Pump 2 for 90 s, Pump 6 for 120 s, Pump 2 for 90 s; each at 2 mL/min; through the selected cell and UV/VIS |
 | Cell routing | ROT_VALVE at the cell inlet and AMF at the outlet; matching ports 1/2/3 for EC1/EC2/EC3 |
 | Electrolysis mode | Both V_02 tags = 0; V_01 stays at waste (0) until the measurement phase |
 | Cleaning mode | Both V_01 tags = 1; V_02 = 0 for water and 1 for ethanol |
-| UV/VIS branch flush | 1 mL after switching V_01 to UV/VIS; time = 60 * volume / reactor flow |
+| UV/VIS branch flush | 2 mL after switching V_01 to UV/VIS; time = 60 * volume / reactor flow |
 | Real MB UV/VIS | mg/L calibration; direct first, automatic downstream water dilution if above range |
-| Analytical dilution | Pump 3 maximum 6.25 mL/min; 10 s wait per flow setting; up to 6 attempts including direct |
+| Transport volumes | Upstream 1.0 mL; downstream to diversion valve 1.0 mL |
+| Spectral drift check | Enabled; absolute fitted window change <= 0.010 AU, in addition to SD/CV |
+| Analytical dilution | Pump 3 maximum 3.33 mL/min; 10 s wait per flow setting; up to 6 attempts including direct |
 
 > **Latest valve mapping:** “Both tags” means OPEN and CLOSE. V_02 selects electrolysis/cleaning; V_01 independently selects UV/VIS/waste. These are the rebuilt MB setup’s command values; do not substitute settings from an older PDA protocol.
 
@@ -37,7 +39,7 @@ Cell selection, electrolyte routing and syringe preparation, current and flow ca
 
 ## What needs analytical validation
 
-The MB module currently does not define its own objective-calculation or measurement-tag hook. The runner therefore uses the selected process adapter and measurement configuration. Select Degradation for apparent MB removal from the corrected outlet concentration. Generic yield, throughput and solvent metrics are not MB-removal responses. Review Section 14 before using analytical results to drive optimization. [S1, S3, S6]
+Select Degradation for apparent MB removal from the corrected outlet concentration. Validate the analytical method before optimization; review Section 14 for objective definitions and adapter behavior. [S1, S3, S6]
 
 <!-- pagebreak -->
 
@@ -165,9 +167,9 @@ t_wait = 3 × t_cell + 60 × V_downstream / Q
 t_SPM_capacity,min = 5000 / Q_SPM,µL/min
 ```
 
-`t_flush` occurs before power is enabled. `t_wait` occurs after current is set and power is enabled, with V_01 still directed to waste. Then V_01 switches to UV/VIS and the branch is flushed for `60 * V_UVVIS_flush / Q` seconds. The default branch flush is 1.0 mL; Pump 3 remains stopped. The existing acquisition/dilution settling wait follows this flush.
+`t_flush` occurs before power is enabled. `t_wait` occurs after current is set and power is enabled, with V_01 still directed to waste. Then V_01 switches to UV/VIS and the branch is flushed for `60 * V_UVVIS_flush / Q` seconds. The default branch flush is 2.0 mL; Pump 3 remains stopped. The existing acquisition/dilution settling wait follows this flush.
 
-> **Dead-volume placeholders:** `UPSTREAM_DEAD_VOLUME_ML` and `DOWNSTREAM_DEAD_VOLUME_ML` are both currently 0.0. The calculated startup waits therefore omit unmeasured transport volumes. DOWNSTREAM_DEAD_VOLUME_ML now covers the reactor outlet to the diversion valve, including any separator. Enter the measured volumes. Separately validate that the 1 mL analytical branch flush clears the tubing after V_01 and the flow cell. A stable detector signal alone does not prove that a new formulation has reached the detector.
+> **Current transport settings:** `UPSTREAM_DEAD_VOLUME_ML = 1.0` covers the mixer-to-cell path; `DOWNSTREAM_DEAD_VOLUME_ML = 1.0` covers the reactor outlet to the diversion valve, including any separator. These configured volumes are included in the waits above. The separate `UVVIS_FLUSH_VOLUME_ML = 2.0` clears the branch after V_01 and the flow cell. Confirm the values against the installed tubing and carryover; this manual does not establish how they were measured. A stable detector signal alone does not prove that a new formulation has reached the detector.
 
 <!-- pagebreak -->
 
@@ -191,16 +193,16 @@ This example uses a previously tested condition and is recalculated from the cur
 | Pump 2 water | 0.9490 mL/min |
 | SPM electrolyte | 0.2328 mL/min (232.8 µL/min) |
 | Cell residence time | 5.29 s |
-| Pre-electrolysis flush | 10.59 s |
-| Post-power response wait to waste | 15.88 s |
-| UV/VIS branch flush (1 mL) | 42.92 s |
+| Pre-electrolysis flush, including 1 mL upstream | 53.51 s |
+| Post-power wait to waste, including 1 mL downstream | 58.80 s |
+| UV/VIS branch flush (2 mL) | 85.83 s |
 | Nominal SPM delivery capacity | 21.48 min |
 
 The current depends on the selected cell’s area. Changing EC3 to another cell while retaining the same current density changes both current and calculated total flow. Cell selection is therefore part of the operating-point calculation, not only a valve change.
 
 ## Reading the timing estimate
 
-The syringe capacity estimate covers delivery at the calculated reaction electrolyte rate. Actual electrolyte consumption also includes the pre-electrolysis flush, the post-power wait to waste, the 1 mL UV/VIS branch flush, measurement acquisition and any enabled sample collection before the SPM is stopped.
+The syringe capacity estimate covers delivery at the calculated reaction electrolyte rate. Actual electrolyte consumption also includes the pre-electrolysis flush, the post-power wait to waste, the 2 mL UV/VIS branch flush, measurement acquisition and any enabled sample collection before the SPM is stopped.
 
 No automatic mid-experiment refill or remaining-volume watchdog is implemented. If the syringe reaches its zero target, the physical movement ends; the code does not automatically load another syringe during that experiment. Compare the full experiment duration with capacity before choosing long acquisition or sample-collection settings.
 
@@ -220,7 +222,7 @@ Cleaning alternates Pump 2 water and Pump 6 ethanol after SPM shutdown. It does 
 8. **Start reaction feeds.** Write Pump 1 and Pump 2 flows; start nonblocking SPM delivery toward an empty syringe.
 9. **Flush without electrolysis.** Wait the calculated upstream/cell flush time.
 10. **Select electrical output.** Recheck both cell-routing readbacks after flushing. Send the matching BKK channel commands, write the calculated current in amperes, and enable the power supply.
-11. **Wait to waste, then flush UV/VIS.** Keep V_01 at waste during the calculated post-power stabilization/transport wait. Switch only V_01 to UV/VIS (both tags = 1), verify its commands, then pass 1 mL at the calculated reactor flow before acquisition. Discard spectra exported during these waits.
+11. **Wait to waste, then flush UV/VIS.** Keep V_01 at waste during the calculated post-power stabilization/transport wait. Switch only V_01 to UV/VIS (both tags = 1), verify its commands, then pass 2 mL at the calculated reactor flow before acquisition. Discard spectra exported during these waits.
 12. **Measure and calculate.** For real MB UV/VIS, stop Pump 3, wait 10 s and collect fresh spectra. Above-range readings trigger bounded dilution retries, each with a 10 s wait. Return the dilution-corrected reactor-outlet concentration to the selected objective calculator. Stop Pump 3 and, after a diluted success, wait 10 s for undiluted flow before optional autosampling. Other measurement modes retain their existing acquisition path.
 13. **Divert, stop and clean.** Return V_01 to waste before normal power/feed shutdown. A failed diversion still allows all shutdown attempts and blocks automatic cleaning. A successful experiment with verified shutdown receives the water/ethanol/water sequence through the selected cell and UV/VIS. Afterwards both cleaning pumps stop, V_02 returns to electrolysis and V_01 returns to waste.
 14. **Accept and persist.** Only after the runner returns successfully does the page observe the result in the optimizer and write its campaign checkpoint.
@@ -295,11 +297,11 @@ Both rotary selectors retain the selected cell throughout cleaning. All three ri
 
 | Stage | Liquid | Pump | Flow (mL/min) | Time (s) | Volume (mL) |
 |---|---|---|---|---|---|
-| 1 | Water | 2 | 2 | 60 | 2 |
-| 2 | Ethanol | 6 | 2 | 60 | 2 |
+| 1 | Water | 2 | 2 | 90 | 3 |
+| 2 | Ethanol | 6 | 2 | 120 | 4 |
 | 3 | Water | 2 | 2 | 90 | 3 |
 
-The default sequence takes 210 s (3.5 min) and delivers a nominal 7 mL. Pump 2 commands use uL/min: 2 mL/min is written as 2000. Pump 6 commands use mL/min: 2 mL/min is written as 2. Timers begin after each flow command is verified; solvent-change and verification overhead is additional.
+The default sequence takes 300 s (5 min) and delivers a nominal 10 mL. Pump 2 commands use uL/min: 2 mL/min is written as 2000. Pump 6 commands use mL/min: 2 mL/min is written as 2. Timers begin after each flow command is verified; solvent-change and verification overhead is additional.
 
 1. Confirm power-off commands, all reagent feeds stopped and the SPM ready/idle. Confirm the retained inlet/outlet cell ports.
 2. Before each stage, confirm Pump 2 and Pump 6 are stopped. Select V_02 = 0 for water or 1 for ethanol, then verify V_01 = 1 for UV/VIS.
@@ -313,8 +315,8 @@ The default sequence takes 210 s (3.5 min) and delivers a nominal 7 mL. Pump 2 c
 | Setting | Default | Adapter override |
 |---|---|---|
 | CLEANING_FLOW_ML_MIN | 2.0 mL/min | cleaning_flow_ml_min |
-| CLEANING_WATER_PRE_DURATION_S | 60 s | cleaning_water_pre_duration_s |
-| CLEANING_ETHANOL_DURATION_S | 60 s | cleaning_ethanol_duration_s |
+| CLEANING_WATER_PRE_DURATION_S | 90 s | cleaning_water_pre_duration_s |
+| CLEANING_ETHANOL_DURATION_S | 120 s | cleaning_ethanol_duration_s |
 | CLEANING_WATER_POST_DURATION_S | 90 s | cleaning_water_post_duration_s |
 
 Overrides belong in process_adapter_config. Per-stage flow overrides are cleaning_water_pre_flow_ml_min, cleaning_ethanol_flow_ml_min and cleaning_water_post_flow_ml_min; each overrides the common flow. Explicit cleaning_ethanol_duration_s takes precedence over the older cleaning_duration_s alias, which now applies only to the Pump 6 ethanol step. All flows and durations must be finite and positive; all three stages are validated before any cleaning flow starts. cleaning_water_port remains ignored because ROT_VALVE selects the cell, not a solvent.
@@ -363,7 +365,7 @@ The `uvvis` backend reads Spectragryph CSV exports, applies a saved linear calib
 2. Configure Spectragryph to export continuously to the chosen folder with incrementing filenames.
 3. Select **UV/VIS (Spectragryph CSV)**, the export folder, filename pattern and calibration file in VOL.
 4. For MB automatic dilution, select **mg/L** and use the MB calibration fitted with mg/L standards. Other units are rejected before hardware preparation. A label change does not convert calibration coefficients or concentrations.
-5. Choose CV, SD or Automatic CV / SD under UV/VIS acquisition settings. SD and automatic mode require a positive maximum absorbance SD in AU; it starts unset. Use Test UV/VIS measurement with a known sample and inspect concentration, absorbance, SD, CV, the decision criterion and calibration-range status.
+5. Choose CV, SD or Automatic CV / SD under UV/VIS acquisition settings. SD and automatic mode require a positive maximum absorbance SD in AU; it starts unset. The additional drift check is enabled initially with a 0.010 AU window limit. Adjust it under UV/VIS acquisition settings using stable-solution measurements. Use Test UV/VIS measurement with a known sample and inspect concentration, absorbance, SD, CV, fitted drift, slope, both acceptance decisions and calibration-range status.
 6. Select real hardware mode for a campaign that must use these measurements.
 
 | Configuration key | Default |
@@ -374,6 +376,8 @@ The `uvvis` backend reads Spectragryph CSV exports, applies a saved linear calib
 | `concentration_unit` | `mM` |
 | `n_replicates` / `replicate_interval` | 5 / 2 s |
 | `stability_mode` | cv; options cv, sd, auto |
+| `trend_enabled` | true; additional drift gate |
+| `trend_threshold` | 0.010 AU fitted change across the window; initial commissioning value |
 | `cv_threshold` | 5% absorbance CV |
 | `sd_threshold` | Unset; positive AU limit required for sd/auto |
 | `max_extra_measurements` | 10 |
@@ -391,9 +395,42 @@ The model must contain finite `slope`, `intercept`, `r2`, `range_min`, `range_ma
 | SD (AU) | Sample SD must not exceed the configured absolute AU limit. |
 | Automatic CV / SD | Use the larger SD allowance: the absolute AU limit or abs(mean absorbance) * CV limit / 100. |
 
-At measurement start, existing filenames are marked as already seen. The reader waits for a distinct new, stable CSV, checks that it covers the calibration wavelength and uses its nearest wavelength point. Reusing one fixed filename is therefore unsuitable. A final in-range reading must also pass the selected stability check: CV (%), SD (AU), or automatic s_A <= max(SD_limit_AU, abs(mean_A) * CV_limit_pct / 100). Set a positive SD tolerance from blanks and low standards before using SD/automatic mode. Automatic mode uses the absolute allowance near zero and the CV allowance at higher signals. The rolling-window limits and whole-experiment reproducibility gate are unchanged. In a real MB experiment, an above-range reading can trigger the dilution procedure in Section 13; it is never accepted as a final result. The standalone test and protocols without dilution hooks do not retry using a pump. Unresolved range, stability or acquisition failures prevent a normal optimizer observation.
+At measurement start, existing filenames are marked as already seen. The reader waits for a distinct new, stable CSV, checks that it covers the calibration wavelength and uses its nearest wavelength point. Reusing one fixed filename is therefore unsuitable. A final in-range reading must also pass the selected stability check: CV (%), SD (AU), or automatic s_A <= max(SD_limit_AU, abs(mean_A) * CV_limit_pct / 100). Set a positive SD tolerance from blanks and low standards before using SD/automatic mode. Automatic mode uses the absolute allowance near zero and the CV allowance at higher signals. The additional trend gate described next must also pass when enabled. The rolling-window limits and whole-experiment reproducibility gate are unchanged. In a real MB experiment, an above-range reading can trigger the dilution procedure in Section 13; it is never accepted as a final result. The standalone test and protocols without dilution hooks do not retry using a pump. Unresolved range, stability or acquisition failures prevent a normal optimizer observation.
 
 A SHA-256 calibration ID is stored with the run. Resume checks it against the current saved model. Relative UV/VIS paths resolve from the project root. The original spectral CSVs stay in their export folder and must be archived separately.
+
+<!-- pagebreak -->
+
+## Absorbance drift across the rolling window
+
+The acceptance rule now checks both dispersion and time-dependent drift. Keep the latest N consecutive fresh spectra, normally five, in acquisition order. A rejected window causes one extra spectrum to be collected and the oldest to be dropped, up to the configured extra-spectra limit (default 10). No subset is selected to make the values look random. Five points cannot establish statistical randomness. [S10-S12]
+
+Fit a least-squares line A(t) against the actual spectrum CSV modification timestamps, converted to UTC seconds relative to the first reading. These are export timestamps, not the spectrometer exposure timestamps. Uneven intervals are retained. For slope b in AU/s and window duration T:
+
+```text
+slope_AU_per_min = 60 * b
+fitted_change_AU = b * T
+trend_pass = abs(fitted_change_AU) <= trend_threshold
+accepted = selected_SD_or_CV_rule_pass AND trend_pass
+```
+
+The same limit applies to increasing and decreasing trends, including an overall drift with small reversals. A tiny monotonic change inside the tolerance can pass. R-squared is logged for interpretation and is not an acceptance threshold; a constant window has no defined R-squared. A flat line alone does not bypass excessive SD/CV or calibration-range failure.
+
+### Initial setting and the supplied lab example
+
+The initial trend_threshold is 0.010 AU across the window, enabled by default in VOL. This is a configurable commissioning value chosen to reject the supplied drifting example; it is not a validated instrument-noise or analytical-accuracy specification. Establish its suitability using a stable solution, including a low-absorbance sample. Longer windows or different export rates can affect the fitted change. The UI also allows the check to be disabled explicitly.
+
+| Example quantity | Result |
+|---|---|
+| Five absorbances (AU) | 0.7059963; 0.7237420; 0.7540307; 0.7834900; 0.8008229 |
+| Time span on 23 Nov 2026 (UTC) | 11:11:18.321179 to 11:11:57.818310; 39.497131 s |
+| Fitted slope / change | +0.147645 AU/min / +0.097192 AU |
+| Fit R-squared / CV | 0.998126 / 5.258% |
+| Drift decision at 0.010 AU | Rejected; continue the rolling window if extras remain |
+
+Missing, malformed, timezone-free, repeated or decreasing timestamps reject an enabled trend window. The code never substitutes sample numbers or host read time to obtain acceptance. Exhausting the extra-spectra limit rejects the measurement and prevents its use as a normal optimizer observation. Range-triggered dilution never rescues a failed trend window.
+
+Raw UV/VIS rows and campaign measurement fields include the enabled flag, AU limit, trend decision, signed slope and fitted change, absolute change, direction, R-squared, window duration, window start/end UTC, timestamp source and any trend error. These statistics describe the final rolling window of that attempt, including on earlier retained raw rows; Used for Stability Window identifies its members. Partial acquisition failures retain available spectra and settings, with no invented fit. The trend policy is saved with campaign settings and is independent of the whole-experiment reproducibility gate.
 
 <!-- pagebreak -->
 
@@ -416,12 +453,12 @@ Q_water   = verified Pump 3 command flow, mL/min
 D         = (Q_reactor + Q_water) / Q_reactor
 C_out     = C_detector × D, mg/L
 Q_water   = Q_reactor × (D − 1)
-D_max     = 1 + 6.25 / Q_reactor
+D_max     = 1 + 3.33 / Q_reactor
 ```
 
 For example, a 1 mL/min reactor flow plus 3 mL/min of downstream water gives D = 4. A validated detector reading of 25 mg/L represents a reactor outlet of 100 mg/L. Pump 3 receives 3,000 µL/min, because its OPC command uses µL/min.
 
-The first diluted setting targets the midpoint of the calibration concentration range using the inlet MB concentration as a conservative starting hint, with at least a doubling of the factor and a cap at the maximum water flow. Above-range extrapolated concentrations are used only as range indicators, not as numerical estimates of the true outlet concentration. Subsequent above-range readings increase dilution; an established above/below bracket uses its geometric midpoint. The final accepted reading must pass both calibration-range and stability checks.
+The first diluted setting targets the midpoint of the calibration concentration range using the inlet MB concentration as a conservative starting hint, with at least a doubling of the factor and a cap at the maximum water flow. Above-range extrapolated concentrations are used only as range indicators, not as numerical estimates of the true outlet concentration. Subsequent above-range readings increase dilution; an established above/below bracket uses its geometric midpoint. The final accepted reading must pass calibration range, the selected SD/CV rule and the enabled drift check. Each dilution attempt starts a fresh window after its wait; spectra from different dilution factors are never combined. A failed drift check stops the measurement rather than using the drifting signal to request more dilution.
 
 <!-- pagebreak -->
 
@@ -429,7 +466,7 @@ The first diluted setting targets the midpoint of the calibration concentration 
 
 | Setting | Default / constraint |
 |---|---|
-| Maximum Pump 3 water flow | 6.25 mL/min; command maximum 6,250 µL/min |
+| Maximum Pump 3 water flow | 3.33 mL/min; command maximum 3,330 µL/min |
 | Wait after each applied flow setting | 10 s, including the initial direct setting |
 | Wait after restoring undiluted flow | 10 s following a successful diluted measurement |
 | Maximum attempts | 6 total, including the direct attempt |
@@ -545,7 +582,7 @@ The fields are written with their corresponding rows to raw_measurements/<name>_
 
 A typical single-objective row includes `Experiment #`, `Timestamp`, all six proposed parameters, `Measurement`, and the selected objective column. Multi-objective rows contain each selected objective instead. These values are saved after the runner returns successfully, including its shutdown and cleaning. Selecting Degradation also records Inlet Concentration, Outlet Concentration, Degradation (%) and Degradation Basis. The selected objective is stored as Degradation; the separate percentage field always contains the physical value.
 
-UV/VIS adds fields such as `Measurement Source`, `Concentration Unit`, `UV/VIS Concentration`, absorbance, absorbance SD, CV, acceptance/range status, extra measurements, calibration path and calibration ID. The raw UV/VIS CSV includes the original spectrum filename and acquisition wavelength, with MB set/read voltage and current snapshots captured per spectrum (Section 16), final-window SD and CV, configured stability mode, governing criterion, limit and units, and both configured thresholds. Used for Stability Window identifies spectra in the final rolling window. Earlier acquisitions remain in the log; stability statistics describe the final window. These settings are saved with the campaign and restored on resume. Existing campaigns retain CV mode until changed. Automatic MB dilution also adds `UV/VIS Measured Concentration`, `UV/VIS Corrected Concentration`, `UV/VIS Dilution Factor`, three flow fields, attempt count, wait, history and stop verification. `UV/VIS Concentration` is the corrected value in this mode. Raw `Value` and `Measured Concentration` are detector values; raw corrected values are supplied only for optically valid attempts. The final successful attempt is marked separately from rejected or incomplete attempts. With Degradation selected, raw rows also record the inlet, accepted outlet and per-reading percentage. Rejected optical attempts receive no degradation value. Their original detector readings remain preserved.
+UV/VIS adds fields such as `Measurement Source`, `Concentration Unit`, `UV/VIS Concentration`, absorbance, absorbance SD, CV, acceptance/range status, extra measurements, calibration path and calibration ID. The raw UV/VIS CSV includes the original spectrum filename and acquisition wavelength, with MB set/read voltage and current snapshots captured per spectrum (Section 16), final-window SD and CV, configured stability mode, governing criterion, limit and units, and both configured thresholds. Used for Stability Window identifies spectra in the final rolling window. Earlier acquisitions remain in the log; stability statistics describe the final window. These settings are saved with the campaign and restored on resume. Existing campaigns retain their selected CV/SD mode; campaigns without trend settings receive the new enabled, 0.010 AU default. Explicitly saved trend settings, including disabling the check, are restored on resume. Automatic MB dilution also adds `UV/VIS Measured Concentration`, `UV/VIS Corrected Concentration`, `UV/VIS Dilution Factor`, three flow fields, attempt count, wait, history and stop verification. `UV/VIS Concentration` is the corrected value in this mode. Raw `Value` and `Measured Concentration` are detector values; raw corrected values are supplied only for optically valid attempts. The final successful attempt is marked separately from rejected or incomplete attempts. With Degradation selected, raw rows also record the inlet, accepted outlet and per-reading percentage. Rejected optical attempts receive no degradation value. Their original detector readings remain preserved.
 
 ## Metadata and optimizer state
 
@@ -630,15 +667,15 @@ The MB protocol is loaded dynamically when selected. Having a file in `running_p
 | Homing waste connection | Must remain internal SPM port 1 for automatic homing; `spm_waste_port` is rejected if not 1 |
 | Transport and stabilization | Measured upstream/downstream dead volumes and cell-volume timing factors; remeasure after relocating the selectors |
 | Detector integration | Measurement UI; optional MB `measurement_tag()` hook for an explicit OPC source |
-| UV/VIS branch flush | `UVVIS_FLUSH_VOLUME_ML` (1.0 mL); adapter override `uvvis_flush_volume_ml`; finite and positive |
+| UV/VIS branch flush | `UVVIS_FLUSH_VOLUME_ML` (2.0 mL); adapter override `uvvis_flush_volume_ml`; finite and positive |
 | Analytical dilution | `ANALYTICAL_DILUTION_MAX_FLOW_ML_MIN`, `ANALYTICAL_DILUTION_WAIT_S`, `ANALYTICAL_DILUTION_MAX_ATTEMPTS`; adapter overrides below |
 | MB removal or another physical objective | Degradation is implemented in core/objectives.py; select it in the UI. Additional custom objectives may use calculate_real_result() |
 
 A custom calculation hook receives `(runner, mean_measurement, parameters, objectives, directions)` and must return a dictionary containing the selected objective names. Check the optimizer’s sign convention when applying minimization. Keep physical concentration fields distinct from optimizer scores.
 
-Dilution adapter overrides are `uvvis_dilution_max_flow_ml_min`, `uvvis_dilution_wait_s` and `uvvis_dilution_max_attempts` in `process_adapter_config`. Saved effective settings are used when no override is supplied. The water limit may be lowered but cannot exceed the 6.25 mL/min protocol ceiling. Wait must be positive; attempts must be an integer from 1 to 20. There is no dedicated dilution-settings form.
+Dilution adapter overrides are `uvvis_dilution_max_flow_ml_min`, `uvvis_dilution_wait_s` and `uvvis_dilution_max_attempts` in `process_adapter_config`. Saved effective settings are used when no override is supplied. The water limit may be lowered but cannot exceed the 3.33 mL/min protocol ceiling. Wait must be positive; attempts must be an integer from 1 to 20. There is no dedicated dilution-settings form.
 
-Relevant regression checks are in `tests/test_mb_cleaning.py`, `tests/test_amf_display.py`, `tests/test_spm_refill.py`, `tests/test_hardware_connections.py`, campaign setup tests, UV/VIS integration tests and `tests/test_uvvis_dilution.py` and `tests/test_degradation.py`, `tests/test_mb_cell_routing.py` and `tests/test_mb_uvvis_routing.py`, `tests/test_uvvis_stability.py` and `tests/test_uvvis_bkk_logging.py`. They use simulated devices and test behavior; passing them is not a validation of changed physical tubing or analytical chemistry.
+Relevant regression checks are in `tests/test_mb_cleaning.py`, `tests/test_amf_display.py`, `tests/test_spm_refill.py`, `tests/test_hardware_connections.py`, campaign setup tests, UV/VIS integration tests and `tests/test_uvvis_dilution.py` and `tests/test_degradation.py`, `tests/test_mb_cell_routing.py` and `tests/test_mb_uvvis_routing.py`, `tests/test_uvvis_stability.py` and `tests/test_uvvis_bkk_logging.py`, plus `tests/test_uvvis_trend.py`. They use simulated devices and test behavior; passing them is not a validation of changed physical tubing or analytical chemistry.
 
 Keep the default project README general. This dedicated manual is the place for MB-specific operating details. Update it after changing wiring, stock assumptions, objective formulas or persistence behavior.
 
@@ -663,7 +700,7 @@ Keep the default project README general. This dedicated manual is the place for 
 | Objective key missing or scientifically implausible values | MB uses generic fallback calculations. Check Section 14, selected objective names and units. |
 | Results/raw CSVs do not have identical row counts | Raw files contain replicate readings and possibly failed attempts; campaign CSVs contain accepted optimizer observations. QC adds further acquisitions. |
 
-Other current limits include zero default dead volumes, no automatic mid-run SPM refill, no independent physical valve-position feedback in mode checks, no BKK channel readback, a fixed rather than transport-calculated analytical wait, and possible final-QC raw-log buffering. These are implementation facts to consider during analytical commissioning, not features supplied by the manual.
+Other current limits include transport volumes that require confirmation on the installed setup, no automatic mid-run SPM refill, no independent physical valve-position feedback in mode checks, no BKK channel readback, a fixed rather than transport-calculated analytical wait, and possible final-QC raw-log buffering. These are implementation facts to consider during analytical commissioning, not features supplied by the manual.
 
 <!-- pagebreak -->
 
@@ -729,14 +766,14 @@ Use the appropriate LabVision indications and laboratory checks to establish act
 
 # Appendix C. Source references and document control
 
-This manual was prepared from local source inspection on **23 November 2026**. It documents the working-copy behavior, including matched inlet/outlet cell routing, protocol-aware water/ethanol/water cleaning, independent V_02 electrolysis/cleaning and V_01 UV/VIS/waste timing, the analytical branch flush, selectable CV/SD spectral stability, UV/VIS dilution, per-spectrum BKK snapshots and the Degradation objective. It does not introduce code changes or validate a chemical method.
+This manual was prepared from local source inspection on **23 November 2026**. It documents the working-copy behavior, including matched inlet/outlet cell routing, protocol-aware water/ethanol/water cleaning, independent V_02 electrolysis/cleaning and V_01 UV/VIS/waste timing, the analytical branch flush, selectable CV/SD spectral stability, timestamp-based drift validation, updated transport volumes and cleaning durations, UV/VIS dilution, per-spectrum BKK snapshots and the Degradation objective. It does not introduce code changes or validate a chemical method.
 
-**Repository reference:** `5ba2bcf` plus the working-copy configuration captured by the protocol hash below.
+**Repository reference:** `4288444` plus the current user edits and the UV/VIS trend-check changes. The protocol hash below captures its current constants and messages.
 
 **MB protocol SHA-256:**
 
 ```text
-c90d18fc0348c8a54aabf5a54b12c8a276129d9a6cf070efb9cf64ecda3db3d0
+bd7755a54bd73d1bed8f3dbc44ad4aed82371827402582454128fbb1a1ee033b
 ```
 
 | Ref. | Source file or area |

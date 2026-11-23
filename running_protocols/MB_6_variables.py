@@ -180,7 +180,7 @@ PUMP_WATER_TAG = (
 PUMP_ANALYTICAL_DILUTION_TAG = (
     "Hitec_OPC_DA20_Server->E_CHEM:PUMP3.W1"
 )
-ANALYTICAL_DILUTION_MAX_FLOW_ML_MIN = 6.25
+ANALYTICAL_DILUTION_MAX_FLOW_ML_MIN = 3.33
 ANALYTICAL_DILUTION_WAIT_S = 10.0
 ANALYTICAL_DILUTION_MAX_ATTEMPTS = 6
 
@@ -196,7 +196,7 @@ def uvvis_dilution_settings(runner, parameters):
         raise ValueError("MB Pump 3 dilution limit must be a number in mL/min.")
     maximum = float(maximum)
     if not math.isfinite(maximum) or not 0 < maximum <= ANALYTICAL_DILUTION_MAX_FLOW_ML_MIN:
-        raise ValueError("MB Pump 3 dilution limit must be positive and no greater than 6.25 mL/min.")
+        raise ValueError(f"MB Pump 3 dilution limit must be positive and no greater than {ANALYTICAL_DILUTION_MAX_FLOW_ML_MIN:g} mL/min.")
     return {
         "reaction_flow_ml_min": op["total_flow_ml_min"],
         "inlet_concentration_mg_L": op["mb_target_mg_L"],
@@ -216,7 +216,7 @@ def set_uvvis_dilution_flow(runner, flow_ml_min):
     maximum = float(runner.uvvis_config.get("auto_dilution", {}).get(
         "max_water_flow_ml_min", ANALYTICAL_DILUTION_MAX_FLOW_ML_MIN))
     if not math.isfinite(flow) or not 0 <= flow <= min(maximum, ANALYTICAL_DILUTION_MAX_FLOW_ML_MIN):
-        raise ValueError("Pump 3 dilution flow exceeds the configured 6.25 mL/min maximum.")
+        raise ValueError(f"Pump 3 dilution flow exceeds the configured {min(maximum, ANALYTICAL_DILUTION_MAX_FLOW_ML_MIN):g} mL/min maximum.")
     command = min(maximum * 1000.0, round(flow * 1000.0, 4))
     _required_write(runner, PUMP_ANALYTICAL_DILUTION_TAG, command)
     _verify_opc_values(runner, ((PUMP_ANALYTICAL_DILUTION_TAG, command),), "analytical dilution flow")
@@ -230,8 +230,8 @@ PUMP_CLEANING_TAG = "Hitec_OPC_DA20_Server-%3EE_CHEM%3APUMP_6.W1"
 # Pump 6 supplies ethanol directly; Pump 2 supplies water.
 CELL_INLET_VALVE_TAG = "Hitec_OPC_DA20_Server-%3EE_CHEM%3AROT_VALVE.POS"
 CLEANING_FLOW_ML_MIN = 2.0
-CLEANING_WATER_PRE_DURATION_S = 60.0
-CLEANING_ETHANOL_DURATION_S = 60.0
+CLEANING_WATER_PRE_DURATION_S = 90.0
+CLEANING_ETHANOL_DURATION_S = 120.0
 CLEANING_WATER_POST_DURATION_S = 90.0
 
 # V_02 selects electrolysis (0) or cleaning (1).

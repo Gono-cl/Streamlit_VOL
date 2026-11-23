@@ -54,6 +54,16 @@ def render_measurement_settings():
         if mode == "auto":
             st.caption("Accept when SD is within the larger of the absolute SD limit and the CV-based allowance. "
                        "The absolute limit governs low signals; the CV limit governs higher signals.")
+        trend_enabled = st.checkbox("Check absorbance drift", key="uvvis_trend_enabled")
+        drift_limit = st.number_input(
+            "Maximum fitted drift across window (AU)", min_value=0.0, value=None,
+            step=0.001, format="%.6f", key="uvvis_trend_threshold",
+            help="Maximum absolute change of a line fitted against spectrum export timestamps. "
+                 "The initial 0.010 AU limit is a starting setting; validate it with a stable solution.")
+        if trend_enabled and (drift_limit is None or drift_limit <= 0):
+            st.warning("Enter a positive drift limit before running the trend check.")
+        st.caption("When enabled, drift and the selected SD/CV rule must both pass. "
+                   "The latest consecutive spectra are used; increasing and decreasing drift are checked.")
         st.number_input("Maximum extra spectra", min_value=0, step=1, key="uvvis_max_extra_measurements")
         st.number_input("Timeout per new spectrum (s)", min_value=0.1, step=1.0, key="uvvis_spectrum_timeout")
     config = {name: st.session_state[f"uvvis_{name}"] for name in UVVIS_DEFAULTS}
@@ -81,6 +91,16 @@ def render_measurement_settings():
         if "stability_criterion" in result:
             st.sidebar.caption(f"Decision: {result['stability_criterion'].upper()} ≤ "
                                f"{result['stability_threshold']:g} {result['stability_units']}")
+        if result.get("trend_enabled"):
+            if result.get("trend_error"):
+                st.sidebar.caption(f"Trend check failed: {result['trend_error']}")
+            else:
+                st.sidebar.caption(
+                    f"Fitted drift: {result['trend_fitted_change_au']:+.5g} AU over "
+                    f"{result['trend_window_duration_s']:.2f} s; "
+                    f"slope: {result['trend_slope_au_per_min']:+.5g} AU/min; "
+                    f"limit: {result['trend_threshold_au']:g} AU; "
+                    f"{'passed' if result['trend_accepted'] else 'failed'}")
         if result["accepted"] and result["status"] == "valid":
             st.sidebar.success("Validated measurement: stable and within calibration range.")
         else:

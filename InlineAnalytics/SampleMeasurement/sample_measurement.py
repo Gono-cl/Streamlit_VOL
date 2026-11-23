@@ -5,7 +5,7 @@ import os
 import tempfile
 import time
 import statistics
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pandas as pd
@@ -24,6 +24,8 @@ class SampleMeasurement:
         results_file="sample_results.csv",
         stability_mode="cv",
         sd_threshold=None,
+        trend_enabled=False,
+        trend_threshold=0.01,
     ):
 
         self.reader = reader
@@ -36,6 +38,9 @@ class SampleMeasurement:
         self.validate_stability_settings(stability_mode, cv_threshold, sd_threshold)
         self.stability_mode = stability_mode
         self.sd_threshold = float(sd_threshold) if sd_threshold is not None else None
+        self.validate_trend_settings(trend_enabled, trend_threshold)
+        self.trend_enabled = trend_enabled
+        self.trend_threshold = float(trend_threshold) if trend_threshold is not None else None
         self.max_extra_measurements = max_extra_measurements
 
         self.results_file = Path(results_file) if results_file is not None else None
@@ -82,6 +87,118 @@ class SampleMeasurement:
             "stability_sd_threshold_au": self.sd_threshold,
             "accepted": accepted,
         }
+
+    @staticmethod
+    def validate_trend_settings(enabled, threshold):
+        if not isinstance(enabled, bool):
+            raise ValueError("UV/VIS trend_enabled must be true or false.")
+        if threshold is None:
+            if enabled:
+                raise ValueError("Set a maximum fitted absorbance drift (AU) before enabling the trend check.")
+            return
+        try:
+            valid = not isinstance(threshold, bool) and math.isfinite(float(threshold)) and float(threshold) > 0
+        except (TypeError, ValueError):
+            valid = False
+        if not valid:
+            raise ValueError("UV/VIS drift limit must be finite and positive, in AU.")
+
+    def trend_decision(self, values, timestamps):
+        """Fit absorbance against actual export time, never against sample index.
+
+        The absolute fitted change over the window is the acceptance criterion.
+        R-squared is diagnostic only. Invalid chronology fails an enabled check.
+        """
+        result = {
+            "trend_enabled": self.trend_enabled,
+            "trend_threshold_au": self.trend_threshold,
+            "trend_slope_au_per_min": None,
+            "trend_fitted_change_au": None,
+            "trend_absolute_change_au": None,
+            "trend_window_duration_s": None,
+            "trend_window_start_utc": None,
+            "trend_window_end_utc": None,
+            "trend_direction": None,
+            "trend_r2": None,
+            "trend_accepted": None,
+            "trend_error": "",
+            "trend_timestamp_source": "spectrum_file_mtime",
+        }
+        if not self.trend_enabled:
+            return result
+        result["trend_accepted"] = False
+        try:
+            if len(values) < 2 or len(values) != len(timestamps):
+                raise ValueError("At least two matching absorbances and timestamps are required.")
+            dates = [datetime.fromisoformat(stamp) for stamp in timestamps]
+            if any(date.utcoffset() is None for date in dates):
+                raise ValueError("Spectrum timestamps must include a time zone.")
+            dates = [date.astimezone(timezone.utc) for date in dates]
+            times = [(date - dates[0]).total_seconds() for date in dates]
+            if any(right <= left for left, right in zip(times, times[1:])):
+                raise ValueError("Spectrum timestamps must be strictly increasing.")
+            if not all(math.isfinite(value) for value in values):
+                raise ValueError("Absorbances must be finite.")
+            mean_time = statistics.mean(times)
+            mean_value = statistics.mean(values)
+            centered_time = [value - mean_time for value in times]
+            centered_value = [value - mean_value for value in values]
+            xx = math.fsum(value * value for value in centered_time)
+            yy = math.fsum(value * value for value in centered_value)
+            xy = math.fsum(x * y for x, y in zip(centered_time, centered_value))
+            slope = xy / xx
+            change = slope * times[-1]
+            rate = slope * 60.0
+            if not all(math.isfinite(value) for value in (xx, yy, xy, slope, change, rate)):
+                raise ValueError("Trend fit contains non-finite values.")
+            residual = math.fsum((y - slope * x) ** 2 for x, y in zip(centered_time, centered_value))
+            r2 = max(0.0, min(1.0, 1.0 - residual / yy)) if yy > 0 else None
+            result.update({
+                "trend_slope_au_per_min": rate,
+                "trend_fitted_change_au": change,
+                "trend_absolute_change_au": abs(change),
+                "trend_window_duration_s": times[-1],
+                "trend_window_start_utc": dates[0].isoformat(),
+                "trend_window_end_utc": dates[-1].isoformat(),
+                "trend_direction": "increasing" if change > 0 else "decreasing" if change < 0 else "flat",
+                "trend_r2": r2,
+                "trend_accepted": abs(change) <= self.trend_threshold,
+            })
+        except (TypeError, ValueError, OverflowError, ZeroDivisionError) as exc:
+            result["trend_error"] = str(exc)
+        return result
+
+    def window_decision(self, values, timestamps, mean, sd, cv):
+        stability = self.stability_decision(mean, sd, cv)
+        stability["dispersion_accepted"] = stability["accepted"]
+        stability.update(self.trend_decision(values, timestamps))
+        stability["accepted"] = bool(stability["dispersion_accepted"] and
+                                     (not self.trend_enabled or stability["trend_accepted"]))
+        return stability
+
+    def _spectrum_timestamp(self, latest_file):
+        timestamp = getattr(self.reader, "last_acquisition_timestamp", None)
+        if timestamp is not None:
+            return timestamp
+        try:
+            return datetime.fromtimestamp(Path(latest_file).stat().st_mtime_ns / 1e9, timezone.utc).isoformat()
+        except (OSError, ValueError, TypeError):
+            return None  # Never invent acquisition times for the trend check.
+
+    @staticmethod
+    def stability_failure_message(result):
+        reasons = []
+        if not result.get("dispersion_accepted", result["accepted"]):
+            reasons.append(f"{result['stability_criterion'].upper()} exceeds "
+                           f"{result['stability_threshold']:g} {result['stability_units']}")
+        if result.get("trend_enabled") and not result.get("trend_accepted"):
+            if result.get("trend_error"):
+                reasons.append(f"trend check unavailable: {result['trend_error']}")
+            else:
+                reasons.append(f"fitted drift {result['trend_absolute_change_au']:.6g} AU exceeds "
+                               f"{result['trend_threshold_au']:g} AU "
+                               f"({result['trend_direction']}, {result['trend_slope_au_per_min']:+.6g} AU/min)")
+        return "; ".join(reasons)
 
 
     # =====================================================
@@ -270,6 +387,7 @@ class SampleMeasurement:
         absorbance_values = []
         wavelength_values = []
         files_used = []
+        timestamps = []
 
 
         # -------------------------------------------------
@@ -299,6 +417,7 @@ class SampleMeasurement:
             files_used.append(
                 str(latest_file)
             )
+            timestamps.append(self._spectrum_timestamp(latest_file))
 
             print(
                 f"Replicate "
@@ -348,7 +467,7 @@ class SampleMeasurement:
         # -------------------------------------------------
 
         extra_measurements = 0
-        stability = self.stability_decision(mean_absorbance, sd_absorbance, cv_absorbance)
+        stability = self.window_decision(absorbance_values, timestamps, mean_absorbance, sd_absorbance, cv_absorbance)
 
 
         while (
@@ -360,8 +479,7 @@ class SampleMeasurement:
 
             print()
             print(
-                f"{stability['stability_criterion'].upper()} exceeds "
-                f"{stability['stability_threshold']:g} {stability['stability_units']}"
+                self.stability_failure_message(stability)
             )
 
             print(
@@ -391,6 +509,7 @@ class SampleMeasurement:
             files_used.append(
                 str(latest_file)
             )
+            timestamps.append(self._spectrum_timestamp(latest_file))
 
 
             # Keep only latest 5 values
@@ -405,6 +524,7 @@ class SampleMeasurement:
                     -self.n_replicates:
                 ]
             )
+            timestamps = timestamps[-self.n_replicates:]
 
 
             extra_measurements += 1
@@ -417,7 +537,7 @@ class SampleMeasurement:
             ) = self.calculate_statistics(
                 absorbance_values
             )
-            stability = self.stability_decision(mean_absorbance, sd_absorbance, cv_absorbance)
+            stability = self.window_decision(absorbance_values, timestamps, mean_absorbance, sd_absorbance, cv_absorbance)
 
 
             print(
@@ -445,6 +565,10 @@ class SampleMeasurement:
                 f"({stability['stability_criterion'].upper()} criterion; limit "
                 f"{stability['stability_threshold']:g} {stability['stability_units']})"
             )
+            if self.trend_enabled:
+                print(f"Trend accepted: fitted drift {stability['trend_fitted_change_au']:+.6g} AU; "
+                      f"slope {stability['trend_slope_au_per_min']:+.6g} AU/min; "
+                      f"limit {self.trend_threshold:g} AU.")
 
         else:
 
@@ -455,6 +579,7 @@ class SampleMeasurement:
                 "Measurement failed "
                 "stability criterion."
             )
+            print(self.stability_failure_message(stability))
 
 
         # -------------------------------------------------
@@ -535,6 +660,7 @@ class SampleMeasurement:
                 self.r2,
 
             "replicates": absorbance_values.copy(),
+            "replicate_timestamps": timestamps.copy(),
             "files": files_used.copy()
         }
 
