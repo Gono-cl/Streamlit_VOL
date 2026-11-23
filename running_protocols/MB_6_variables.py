@@ -41,7 +41,7 @@ STEADY_STATE_CELL_RESIDENCE_TIMES = 3.0
 # TODO:
 # Measure tubing/mixer volume between the mixing point
 # and the inlet of the electrochemical cell.
-UPSTREAM_DEAD_VOLUME_ML = 0.0
+UPSTREAM_DEAD_VOLUME_ML = 1.0
 
 # TODO:
 # Measure the volume between the electrochemical cell outlet
@@ -50,11 +50,11 @@ UPSTREAM_DEAD_VOLUME_ML = 0.0
 # outlet tubing
 # + gas/liquid separator
 # + tubing up to the diversion valve
-DOWNSTREAM_DEAD_VOLUME_ML = 0.0
+DOWNSTREAM_DEAD_VOLUME_ML = 1.0
 
 # After switching from waste to UV/Vis, pass this volume through the
 # analytical branch before acquisition. Validate against tubing/cell carryover.
-UVVIS_FLUSH_VOLUME_ML = 1.0
+UVVIS_FLUSH_VOLUME_ML = 2.0
 
 
 # ============================================================

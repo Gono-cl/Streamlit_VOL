@@ -1,0 +1,98 @@
+{
+    "variables": [
+        [
+            "current_density",
+            3.0,
+            6.0,
+            "mA",
+            "continuous"
+        ],
+        [
+            "applied_charge",
+            6.0,
+            10.0,
+            "F/mol",
+            "continuous"
+        ],
+        [
+            "substrate_concentration",
+            300.0,
+            600.0,
+            "mg/L",
+            "continuous"
+        ],
+        [
+            "electrolyte_concentration",
+            0.05,
+            0.2,
+            "M",
+            "continuous"
+        ],
+        [
+            "cell",
+            [
+                "EC2",
+                "EC3"
+            ],
+            null,
+            "",
+            "categorical"
+        ],
+        [
+            "electrolyte",
+            [
+                "Na2SO4",
+                "NaCl",
+                "NaNO3"
+            ],
+            null,
+            "",
+            "categorical"
+        ]
+    ],
+    "reference_categories": {
+        "cell": "EC2",
+        "electrolyte": "Na2SO4"
+    },
+    "response": "Degradation",
+    "initial_experiments": 5,
+    "total_iterations": 10,
+    "opc_url": "http://em-nun:57080",
+    "simulation_mode": "off",
+    "process_adapter": "echem_4pump",
+    "process_adapter_config": {},
+    "running_protocol_script": "MB_6_variables.py",
+    "measurement_source_prefix": "OpusOPCSvr.HP-CZC3484P17->",
+    "measurement_source_signal": "PDA - mM",
+    "acq_func": "EI",
+    "init_strategy": "Random",
+    "random_seed": 42,
+    "reused_runs": [],
+    "reused_count": 0,
+    "reproducibility": null,
+    "bo_qc_sentinel_enabled": false,
+    "bo_qc_sentinel_every_n_runs": 5,
+    "bo_qc_sentinel_count": 0,
+    "bo_qc_sentinel_history": [],
+    "measurement_backend": "uvvis",
+    "uvvis_config": {
+        "spectra_folder": "C:\\Users\\Labvision\\Desktop\\spectraMB",
+        "file_pattern": "my_acquired_spectra_*.csv",
+        "calibration_file": "InlineAnalytics/calibration_model.json",
+        "concentration_unit": "mg/L",
+        "n_replicates": 5,
+        "replicate_interval": 10.0,
+        "cv_threshold": 5.0,
+        "stability_mode": "sd",
+        "sd_threshold": 0.1,
+        "max_extra_measurements": 10,
+        "spectrum_timeout": 30.0,
+        "expected_calibration_id": "1b50cb5ad9417c7177eb5ce1d56bdf0243cc3a3575b467240ac2081860ed320f",
+        "auto_dilution": {
+            "max_water_flow_ml_min": 6.25,
+            "settle_time_s": 10.0,
+            "max_attempts": 6,
+            "target_concentration_mg_L": 25.0
+        }
+    }
+}
