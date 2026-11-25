@@ -1,8 +1,8 @@
 {
-    "slope": 0.0206,
-    "intercept": 0.0357,
-    "r2": 0.9926,
-    "range_min": 0.0,
-    "range_max": 50.0,
-    "wavelength": 663.857
+    "slope": 0.0014424953485714285,
+    "intercept": 0.1540912373333334,
+    "r2": 0.9816266307910801,
+    "range_min": 50.0,
+    "range_max": 300.0,
+    "wavelength": 667.0
 }
