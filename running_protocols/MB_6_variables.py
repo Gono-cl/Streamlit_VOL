@@ -233,6 +233,7 @@ CLEANING_FLOW_ML_MIN = 2.0
 CLEANING_WATER_PRE_DURATION_S = 90.0
 CLEANING_ETHANOL_DURATION_S = 120.0
 CLEANING_WATER_POST_DURATION_S = 90.0
+CLEANING_PUMP_STOP_SETTLE_S = 5.0
 
 # V_02 selects electrolysis (0) or cleaning (1).
 # V_01 independently selects UV/Vis (1) or waste (0).
@@ -288,7 +289,37 @@ def _ensure_power_off(runner):
     _verify_opc_values(runner, POWER_OFF_TAGS, "power-supply OFF commands")
 
 
+def _delay_setting(runner, name, default):
+    value = (getattr(runner, "adapter_config", {}) or {}).get(name, default)
+    try:
+        delay = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{name} must be finite and positive, in seconds.") from exc
+    if isinstance(value, bool) or not math.isfinite(delay) or delay <= 0:
+        raise ValueError(f"{name} must be finite and positive, in seconds.")
+    return delay
+
+
+def _require_ethanol_settled(runner):
+    if getattr(runner, "_mb_ethanol_needs_settle", False):
+        raise RuntimeError("Ethanol stop/settling is unconfirmed; valve movement is blocked.")
+
+
+def _settle_after_ethanol_stop(runner):
+    """A fixed hold with the ethanol route open, not a pressure measurement."""
+    if not getattr(runner, "_mb_ethanol_needs_settle", False):
+        return
+    delay = _delay_setting(runner, "cleaning_pump_stop_settle_s", CLEANING_PUMP_STOP_SETTLE_S)
+    _verify_opc_values(runner, ((PUMP_CLEANING_TAG, 0),), "ethanol pump stopped before settling")
+    print(f"Pump 6 stopped; holding the current route for {delay:g} s before switching valves.")
+    time.sleep(delay)
+    # Keep the pending flag if the stop, hold or subsequent readback fails.
+    _verify_opc_values(runner, ((PUMP_CLEANING_TAG, 0),), "ethanol pump stopped after settling")
+    runner._mb_ethanol_needs_settle = False
+
+
 def _set_flow_mode(runner, mode):
+    _require_ethanol_settled(runner)
     if mode not in ("electrolysis", "cleaning"):
         raise ValueError(f"Unknown flow mode: {mode!r}.")
     commands = VALVE_ELECTROLYSIS_TAGS if mode == "electrolysis" else VALVE_CLEANING_TAGS
@@ -300,6 +331,7 @@ def _set_flow_mode(runner, mode):
 
 def _set_uvvis_route(runner, destination):
     """Move only V_01; preserve the electrolysis and cell-selector positions."""
+    _require_ethanol_settled(runner)
     if destination not in ("waste", "uvvis"):
         raise ValueError(f"Unknown UV/VIS destination: {destination!r}.")
     commands = UVVIS_WASTE_TAGS if destination == "waste" else UVVIS_MEASUREMENT_TAGS
@@ -339,6 +371,7 @@ def _stop_cleaning_pump(runner):
     _required_write(runner, PUMP_CLEANING_TAG, 0)
     _verify_opc_values(runner, ((PUMP_CLEANING_TAG, 0),), "cleaning pump stopped")
     runner._mb_cleaning_active = False
+    _settle_after_ethanol_stop(runner)
 
 
 def _stop_reagent_feeds(runner):
@@ -362,6 +395,9 @@ BKK_CHANNEL_TAGS = {
     2: "Hitec_OPC_DA20_Server->E_CHEM:BKK_USER_DEFINE.CHANNEL2",
     3: "Hitec_OPC_DA20_Server->E_CHEM:BKK_USER_DEFINE.CHANNEL3",
 }
+BKK_CHANNEL_SWITCH_DELAY_S = 1.0
+BKK_CURRENT_SETTLE_S = 3.0
+BKK_CURRENT_SET_TAG = "Hitec_OPC_DA20_Server-%3EE_CHEM%3ABKK_P.SETCURR"
 
 # Read-only electrical snapshots attached to each UV/Vis spectrum.
 BKK_TELEMETRY_TAGS = (
@@ -933,6 +969,7 @@ def _verify_cell_route(runner, cell_port):
 
 def _select_cell(runner, cell_port):
     """Select matching inlet/outlet paths with power and all feeds stopped."""
+    _require_ethanol_settled(runner)
     if isinstance(cell_port, bool) or not isinstance(cell_port, int) or cell_port not in (1, 2, 3):
         raise ValueError("Cell routing port must be 1, 2 or 3.")
 
@@ -956,38 +993,42 @@ def _select_cell(runner, cell_port):
 # BKK CHANNEL SELECTION
 # ============================================================
 
-def _select_bkk_channel(
-    runner,
-    selected_channel
-):
-    """
-    Select exactly one BKK output channel.
+def _bkk_channel_commands(selected_channel):
+    if isinstance(selected_channel, bool) or not isinstance(selected_channel, int) or selected_channel not in BKK_CHANNEL_TAGS:
+        raise ValueError(f"Invalid BKK channel: {selected_channel}")
+    return tuple((tag, int(channel == selected_channel)) for channel, tag in BKK_CHANNEL_TAGS.items())
 
-    Selected channel = 1
-    Other channels    = 0
-    """
 
-    if selected_channel not in BKK_CHANNEL_TAGS:
-        raise ValueError(
-            f"Invalid BKK channel: {selected_channel}"
-        )
+def _verify_bkk_channel(runner, selected_channel):
+    _verify_opc_values(runner, _bkk_channel_commands(selected_channel),
+                       f"BKK channel {selected_channel} selected exclusively")
 
-    for channel, tag in BKK_CHANNEL_TAGS.items():
 
-        value = (
-            1
-            if channel == selected_channel
-            else 0
-        )
-
-        runner.opc.write_value(
-            tag,
-            value
-        )
-
-    print(
-        f"BKK channel {selected_channel} selected."
-    )
+def _select_bkk_channel(runner, selected_channel):
+    """Break before make: output off, all flags zero, delay, then one flag on."""
+    _bkk_channel_commands(selected_channel)  # Validate before touching hardware.
+    delay = _delay_setting(runner, "bkk_channel_switch_delay_s", BKK_CHANNEL_SWITCH_DELAY_S)
+    _verify_opc_values(runner, POWER_OFF_TAGS, "power OFF before BKK channel selection")
+    runner._mb_selected_bkk_channel = None
+    errors = []
+    for tag in BKK_CHANNEL_TAGS.values():
+        try:
+            _required_write(runner, tag, 0)
+        except Exception as exc:
+            errors.append(exc)
+    if errors:
+        raise RuntimeError("Could not clear all BKK channels: " + "; ".join(map(str, errors))) from errors[0]
+    _verify_opc_values(runner, tuple((tag, 0) for tag in BKK_CHANNEL_TAGS.values()),
+                       "all BKK channels OFF before selection")
+    print(f"All BKK channel flags are zero; waiting {delay:g} s before selecting channel {selected_channel}.")
+    time.sleep(delay)
+    _verify_opc_values(runner, POWER_OFF_TAGS, "power OFF before enabling selected BKK channel")
+    _verify_opc_values(runner, tuple((tag, 0) for tag in BKK_CHANNEL_TAGS.values()),
+                       "all BKK channels remain OFF before selection")
+    _required_write(runner, BKK_CHANNEL_TAGS[selected_channel], 1)
+    _verify_bkk_channel(runner, selected_channel)
+    runner._mb_selected_bkk_channel = selected_channel
+    print(f"BKK channel {selected_channel} command selected exclusively; output remains OFF.")
 
 
 # ============================================================
@@ -1474,14 +1515,15 @@ def prepare_hardware(
     2. Print and log conditions.
     3. Exit before hardware movement in full simulation.
     4. Ensure PSU and feed pumps OFF; initialize the SPM once via waste.
-    5. Establish/read back electrolysis mode; select matching inlet/outlet cell ports.
+    5. Establish/read back electrolysis mode; select matching inlet/outlet ports
+       and the exclusive BKK channel with PSU OFF, before starting any feeds.
     6. Load selected electrolyte into SPM+.
     7. Set Pump 1 MB flow.
     8. Set Pump 2 water flow.
     9. Start SPM+ electrolyte flow.
     10. Flush upstream path + selected cell.
-    11. Select BKK channel.
-    12. Set current.
+    11. Recheck cell routes and exclusive BKK channel.
+    12. Set/read back current, then wait for the setpoint to settle.
     13. Turn PSU ON.
     14. Wait to waste until the new electrochemical condition should
         have reached the diversion valve.
@@ -1494,6 +1536,8 @@ def prepare_hardware(
 
     op["uvvis_flush_volume_ml"] = _uvvis_flush_volume(runner)
     op["uvvis_flush_time_s"] = 60.0 * op["uvvis_flush_volume_ml"] / op["total_flow_ml_min"]
+    op["bkk_channel_switch_delay_s"] = _delay_setting(runner, "bkk_channel_switch_delay_s", BKK_CHANNEL_SWITCH_DELAY_S)
+    op["bkk_current_settle_s"] = _delay_setting(runner, "bkk_current_settle_s", BKK_CURRENT_SETTLE_S)
 
     _print_operating_point(
         op
@@ -1559,6 +1603,7 @@ def prepare_hardware(
             runner,
             op["cell_port"]
         )
+        _select_bkk_channel(runner, op["bkk_channel"])
 
 
         # ====================================================
@@ -1646,15 +1691,13 @@ def prepare_hardware(
 
 
         # ====================================================
-        # 8. SELECT BKK CHANNEL
+        # 8. RECHECK CELL ROUTING AND BKK CHANNEL (NO LATE SWITCHING)
         # ====================================================
 
         _verify_cell_route(runner, op["cell_port"])
 
-        _select_bkk_channel(
-            runner,
-            op["bkk_channel"]
-        )
+        _verify_bkk_channel(runner, op["bkk_channel"])
+        _verify_opc_values(runner, POWER_OFF_TAGS, "power OFF before setting current")
 
 
         # ====================================================
@@ -1666,9 +1709,18 @@ def prepare_hardware(
             f"{op['total_current_A']:.6f} A"
         )
 
-        runner.set_current(
-            op["total_current_A"]
-        )
+        # Match the existing set_current rounding, then OPCClient's 4-decimal
+        # write precision. Readback checks the OPC command, not actual output.
+        current_command = round(op["total_current_A"], 5)
+        current_readback = round(current_command, 4)
+        _required_write(runner, BKK_CURRENT_SET_TAG, current_readback)
+        print(f"Current command written; waiting {op['bkk_current_settle_s']:g} s before checking and enabling power.")
+        time.sleep(op["bkk_current_settle_s"])
+        _verify_cell_route(runner, op["cell_port"])
+        _verify_bkk_channel(runner, op["bkk_channel"])
+        _verify_opc_values(runner, POWER_OFF_TAGS + VALVE_ELECTROLYSIS_TAGS + UVVIS_WASTE_TAGS
+                           + ((BKK_CURRENT_SET_TAG, current_readback),),
+                           "power OFF, reaction route and current setpoint before power ON")
 
 
         # ====================================================
@@ -1788,6 +1840,7 @@ def autosampler_flow_rate(
 
 def _cleaning_settings(runner):
     config = getattr(runner, "adapter_config", {}) or {}
+    _delay_setting(runner, "cleaning_pump_stop_settle_s", CLEANING_PUMP_STOP_SETTLE_S)
 
     def positive(value, description):
         try:
@@ -1831,6 +1884,7 @@ def _stop_cleaning_flows(runner):
     runner._mb_cleaning_active = bool(errors)
     if errors:
         raise RuntimeError("Cleaning-pump shutdown is uncertain: " + "; ".join(map(str, errors))) from errors[0]
+    _settle_after_ethanol_stop(runner)
 
 
 def _verify_cleaning_idle(runner, cell_port):
@@ -1880,6 +1934,9 @@ def cleanup(runner, parameters):
             # Mark motion uncertain before starting; a lost reply can leave a pump running.
             runner._mb_cleaning_active = True
             runner._mb_feed_shutdown_confirmed = False
+            if stage["tag"] == PUMP_CLEANING_TAG:
+                # Set before the write: a lost start reply may leave Pump 6 on.
+                runner._mb_ethanol_needs_settle = True
             _required_write(runner, stage["tag"], stage["command"])
             _verify_opc_values(runner, ((stage["tag"], stage["command"]),), "cleaning flow command")
             time.sleep(stage["duration_s"])

@@ -164,7 +164,7 @@ class CellRoutingTests(unittest.TestCase):
                     self.assert_route(port)
                     water = self.runner.opc.values[protocol.PUMP_WATER_TAG]
                     ethanol = self.runner.opc.values[protocol.PUMP_CLEANING_TAG]
-                    self.assertIn((water, ethanol), [(2000.0, 0), (0, 2.0)])
+                    self.assertIn((water, ethanol), [(2000.0, 0), (0, 2.0), (0, 0)])
                 self.sleep.side_effect = during_clean
                 protocol.cleanup(self.runner, params)
                 self.sleep.side_effect = None

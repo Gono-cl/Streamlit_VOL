@@ -38,14 +38,14 @@ class UVVisRoutingTests(unittest.TestCase):
                 self.assert_commands(protocol.UVVIS_WASTE_TAGS)
                 self.assert_commands(protocol.VALVE_ELECTROLYSIS_TAGS)
             if tag in dict(protocol.UVVIS_MEASUREMENT_TAGS) and value == 1:
-                self.assertEqual(waits, [op["pre_echem_flush_time_s"], op["measurement_ready_time_s"]])
+                self.assertEqual(waits, [1.0, op["pre_echem_flush_time_s"], 3.0, op["measurement_ready_time_s"]])
             return original_write(tag, value, **kwargs)
 
         def wait(seconds):
             self.assert_commands(protocol.VALVE_ELECTROLYSIS_TAGS)
             self.assertEqual(self.runner.cell_valve.get_position(), 3)
             self.assertEqual(self.runner.opc.values[protocol.CELL_INLET_VALVE_TAG], 3)
-            if len(waits) < 2:
+            if len(waits) < 4:
                 self.assert_commands(protocol.UVVIS_WASTE_TAGS)
             else:
                 self.assert_commands(protocol.UVVIS_MEASUREMENT_TAGS)
@@ -55,7 +55,7 @@ class UVVisRoutingTests(unittest.TestCase):
         self.runner.opc.write_value.side_effect = write
         self.sleep.side_effect = wait
         prepared = protocol.prepare_hardware(self.runner, PARAMS)
-        self.assertEqual(len(waits), 3)
+        self.assertEqual(len(waits), 5)
         self.assertAlmostEqual(waits[-1], 120.0 / op["total_flow_ml_min"])
         self.assertEqual(prepared["uvvis_flush_volume_ml"], 2.0)
         self.assertAlmostEqual(prepared["uvvis_flush_time_s"], waits[-1])
@@ -136,7 +136,7 @@ class UVVisRoutingTests(unittest.TestCase):
 
         def measure(**kwargs):
             self.assert_commands(protocol.UVVIS_MEASUREMENT_TAGS)
-            self.assertEqual(len(self.sleep.call_args_list), 3)
+            self.assertEqual(len(self.sleep.call_args_list), 5)
             events.append("measurement")
             return 50.0
 

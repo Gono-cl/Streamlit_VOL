@@ -1,7 +1,7 @@
 # MB Protocol Manual
 
 **Virtual Optimization Lab (Streamlit_VOL)**
-Operator and developer reference · Version 1.10 · 23 November 2026
+Operator and developer reference · Version 1.11 · 25 November 2026
 
 Based on the current working copy, including matched inlet/outlet cell routing, waste diversion during startup, a volume-based UV/VIS branch flush and automatic downstream dilution, with selectable CV/SD spectral stability, a timestamp-based absorbance drift check and per-spectrum electrical snapshots. This document describes implemented software behavior and identifies the analytical work that remains to be validated. Source references [S1]–[S17] appear in the final section.
 
@@ -22,7 +22,7 @@ The MB protocol automates methylene blue electrooxidation using six optimization
 | First preparation after start/resume | Home to waste, rinse twice with 1,000 µL incoming stock, fill to 5,000 µL |
 | Between matching-electrolyte experiments | Retain remaining stock and top up to 5,000 µL |
 | Water/ethanol/water cleaning | Water / ethanol / water: Pump 2 for 90 s, Pump 6 for 120 s, Pump 2 for 90 s; each at 2 mL/min; through the selected cell and UV/VIS |
-| Cell routing | ROT_VALVE at the cell inlet and AMF at the outlet; matching ports 1/2/3 for EC1/EC2/EC3 |
+| Cell routing | Matching inlet/outlet ports and BKK channel 1/2/3 for EC1/EC2/EC3, selected with power OFF |
 | Electrolysis mode | Both V_02 tags = 0; V_01 stays at waste (0) until the measurement phase |
 | Cleaning mode | Both V_01 tags = 1; V_02 = 0 for water and 1 for ethanol |
 | UV/VIS branch flush | 2 mL after switching V_01 to UV/VIS; time = 60 * volume / reactor flow |
@@ -202,7 +202,7 @@ The current depends on the selected cell’s area. Changing EC3 to another cell 
 
 ## Reading the timing estimate
 
-The syringe capacity estimate covers delivery at the calculated reaction electrolyte rate. Actual electrolyte consumption also includes the pre-electrolysis flush, the post-power wait to waste, the 2 mL UV/VIS branch flush, measurement acquisition and any enabled sample collection before the SPM is stopped.
+The syringe capacity estimate covers delivery at the calculated reaction electrolyte rate. Actual electrolyte consumption also includes the pre-electrolysis flush, the 3 s current-settling hold, post-power wait to waste, 2 mL UV/VIS branch flush, measurement acquisition and any enabled sample collection before the SPM is stopped.
 
 No automatic mid-experiment refill or remaining-volume watchdog is implemented. If the syringe reaches its zero target, the physical movement ends; the code does not automatically load another syringe during that experiment. Compare the full experiment duration with capacity before choosing long acquisition or sample-collection settings.
 
@@ -217,11 +217,11 @@ Cleaning alternates Pump 2 water and Pump 6 ethanol after SPM shutdown. It does 
 3. **Compute and print.** The protocol calculates current, flows, selected ports and waiting times. Invalid conditions stop here.
 4. **Establish a stopped state.** Power-off commands, Pump 6 stop and reaction-feed stops are issued and checked. The SPM is homed once for a new runner, or its stopped state is checked for a continuing runner.
 5. **Establish electrolysis and waste routing.** V_02 OPEN/CLOSE = 0; V_01 OPEN/CLOSE = 0 (waste). Command readbacks must match before feeds start.
-6. **Select the cell.** With power and all pumps stopped, set the AMF outlet and ROT_VALVE inlet to the matching cell port (1, 2 or 3). Verify the inlet OPC command and the AMF reported position; update the AMF OPC display.
+6. **Select the cell and channel.** With power and pumps stopped, select matching AMF outlet and ROT_VALVE inlet ports. Clear all three BKK flags, verify zero, wait 1 s, then enable and verify only the matching channel, before electrolyte loading or feeds.
 7. **Prepare electrolyte.** Top up matching stock, or discard/rinse/fill when stock identity is unknown or different. End on SPM delivery port 5.
 8. **Start reaction feeds.** Write Pump 1 and Pump 2 flows; start nonblocking SPM delivery toward an empty syringe.
 9. **Flush without electrolysis.** Wait the calculated upstream/cell flush time.
-10. **Select electrical output.** Recheck both cell-routing readbacks after flushing. Send the matching BKK channel commands, write the calculated current in amperes, and enable the power supply.
+10. **Set current, wait, then enable output.** Recheck cell ports and exclusive BKK selection. Write current in amperes, wait 3 s, then recheck power-OFF commands, current setpoint, channel flags and routes before enabling power.
 11. **Wait to waste, then flush UV/VIS.** Keep V_01 at waste during the calculated post-power stabilization/transport wait. Switch only V_01 to UV/VIS (both tags = 1), verify its commands, then pass 2 mL at the calculated reactor flow before acquisition. Discard spectra exported during these waits.
 12. **Measure and calculate.** For real MB UV/VIS, stop Pump 3, wait 10 s and collect fresh spectra. Above-range readings trigger bounded dilution retries, each with a 10 s wait. Return the dilution-corrected reactor-outlet concentration to the selected objective calculator. Stop Pump 3 and, after a diluted success, wait 10 s for undiluted flow before optional autosampling. Other measurement modes retain their existing acquisition path.
 13. **Divert, stop and clean.** Return V_01 to waste before normal power/feed shutdown. A failed diversion still allows all shutdown attempts and blocks automatic cleaning. A successful experiment with verified shutdown receives the water/ethanol/water sequence through the selected cell and UV/VIS. Afterwards both cleaning pumps stop, V_02 returns to electrolysis and V_01 returns to waste.
@@ -262,11 +262,11 @@ USB operations remain on one execution thread. Nonblocking delivery uses the SDK
 
 ## Electrical selection
 
-The selected cell supplies the BKK channel: EC1 → 1, EC2 → 2, EC3 → 3. `_select_bkk_channel()` writes 1 to the selected channel tag and 0 to the other two, using the full OPC item IDs in Appendix A. Power is commanded off before preparation and enabled after matching inlet/outlet readbacks, channel selection and current setting.
+The selected cell supplies the BKK channel: EC1 → 1, EC2 → 2, EC3 → 3. Selection now occurs with matching inlet/outlet routing, before electrolyte loading and feeds. With output OFF, clear and verify all three flags, wait 1 s, then enable only the chosen channel and verify all three flags. This avoids enabling the next channel before clearing the previous one. [S1]
 
 The current command is sent in amperes. The MB protocol does not configure a BKK control-mode selector or voltage-compliance limit; establish the intended current-control configuration on the actual system before a campaign.
 
-The channel-selection helper currently does not read the channel values back. Its printed selection message is not proof of physical output switching. Mode and shutdown verification elsewhere must not be interpreted as BKK channel feedback.
+Channel flags, cell routes and current setpoint are rechecked before power ON, following a 3 s current-settling wait. OPC readbacks confirm command values; they do not independently verify relay contacts, output isolation or actual current. The sequencing and configuration reference follows.
 
 ## Latest switching-valve commands
 
@@ -291,6 +291,30 @@ Configuring a speed while idle displays zero. A confirmed blocking movement comp
 
 <!-- pagebreak -->
 
+## Electrical selection and settling delays
+
+The channel flags select the electrical cell independently of the two fluid-routing selectors. A new experiment establishes the matching fluid ports and electrical channel while output is commanded OFF. Reagent feeds and electrolyte loading begin only after selection succeeds.
+
+1. Verify power-OFF commands. Write zero to CHANNEL1, CHANNEL2 and CHANNEL3, attempting all three writes even if one fails. Do not select a new channel if any clear fails.
+2. Verify all three zero flags, hold for 1 s, then recheck zeros and output-OFF commands. Write one only to the selected channel and verify the complete one-hot pattern, for example (0, 0, 1) for EC3.
+3. Load electrolyte, start feeds and perform the normal pre-electrolysis flush. Recheck the selected cell ports, channel flags and output-OFF commands.
+4. Write the current setpoint with the same numeric precision as the existing control path: five-decimal rounding followed by the OPC writer's four-decimal precision in amperes. Wait 3 s before the final checks.
+5. Verify current setpoint, both fluid ports, all channel flags, electrolysis/waste routing and output-OFF commands. Only then issue power-ON commands.
+
+| Delay constant | Default | process_adapter_config override |
+|---|---|---|
+| BKK_CHANNEL_SWITCH_DELAY_S | 1 s with all channel flags zero | bkk_channel_switch_delay_s |
+| BKK_CURRENT_SETTLE_S | 3 s after the current command | bkk_current_settle_s |
+| CLEANING_PUMP_STOP_SETTLE_S | 5 s after verified ethanol stop | cleaning_pump_stop_settle_s |
+
+Each delay must be finite and strictly positive; booleans, zero, explicit None values and non-finite values are rejected. Channel/current settings are checked before hardware preparation. The cleaning hold is checked before cleaning flow begins. These are adapter settings, with the same persistence as other protocol adapter overrides.
+
+A failed write, missing readback or wrong channel pattern blocks continuation and invokes the existing stop/error path. The selected channel is not rewritten after the pre-electrolysis flush. Selection is re-established from all zeros for every experiment, including when the next experiment uses the same cell.
+
+The waits are timed holds, not measurements of relay travel, pressure decay or instrument response. Command readbacks confirm the OPC data layer. Physical electrical isolation and pressure behavior still require checking on the assembled setup. In cleaning, the ethanol route is held open through UV/VIS during the stop delay. A pending or interrupted ethanol hold blocks V_01, V_02 and cell-selector commands until a verified stop and complete hold have succeeded. [S1, S3, S8]
+
+<!-- pagebreak -->
+
 # 10. Water/ethanol/water cleaning between experiments
 
 Both rotary selectors retain the selected cell throughout cleaning. All three rinses pass through UV/VIS with V_01 OPEN/CLOSE = 1. Pump 2 supplies water through V_02 = 0; Pump 6 supplies ethanol through V_02 = 1. Cleaning runs after each successful hardware experiment, including QC, the final experiment and protocol-aware maintenance calls. [S1, S3]
@@ -301,11 +325,11 @@ Both rotary selectors retain the selected cell throughout cleaning. All three ri
 | 2 | Ethanol | 6 | 2 | 120 | 4 |
 | 3 | Water | 2 | 2 | 90 | 3 |
 
-The default sequence takes 300 s (5 min) and delivers a nominal 10 mL. Pump 2 commands use uL/min: 2 mL/min is written as 2000. Pump 6 commands use mL/min: 2 mL/min is written as 2. Timers begin after each flow command is verified; solvent-change and verification overhead is additional.
+The sequence has 300 s of pumping plus a 5 s hold after ethanol stops: 305 s (5 min 5 s) before verification overhead, delivering a nominal 10 mL. Pump 2 commands use uL/min: 2 mL/min is written as 2000. Pump 6 commands use mL/min: 2 mL/min is written as 2. Timers begin after each flow command is verified; solvent-change and verification overhead is additional.
 
 1. Confirm power-off commands, all reagent feeds stopped and the SPM ready/idle. Confirm the retained inlet/outlet cell ports.
 2. Before each stage, confirm Pump 2 and Pump 6 are stopped. Select V_02 = 0 for water or 1 for ethanol, then verify V_01 = 1 for UV/VIS.
-3. Start only the designated pump and run its timer. Stop and verify both cleaning pumps before any next valve change; recheck the retained cell ports and stage routing.
+3. Start only the designated pump and run its timer. Stop and verify both pumps before switching. After ethanol, retain V_02 in cleaning mode and V_01 through UV/VIS for 5 s with pumps stopped; then recheck Pump 6, cell ports and routing before final water.
 4. After the final water rinse, confirm stopped pumps, restore V_01 to waste (0) and V_02 to electrolysis (0). Recheck the retained cell ports. The next experiment still performs its normal startup-to-waste and analytical-branch flush.
 
 <!-- pagebreak -->
@@ -318,12 +342,13 @@ The default sequence takes 300 s (5 min) and delivers a nominal 10 mL. Pump 2 co
 | CLEANING_WATER_PRE_DURATION_S | 90 s | cleaning_water_pre_duration_s |
 | CLEANING_ETHANOL_DURATION_S | 120 s | cleaning_ethanol_duration_s |
 | CLEANING_WATER_POST_DURATION_S | 90 s | cleaning_water_post_duration_s |
+| CLEANING_PUMP_STOP_SETTLE_S | 5 s after ethanol stops | cleaning_pump_stop_settle_s |
 
 Overrides belong in process_adapter_config. Per-stage flow overrides are cleaning_water_pre_flow_ml_min, cleaning_ethanol_flow_ml_min and cleaning_water_post_flow_ml_min; each overrides the common flow. Explicit cleaning_ethanol_duration_s takes precedence over the older cleaning_duration_s alias, which now applies only to the Pump 6 ethanol step. All flows and durations must be finite and positive; all three stages are validated before any cleaning flow starts. cleaning_water_port remains ignored because ROT_VALVE selects the cell, not a solvent.
 
 ## Failure behavior
 
-Failed experiments and unverified feed shutdowns do not start automatic cleaning. An interrupted stage, failed start or failed readback aborts all remaining stages. Both cleaning-pump stops are attempted even if one fails. If either stop is uncertain, neither switching valve is moved. Confirmed stopped pumps allow restoration of the waste/electrolysis route; the original error still propagates and blocks normal optimizer acceptance. OPC command readbacks do not independently measure physical pump flow or valve position.
+Failed experiments and unverified feed shutdowns do not start automatic cleaning. An interrupted stage, failed start or failed readback aborts all remaining stages. Both cleaning-pump stops are attempted even if one fails. If either stop is uncertain, neither switching valve is moved. Confirmed stopped pumps and completion of any pending ethanol hold allow route restoration. The hold also applies after an interrupted ethanol rinse or lost start reply. An uncertain stop or interrupted hold keeps valve movement blocked; the original error still prevents optimizer acceptance. OPC command readbacks do not independently measure physical pump flow or valve position.
 
 The SPM retains its separate electrolyte contents. These rinses do not aspirate ethanol into the syringe; SPM stock changeover remains a separate operation. Validate removal of blue residue and ethanol carryover on the actual setup. Spectragryph can continue exporting during rinses; the next measurement uses fresh spectra after the next startup and UV/VIS branch flush.
 
@@ -382,6 +407,8 @@ The `uvvis` backend reads Spectragryph CSV exports, applies a saved linear calib
 | `sd_threshold` | Unset; positive AU limit required for sd/auto |
 | `max_extra_measurements` | 10 |
 | `spectrum_timeout` | 30 s per new spectrum |
+
+The current user-supplied shorter-path model selects 667 nm and a detector range of 50-300 mg/L. Results below 50 mg/L are outside this model's configured range and are rejected; a 300 mg/L upper limit does not imply validation down to zero. The calibration coefficients and range have not been changed by this update.
 
 The model must contain finite `slope`, `intercept`, `r2`, `range_min`, `range_max` and `wavelength` values. Concentration is `(absorbance − intercept) / slope`. The slope must be nonzero, the concentration range ordered, wavelength positive and R² between 0 and 1.
 
@@ -704,7 +731,7 @@ A custom calculation hook receives `(runner, mean_measurement, parameters, objec
 
 Dilution adapter overrides are `uvvis_dilution_max_flow_ml_min`, `uvvis_dilution_wait_s` and `uvvis_dilution_max_attempts` in `process_adapter_config`. Saved effective settings are used when no override is supplied. The water limit may be lowered but cannot exceed the 3.33 mL/min protocol ceiling. Wait must be positive; attempts must be an integer from 1 to 20. There is no dedicated dilution-settings form.
 
-Relevant regression checks are in `tests/test_mb_cleaning.py`, `tests/test_amf_display.py`, `tests/test_spm_refill.py`, `tests/test_hardware_connections.py`, campaign setup tests, UV/VIS integration tests and `tests/test_uvvis_dilution.py` and `tests/test_degradation.py`, `tests/test_mb_cell_routing.py` and `tests/test_mb_uvvis_routing.py`, `tests/test_uvvis_stability.py` and `tests/test_uvvis_bkk_logging.py`, plus `tests/test_uvvis_trend.py`. They use simulated devices and test behavior; passing them is not a validation of changed physical tubing or analytical chemistry.
+Relevant regression checks are in `tests/test_mb_cleaning.py`, `tests/test_amf_display.py`, `tests/test_spm_refill.py`, `tests/test_hardware_connections.py`, campaign setup tests, UV/VIS integration tests and `tests/test_uvvis_dilution.py` and `tests/test_degradation.py`, `tests/test_mb_cell_routing.py` and `tests/test_mb_uvvis_routing.py`, `tests/test_uvvis_stability.py` and `tests/test_uvvis_bkk_logging.py`, `tests/test_uvvis_trend.py` and `tests/test_mb_switching.py`. They use simulated devices and test behavior; passing them is not a validation of changed physical tubing or analytical chemistry.
 
 Keep the default project README general. This dedicated manual is the place for MB-specific operating details. Update it after changing wiring, stock assumptions, objective formulas or persistence behavior.
 
@@ -729,7 +756,7 @@ Keep the default project README general. This dedicated manual is the place for 
 | Objective key missing or scientifically implausible values | MB uses generic fallback calculations. Check Section 14, selected objective names and units. |
 | Results/raw CSVs do not have identical row counts | Raw files contain replicate readings and possibly failed attempts; campaign CSVs contain accepted optimizer observations. QC adds further acquisitions. |
 
-Other current limits include transport volumes that require confirmation on the installed setup, no automatic mid-run SPM refill, no independent physical valve-position feedback in mode checks, no BKK channel readback, a fixed rather than transport-calculated analytical wait, and possible final-QC raw-log buffering. These are implementation facts to consider during analytical commissioning, not features supplied by the manual.
+Other current limits include transport volumes that require confirmation on the installed setup, no automatic mid-run SPM refill, no independent physical valve-position or BKK relay-contact feedback, a fixed rather than transport-calculated analytical wait, and possible final-QC raw-log buffering. These are implementation facts to consider during analytical commissioning, not features supplied by the manual.
 
 <!-- pagebreak -->
 
@@ -795,14 +822,14 @@ Use the appropriate LabVision indications and laboratory checks to establish act
 
 # Appendix C. Source references and document control
 
-This manual was prepared from local source inspection on **23 November 2026**. It documents the working-copy behavior, including matched inlet/outlet cell routing, protocol-aware water/ethanol/water cleaning, independent V_02 electrolysis/cleaning and V_01 UV/VIS/waste timing, the analytical branch flush, selectable CV/SD spectral stability, timestamp-based drift validation, updated transport volumes and cleaning durations, UV/VIS dilution, per-spectrum BKK snapshots and the Degradation objective. It does not introduce code changes or validate a chemical method.
+This manual was prepared from local source inspection on **25 November 2026**. It documents the working-copy behavior, including matched inlet/outlet cell routing, protocol-aware water/ethanol/water cleaning, independent V_02 electrolysis/cleaning and V_01 UV/VIS/waste timing, the analytical branch flush, selectable CV/SD spectral stability, timestamp-based drift validation, updated transport volumes and cleaning durations, UV/VIS dilution, per-spectrum BKK snapshots and the Degradation objective. It does not introduce code changes or validate a chemical method.
 
-**Repository reference:** `d05db08` plus the CSV unit-label changes. The protocol hash below captures its current constants and messages.
+**Repository reference:** `8d3aab0` plus early BKK selection, current-settling and ethanol-stop timing changes. The user-supplied shorter-path calibration is retained unchanged.
 
 **MB protocol SHA-256:**
 
 ```text
-bd7755a54bd73d1bed8f3dbc44ad4aed82371827402582454128fbb1a1ee033b
+673001328454785d17e5f4398ee4de3060446b4ed85f16df1c7e63e8c2a95362
 ```
 
 | Ref. | Source file or area |

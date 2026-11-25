@@ -67,6 +67,7 @@ class WaterCleaningTests(unittest.TestCase):
 
         stages = iter([(90.0, 2000.0, 0.0, "electrolysis"),
                        (120.0, 0.0, 2.0, "cleaning"),
+                       (5.0, 0.0, 0.0, "cleaning"),
                        (90.0, 2000.0, 0.0, "electrolysis")])
 
         def during_clean(seconds):
@@ -86,7 +87,7 @@ class WaterCleaningTests(unittest.TestCase):
             self.assertIsNone(self.sdk.pending)
         self.sleep.side_effect = during_clean
         protocol.cleanup(self.runner, PARAMS)
-        self.assertEqual(self.sleep.call_args_list, [call(90.0), call(120.0), call(90.0)])
+        self.assertEqual(self.sleep.call_args_list, [call(90.0), call(120.0), call(5.0), call(90.0)])
         self.assertEqual(len(self.cleaning_starts()), 1)
         self.assertEqual(self.runner.opc.values[protocol.PUMP_CLEANING_TAG], 0)
         self.assertEqual(self.runner.opc.values[protocol.PUMP_WATER_TAG], 0)
@@ -101,7 +102,7 @@ class WaterCleaningTests(unittest.TestCase):
         self.prepared_and_stopped()
         self.runner.adapter_config = {"cleaning_flow_ml_min": 1.5, "cleaning_duration_s": 20}
         protocol.cleanup(self.runner, PARAMS)
-        self.assertEqual(self.sleep.call_args_list, [call(90.0), call(20.0), call(90.0)])
+        self.assertEqual(self.sleep.call_args_list, [call(90.0), call(20.0), call(5.0), call(90.0)])
         self.assertEqual(self.cleaning_starts()[0].args[1], 1.5)
         water = [c.args[1] for c in self.runner.opc.write_value.call_args_list
                  if c.args[0] == protocol.PUMP_WATER_TAG and c.args[1] > 0]
@@ -136,7 +137,7 @@ class WaterCleaningTests(unittest.TestCase):
             "cleaning_water_post_flow_ml_min": 3.0, "cleaning_water_post_duration_s": 80,
         }
         protocol.cleanup(self.runner, PARAMS)
-        self.assertEqual(self.sleep.call_args_list, [call(40), call(10), call(80)])
+        self.assertEqual(self.sleep.call_args_list, [call(40), call(10), call(5), call(80)])
         starts = [c.args for c in self.runner.opc.write_value.call_args_list
                   if c.args[0] in (protocol.PUMP_WATER_TAG, protocol.PUMP_CLEANING_TAG) and c.args[1] > 0]
         self.assertEqual(starts, [(protocol.PUMP_WATER_TAG, 1250),
@@ -167,6 +168,8 @@ class WaterCleaningTests(unittest.TestCase):
 
                 def wait(seconds):
                     nonlocal count
+                    if seconds == 5.0:
+                        return  # Stop/settling hold is separate from rinse stages.
                     count += 1
                     if count == failing_stage:
                         raise KeyboardInterrupt("Interrupted rinse")
@@ -233,7 +236,7 @@ class WaterCleaningTests(unittest.TestCase):
         self.runner.opc.write_value.side_effect = write
         with self.assertRaisesRegex(RuntimeError, "Required OPC write failed"):
             protocol.cleanup(self.runner, PARAMS)
-        self.assertEqual(self.sleep.call_args_list, [call(90)])
+        self.assertEqual(self.sleep.call_args_list, [call(90), call(5)])
         self.assertEqual(self.runner.opc.values[protocol.PUMP_WATER_TAG], 0)
         self.assertEqual(self.runner.opc.values[protocol.PUMP_CLEANING_TAG], 0)
         self.assertFalse(self.runner._mb_feed_shutdown_confirmed)
