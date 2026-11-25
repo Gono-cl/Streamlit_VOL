@@ -89,12 +89,12 @@
         "trend_threshold": 0.01,
         "max_extra_measurements": 10,
         "spectrum_timeout": 30.0,
-        "expected_calibration_id": "1b50cb5ad9417c7177eb5ce1d56bdf0243cc3a3575b467240ac2081860ed320f",
+        "expected_calibration_id": "339b9c879168220dc0d8b7c12b91400d6bf763120036b54d14e467249c81e577",
         "auto_dilution": {
             "max_water_flow_ml_min": 3.33,
             "settle_time_s": 10.0,
             "max_attempts": 6,
-            "target_concentration_mg_L": 25.0
+            "target_concentration_mg_L": 150.0
         }
     }
 }
